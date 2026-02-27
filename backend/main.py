@@ -177,6 +177,7 @@ def _run_background_init():
 
     def _init():
         try:
+            from datetime import datetime
             # 0. Fetch live prices (don't block startup)
             import asyncio
             logger.info("Background: fetching live prices...")
@@ -238,10 +239,44 @@ def _run_background_init():
                 except Exception as e:
                     logger.error(f"Category scraping failed: {e}")
 
-            # 3. Compute signals if needed
+            # 3. Compute signals only if missing or stale (>4 hours old)
             from data.cache import cache
+            from data.repository import load_signals_from_db
             all_signals = cache.get("all_signals")
             if not all_signals:
+                # Cache miss — try loading from DB
+                db_sigs = load_signals_from_db()
+                if db_sigs:
+                    from config import CACHE_TTL_SIGNALS
+                    cache.set("all_signals", db_sigs, CACHE_TTL_SIGNALS * 2)
+                    all_signals = db_sigs
+                    logger.info(f"Background: loaded {len(db_sigs)} signals from DB into cache")
+
+            # Check staleness — only recompute if signals are missing or >4 hours old
+            should_compute = False
+            if not all_signals:
+                should_compute = True
+                logger.info("Background: no signals found, will compute")
+            else:
+                # Check age of signals in DB
+                conn_sig = get_connection()
+                age_row = conn_sig.execute(
+                    "SELECT created_at FROM signals ORDER BY created_at DESC LIMIT 1"
+                ).fetchone()
+                conn_sig.close()
+                if age_row and age_row["created_at"]:
+                    try:
+                        created = datetime.fromisoformat(age_row["created_at"])
+                        age_hours = (datetime.now() - created).total_seconds() / 3600
+                        if age_hours > 4:
+                            should_compute = True
+                            logger.info(f"Background: signals are {age_hours:.1f}h old, will recompute")
+                        else:
+                            logger.info(f"Background: signals are {age_hours:.1f}h old, skipping recompute")
+                    except (ValueError, TypeError):
+                        should_compute = True
+
+            if should_compute:
                 logger.info("Background: starting signal computation...")
                 from api.routes_signals import start_background_computation
                 start_background_computation()
