@@ -1,0 +1,26 @@
+fastapi==0.115.0
+uvicorn[standard]==0.32.1
+websockets==14.1
+pydantic==2.10.0
+
+# Data Sources
+bdshare==1.1.2
+beautifulsoup4==4.12.3
+requests==2.32.3
+lxml==5.3.0
+
+# Data Processing & Analysis
+pandas==2.2.3
+numpy==2.1.3
+scipy>=1.14.0
+pandas-ta==0.3.14b1
+
+# Database
+aiosqlite==0.20.0
+
+# Background Jobs
+apscheduler==3.10.4
+
+# Utilities
+python-dateutil==2.9.0
+pytz==2024.2

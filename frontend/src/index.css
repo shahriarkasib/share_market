@@ -1,0 +1,62 @@
+@import "tailwindcss";
+
+/* ---- Light theme (default) ---- */
+:root {
+  --bg: #ffffff;
+  --surface: #f8fafc;
+  --surface-active: #f1f5f9;
+  --surface-elevated: #e2e8f0;
+  --border: #e2e8f0;
+  --hover: #f1f5f9;
+  --text: #0f172a;
+  --text-muted: #64748b;
+  --text-dim: #94a3b8;
+  --scrollbar-thumb: #cbd5e1;
+
+  /* Chart colors */
+  --chart-bg: #ffffff;
+  --chart-text: #475569;
+  --chart-grid: #e2e8f020;
+  --chart-crosshair: #94a3b8;
+  --chart-crosshair-label: #e2e8f0;
+  --chart-border: #e2e8f0;
+}
+
+/* ---- Dark theme ---- */
+.dark {
+  --bg: #020617;
+  --surface: #0f172a;
+  --surface-active: #1e293b;
+  --surface-elevated: #334155;
+  --border: #1e293b;
+  --hover: rgba(30, 41, 59, 0.6);
+  --text: #f1f5f9;
+  --text-muted: #94a3b8;
+  --text-dim: #475569;
+  --scrollbar-thumb: #334155;
+
+  /* Chart colors */
+  --chart-bg: #020617;
+  --chart-text: #94a3b8;
+  --chart-grid: #1e293b40;
+  --chart-crosshair: #475569;
+  --chart-crosshair-label: #334155;
+  --chart-border: #1e293b;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+
+body {
+  font-family: "Inter", system-ui, -apple-system, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  background: var(--bg);
+  color: var(--text);
+}
+
+/* Tabular numbers for all financial data */
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
