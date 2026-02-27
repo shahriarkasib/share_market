@@ -106,9 +106,16 @@ async def compute_signals():
 
 
 async def sync_market_summary():
-    """Sync market summary data."""
+    """Sync market summary data. Never overwrite good data with zeroes."""
     try:
         summary = fetcher.get_market_summary()
+
+        # Don't overwrite with zeroes — keep the last known good data
+        if summary.get("dsex_index", 0) == 0:
+            logger.info("Market summary returned zero DSEX, skipping DB write")
+            cache.delete("market_summary")
+            return
+
         conn = get_connection()
         conn.execute(
             """INSERT OR REPLACE INTO market_summary
@@ -132,6 +139,7 @@ async def sync_market_summary():
         )
         conn.commit()
         conn.close()
+        cache.delete("market_summary")
     except Exception as e:
         logger.error(f"Market summary sync failed: {e}")
 

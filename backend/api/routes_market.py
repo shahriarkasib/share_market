@@ -38,21 +38,60 @@ async def get_market_summary():
     if cached:
         return cached
 
-    # Try DB first (written by scheduler, fast)
     conn = get_connection()
+
+    # Try market_summary table first (written by scheduler)
     row = conn.execute("SELECT * FROM market_summary WHERE id = 1").fetchone()
+    summary = dict(row) if row else None
+
+    # If missing or DSEX is zero, enrich from dsex_history and live_prices
+    if not summary or not summary.get("dsex_index"):
+        summary = summary or {
+            "dsex_index": 0, "dsex_change": 0, "dsex_change_pct": 0,
+            "total_volume": 0, "total_value": 0, "total_trade": 0,
+            "advances": 0, "declines": 0, "unchanged": 0,
+            "market_status": "CLOSED",
+        }
+        # Fill DSEX from dsex_history
+        hist = conn.execute(
+            "SELECT * FROM dsex_history ORDER BY date DESC LIMIT 2"
+        ).fetchall()
+        if hist:
+            latest = dict(hist[0])
+            summary["dsex_index"] = latest.get("dsex_index", 0)
+            summary["total_volume"] = latest.get("total_volume", 0)
+            summary["total_value"] = latest.get("total_value", 0)
+            summary["total_trade"] = latest.get("total_trade", 0)
+            if len(hist) > 1:
+                prev = dict(hist[1])
+                prev_dsex = prev.get("dsex_index", 0)
+                if prev_dsex > 0:
+                    change = summary["dsex_index"] - prev_dsex
+                    summary["dsex_change"] = round(change, 2)
+                    summary["dsex_change_pct"] = round(change / prev_dsex * 100, 2)
+
+        # Fill advances/declines from live_prices
+        adv = conn.execute("SELECT COUNT(*) FROM live_prices WHERE change_pct > 0").fetchone()[0]
+        dec = conn.execute("SELECT COUNT(*) FROM live_prices WHERE change_pct < 0").fetchone()[0]
+        unch = conn.execute("SELECT COUNT(*) FROM live_prices WHERE change_pct = 0 AND trade_count > 0").fetchone()[0]
+        summary["advances"] = adv
+        summary["declines"] = dec
+        summary["unchanged"] = unch
+
+        # Determine market status from time
+        import pytz
+        from datetime import time as dtime
+        dse_tz = pytz.timezone("Asia/Dhaka")
+        now = datetime.now(dse_tz)
+        market_days = [6, 0, 1, 2, 3]  # Sun-Thu
+        if now.weekday() in market_days and dtime(10, 0) <= now.time() <= dtime(14, 30):
+            summary["market_status"] = "OPEN"
+        else:
+            summary["market_status"] = "CLOSED"
+
     conn.close()
 
-    if row:
-        summary = dict(row)
-        summary["last_updated"] = summary.get("updated_at", datetime.now().isoformat())
-        cache.set("market_summary", summary, CACHE_TTL_LIVE_PRICES)
-        return summary
-
-    # Fallback to live fetch
-    summary = fetcher.get_market_summary()
-    summary["last_updated"] = datetime.now().isoformat()
-
+    summary["last_updated"] = summary.get("updated_at", datetime.now().isoformat())
     cache.set("market_summary", summary, CACHE_TTL_LIVE_PRICES)
     return summary
 

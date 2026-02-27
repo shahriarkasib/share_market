@@ -297,3 +297,40 @@ async def seed_sectors(payload: dict):
     conn.close()
     logger.info(f"Seeded {total} stocks across {len(payload.get('sectors', {}))} sectors")
     return {"status": "ok", "stocks": total, "sectors": len(payload.get("sectors", {}))}
+
+
+@app.post("/api/v1/admin/seed-dsex")
+async def seed_dsex(payload: dict):
+    """Accept DSEX index history data and insert into DB.
+
+    Expected payload: {"rows": [{"date":..., "dsex_index":..., ...}, ...]}
+    """
+    rows = payload.get("rows", [])
+    if not rows:
+        return {"status": "no data", "inserted": 0}
+
+    conn = get_connection()
+    inserted = 0
+    for r in rows:
+        try:
+            conn.execute(
+                """INSERT OR REPLACE INTO dsex_history
+                   (date, dsex_index, dses_index, ds30_index, total_volume, total_value, total_trade)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    r.get("date", ""),
+                    float(r.get("dsex_index", 0) or 0),
+                    float(r.get("dses_index", 0) or 0),
+                    float(r.get("ds30_index", 0) or 0),
+                    int(r.get("total_volume", 0) or 0),
+                    float(r.get("total_value", 0) or 0),
+                    int(r.get("total_trade", 0) or 0),
+                ),
+            )
+            inserted += 1
+        except Exception as e:
+            logger.error(f"DSEX seed error: {e}")
+    conn.commit()
+    conn.close()
+    logger.info(f"Seeded {inserted} dsex_history rows")
+    return {"status": "ok", "inserted": inserted}
