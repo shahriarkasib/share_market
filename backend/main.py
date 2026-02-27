@@ -94,6 +94,82 @@ async def _bulk_load_historical():
         logger.error(f"Bulk historical load failed: {e}")
 
 
+def _seed_sectors_from_json():
+    """Load sector mapping from bundled static JSON file."""
+    import json
+    json_path = os.path.join(os.path.dirname(__file__), "data", "dse_sectors.json")
+    try:
+        with open(json_path) as f:
+            sectors = json.load(f)
+        conn = get_connection()
+        total = 0
+        for sector_name, symbols in sectors.items():
+            conn.execute(
+                "INSERT OR REPLACE INTO sectors (name, stock_count, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)",
+                (sector_name, len(symbols)),
+            )
+            for sym in symbols:
+                conn.execute(
+                    """INSERT INTO fundamentals (symbol, sector, updated_at)
+                       VALUES (?, ?, CURRENT_TIMESTAMP)
+                       ON CONFLICT(symbol) DO UPDATE SET sector = excluded.sector, updated_at = CURRENT_TIMESTAMP""",
+                    (sym, sector_name),
+                )
+                total += 1
+        conn.commit()
+        conn.close()
+        logger.info(f"Seeded {total} stocks across {len(sectors)} sectors from JSON")
+    except Exception as e:
+        logger.error(f"Static sector seeding failed: {e}")
+
+
+def _seed_dsex_history():
+    """Seed DSEX index history from bdshare market_summary (works from any region)."""
+    try:
+        from bdshare import market_summary
+        from datetime import datetime
+        import warnings
+        import pandas as pd
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            data = market_summary()
+
+        if data is None or (isinstance(data, pd.DataFrame) and data.empty):
+            return
+
+        conn = get_connection()
+        count = 0
+        for _, row in data.iterrows():
+            date_str = row.get("Date", "")
+            if not date_str:
+                continue
+            try:
+                dt = datetime.strptime(date_str, "%d-%m-%Y")
+                iso_date = dt.strftime("%Y-%m-%d")
+            except (ValueError, TypeError):
+                continue
+            dsex = float(row.get("DSEX Index", 0) or 0)
+            if dsex > 0:
+                conn.execute(
+                    """INSERT OR REPLACE INTO dsex_history
+                       (date, dsex_index, dses_index, ds30_index, total_volume, total_value, total_trade)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (iso_date, dsex,
+                     float(row.get("DSES Index", 0) or 0),
+                     float(row.get("DS30 Index", 0) or 0),
+                     int(row.get("Total Volume", 0) or 0),
+                     float(row.get("Total Value (mn)", 0) or 0),
+                     int(row.get("Total Trade", 0) or 0)),
+                )
+                count += 1
+        conn.commit()
+        conn.close()
+        logger.info(f"Seeded {count} DSEX history rows from bdshare")
+    except Exception as e:
+        logger.error(f"DSEX history seeding failed: {e}")
+
+
 def _run_background_init():
     """Run heavy initialization tasks in a background thread."""
     import threading
@@ -124,20 +200,23 @@ def _run_background_init():
             else:
                 logger.info(f"Background: found {count} rows in daily_prices")
 
-            # 2. Seed sector mapping if empty
-            from data.sector_scraper import scrape_sector_mapping
+            # 2. Seed sector mapping if empty — use static JSON (DSE scraper unreliable)
             conn_check = get_connection()
             sector_count = conn_check.execute(
                 "SELECT COUNT(*) FROM fundamentals WHERE sector IS NOT NULL"
             ).fetchone()[0]
             conn_check.close()
             if sector_count == 0:
-                logger.info("Background: seeding sector mapping from DSE...")
-                try:
-                    scrape_sector_mapping()
-                    logger.info("Background: sector mapping seeded")
-                except Exception as e:
-                    logger.warning(f"Sector seeding failed: {e}")
+                logger.info("Background: seeding sectors from static JSON...")
+                _seed_sectors_from_json()
+
+            # 2b. Seed DSEX history if empty
+            conn_dsex = get_connection()
+            dsex_count = conn_dsex.execute("SELECT COUNT(*) FROM dsex_history").fetchone()[0]
+            conn_dsex.close()
+            if dsex_count == 0:
+                logger.info("Background: seeding DSEX history from bdshare...")
+                _seed_dsex_history()
 
             # 3. Compute signals if needed
             from data.cache import cache
