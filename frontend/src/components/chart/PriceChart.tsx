@@ -24,8 +24,6 @@ import {
   computeStochastic,
   computeVWAP,
 } from "./indicators.ts";
-import { useThemeStore } from "../../store/themeStore.ts";
-
 type ChartType = "candlestick" | "line" | "area";
 
 const PERIODS = ["1w", "2w", "1m", "3m", "6m", "1y", "2y", "3y"] as const;
@@ -70,7 +68,7 @@ export default function PriceChart({ symbol, signal }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRefs = useRef<Map<string, ISeriesApi<SeriesType>>>(new Map());
-  const theme = useThemeStore((s) => s.theme);
+  const theme = "dark" as const;
 
   const [chartType, setChartType] = useState<ChartType>("candlestick");
   const [period, setPeriod] = useState("3m");

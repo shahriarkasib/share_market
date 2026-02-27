@@ -1,9 +1,8 @@
 import { NavLink } from "react-router-dom";
 import { useState, useEffect } from "react";
-import { Activity, BarChart3, Search, Eye, Briefcase, Grid3X3, PieChart, Table2, Sun, Moon, Menu, X, LineChart } from "lucide-react";
+import { Activity, BarChart3, Search, Eye, Briefcase, Grid3X3, PieChart, Table2, Menu, X, LineChart } from "lucide-react";
 import { clsx } from "clsx";
 import { useMarketStore } from "../../store/marketStore.ts";
-import { useThemeStore } from "../../store/themeStore.ts";
 import SymbolSearch from "../search/SymbolSearch.tsx";
 
 const links = [
@@ -20,7 +19,6 @@ const links = [
 export default function Header() {
   const marketSummary = useMarketStore((s) => s.marketSummary);
   const lastUpdated = useMarketStore((s) => s.lastUpdated);
-  const { theme, toggleTheme } = useThemeStore();
   const [mobileOpen, setMobileOpen] = useState(false);
 
   const statusText = marketSummary?.market_status ?? "---";
@@ -83,15 +81,6 @@ export default function Header() {
 
         {/* Right side */}
         <div className="ml-auto sm:ml-0 flex items-center gap-2 sm:gap-3">
-          {/* Theme toggle */}
-          <button
-            onClick={toggleTheme}
-            className="p-1.5 rounded-md text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--hover)] transition-colors"
-            title={`Switch to ${theme === "light" ? "dark" : "light"} mode`}
-          >
-            {theme === "light" ? <Moon className="h-4 w-4" /> : <Sun className="h-4 w-4" />}
-          </button>
-
           <span
             className={clsx(
               "hidden sm:flex items-center gap-1.5 text-xs font-medium",

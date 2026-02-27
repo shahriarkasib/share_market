@@ -8,7 +8,6 @@ import {
   type Time,
 } from "lightweight-charts";
 import { BarChart3 } from "lucide-react";
-import { useThemeStore } from "../../store/themeStore.ts";
 import type { DSEXBar } from "../../api/client.ts";
 
 function getChartColors() {
@@ -30,7 +29,7 @@ interface Props {
 export default function DSEXChart({ data }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
-  const theme = useThemeStore((s) => s.theme);
+  const theme = "dark" as const;
 
   // Create chart on mount
   useEffect(() => {
