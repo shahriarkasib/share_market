@@ -117,10 +117,9 @@ export default function PriceChart({ symbol, signal, height: baseHeight = 420 }:
     if (!containerRef.current) return;
 
     const colors = getChartColors();
-    const chartHeight = baseHeight + subPanes.size * 120;
     const chart = createChart(containerRef.current, {
       width: containerRef.current.clientWidth,
-      height: chartHeight,
+      height: baseHeight,
       layout: {
         background: { color: colors.bg },
         textColor: colors.text,
@@ -149,9 +148,8 @@ export default function PriceChart({ symbol, signal, height: baseHeight = 420 }:
     const handleResize = () => {
       if (containerRef.current) {
         const w = containerRef.current.clientWidth;
-        if (w === 0) return; // Skip if not laid out yet
-        const h = baseHeightRef.current + subPanesRef.current.size * 120;
-        chart.resize(w, h);
+        if (w === 0) return;
+        chart.resize(w, baseHeightRef.current);
       }
     };
     const ro = new ResizeObserver(handleResize);
@@ -165,13 +163,12 @@ export default function PriceChart({ symbol, signal, height: baseHeight = 420 }:
     };
   }, []);
 
-  // Resize chart when sub-panes or baseHeight change
+  // Resize chart when baseHeight changes
   useEffect(() => {
     const chart = chartRef.current;
     if (!chart || !containerRef.current) return;
-    const h = baseHeight + subPanes.size * 120;
-    chart.resize(containerRef.current.clientWidth, h);
-  }, [subPanes, baseHeight]);
+    chart.resize(containerRef.current.clientWidth, baseHeight);
+  }, [baseHeight]);
 
   // Update chart colors when theme changes
   useEffect(() => {
