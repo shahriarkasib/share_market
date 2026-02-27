@@ -246,3 +246,54 @@ async def trigger_init():
     """Manually trigger background data initialization."""
     _run_background_init()
     return {"status": "initialization started in background"}
+
+
+@app.post("/api/v1/admin/seed-prices")
+async def seed_prices(payload: dict):
+    """Accept bulk daily_prices data as JSON and insert into DB.
+
+    Expected payload: {"rows": [{"symbol":..., "date":..., "open":..., ...}, ...]}
+    """
+    from data.repository import bulk_insert_daily_prices
+    import pandas as pd
+
+    rows = payload.get("rows", [])
+    if not rows:
+        return {"status": "no data", "inserted": 0}
+
+    df = pd.DataFrame(rows)
+    inserted = bulk_insert_daily_prices(df)
+    logger.info(f"Seeded {inserted} daily_prices rows via admin endpoint")
+    return {"status": "ok", "inserted": inserted}
+
+
+@app.post("/api/v1/admin/seed-sectors")
+async def seed_sectors(payload: dict):
+    """Accept sector mapping data and insert into DB.
+
+    Expected payload: {"sectors": {"Bank": [{"symbol": "...", "company_name": "..."}, ...], ...}}
+    """
+    conn = get_connection()
+    total = 0
+    for sector_name, stocks in payload.get("sectors", {}).items():
+        conn.execute(
+            "INSERT OR REPLACE INTO sectors (name, stock_count, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)",
+            (sector_name, len(stocks)),
+        )
+        for s in stocks:
+            symbol = s if isinstance(s, str) else s.get("symbol", "")
+            company_name = "" if isinstance(s, str) else s.get("company_name", "")
+            conn.execute(
+                """INSERT INTO fundamentals (symbol, company_name, sector, updated_at)
+                   VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                   ON CONFLICT(symbol) DO UPDATE SET
+                     sector = excluded.sector,
+                     company_name = COALESCE(NULLIF(excluded.company_name, ''), fundamentals.company_name),
+                     updated_at = CURRENT_TIMESTAMP""",
+                (symbol, company_name, sector_name),
+            )
+            total += 1
+    conn.commit()
+    conn.close()
+    logger.info(f"Seeded {total} stocks across {len(payload.get('sectors', {}))} sectors")
+    return {"status": "ok", "stocks": total, "sectors": len(payload.get("sectors", {}))}
