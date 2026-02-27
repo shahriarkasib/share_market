@@ -81,8 +81,6 @@ export default function PriceChart({ symbol, signal, height: baseHeight = 420 }:
   const seriesRefs = useRef<Map<string, ISeriesApi<SeriesType>>>(new Map());
   const baseHeightRef = useRef(baseHeight);
   baseHeightRef.current = baseHeight;
-  const signalRef = useRef(signal);
-  signalRef.current = signal;
   const theme = "dark" as const;
 
   const [chartType, setChartType] = useState<ChartType>("candlestick");
@@ -403,44 +401,6 @@ export default function PriceChart({ symbol, signal, height: baseHeight = 420 }:
           addConstantLine(chart, "adx_25", constDates, 25, "#ffffff40", refs, paneIdx);
         }
 
-        // ---- Prediction overlay ----
-        const sig = signalRef.current;
-        if (sig?.predicted_prices) {
-          const pp = sig.predicted_prices;
-          const lastDate = bars[bars.length - 1].date;
-          const predData: { time: Time; value: number }[] = [
-            { time: lastDate as Time, value: closes[closes.length - 1] },
-          ];
-
-          const dayPrices = [
-            { day: 2, price: pp.day_2 },
-            { day: 3, price: pp.day_3 },
-            { day: 4, price: pp.day_4 },
-            { day: 5, price: pp.day_5 },
-            { day: 6, price: pp.day_6 },
-            { day: 7, price: pp.day_7 },
-          ];
-
-          for (const dp of dayPrices) {
-            if (dp.price == null) continue;
-            const futureDate = addBusinessDays(lastDate, dp.day);
-            predData.push({ time: futureDate as Time, value: dp.price });
-          }
-
-          if (predData.length > 1) {
-            const predSeries = chart.addSeries(LineSeries, {
-              color: "#facc15",
-              lineWidth: 2,
-              lineStyle: LineStyle.Dashed,
-              crosshairMarkerVisible: false,
-              lastValueVisible: true,
-              priceLineVisible: false,
-            });
-            predSeries.setData(predData);
-            seriesRefs.current.set("prediction", predSeries);
-          }
-        }
-
         // ---- Support / Resistance price lines ----
         const mainSeries = seriesRefs.current.get("main");
         if (mainSeries && sig?.support_level) {
@@ -657,17 +617,3 @@ function addConstantLine(
   refs.set(key, series);
 }
 
-/** Add N business days (skip Fri=5/Sat=6 in Bangladesh). */
-function addBusinessDays(dateStr: string, days: number): string {
-  const d = new Date(dateStr);
-  let added = 0;
-  while (added < days) {
-    d.setDate(d.getDate() + 1);
-    const dow = d.getDay(); // JS: Sun=0, Mon=1, ..., Sat=6
-    // Bangladesh weekends: Friday (5) and Saturday (6)
-    if (dow !== 5 && dow !== 6) {
-      added++;
-    }
-  }
-  return d.toISOString().slice(0, 10);
-}
