@@ -210,6 +210,13 @@ export default function AdvancedChart() {
       }
       setSignals(sigMap);
       setSidebarLoading(false);
+
+      // Auto-select top stock if none selected (so chart + indicators show immediately)
+      if (!symbolParam && pricesResult.status === "fulfilled" && pricesResult.value.length > 0) {
+        const top = pricesResult.value[0].symbol;
+        setSelectedStock(top);
+        setSearchParams({ symbol: top }, { replace: true });
+      }
     });
 
     return () => {
@@ -329,9 +336,22 @@ export default function AdvancedChart() {
             <span className="text-xs font-bold text-[var(--text)] uppercase tracking-wide">
               A Category
             </span>
-            <span className="text-[10px] text-[var(--text-muted)]">
-              {filteredStocks.length} stocks
-            </span>
+            <div className="flex items-center gap-1.5">
+              <button
+                onClick={handleBackToDSEX}
+                className={clsx(
+                  "px-1.5 py-0.5 rounded text-[9px] font-bold transition-colors",
+                  !selectedStock
+                    ? "bg-blue-600 text-white"
+                    : "bg-[var(--surface-active)] text-[var(--text-muted)] hover:text-[var(--text)]",
+                )}
+              >
+                DSEX
+              </button>
+              <span className="text-[10px] text-[var(--text-muted)]">
+                {filteredStocks.length}
+              </span>
+            </div>
           </div>
 
           {/* Search */}
