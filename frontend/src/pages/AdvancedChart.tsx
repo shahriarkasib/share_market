@@ -2,73 +2,62 @@ import { useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import SymbolSearch from "../components/search/SymbolSearch.tsx";
 
-declare global {
-  interface Window {
-    TradingView?: {
-      widget: new (config: Record<string, unknown>) => unknown;
-    };
-  }
-}
-
-const DEFAULT_SYMBOL = "DSE:ROBI";
+const DEFAULT_SYMBOL = "ROBI";
 
 export default function AdvancedChart() {
   const containerRef = useRef<HTMLDivElement>(null);
   const [searchParams, setSearchParams] = useSearchParams();
   const symbolParam = searchParams.get("symbol");
   const [currentSymbol, setCurrentSymbol] = useState(
-    symbolParam ? `DSE:${symbolParam}` : DEFAULT_SYMBOL,
+    symbolParam || DEFAULT_SYMBOL,
   );
 
   const handleSymbolSelect = (symbol: string) => {
-    setCurrentSymbol(`DSE:${symbol}`);
+    setCurrentSymbol(symbol);
     setSearchParams({ symbol });
   };
 
   useEffect(() => {
-    if (!containerRef.current) return;
+    const container = containerRef.current;
+    if (!container) return;
 
     // Clear previous widget
-    containerRef.current.innerHTML = "";
+    container.innerHTML = "";
+
+    // Build the TradingView Advanced Chart widget embed
+    const widgetDiv = document.createElement("div");
+    widgetDiv.className = "tradingview-widget-container__widget";
+    widgetDiv.style.height = "100%";
+    widgetDiv.style.width = "100%";
+    container.appendChild(widgetDiv);
 
     const script = document.createElement("script");
-    script.src = "https://s3.tradingview.com/tv.js";
+    script.src =
+      "https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js";
     script.async = true;
-    script.onload = () => {
-      if (window.TradingView && containerRef.current) {
-        new window.TradingView.widget({
-          container_id: containerRef.current.id,
-          symbol: currentSymbol,
-          interval: "D",
-          timezone: "Asia/Dhaka",
-          theme: "dark",
-          style: "1", // Candlestick
-          locale: "en",
-          toolbar_bg: "#0f172a",
-          enable_publishing: false,
-          allow_symbol_change: true,
-          hide_side_toolbar: false,
-          studies: ["RSI@tv-basicstudies", "MACD@tv-basicstudies"],
-          width: "100%",
-          height: "100%",
-          save_image: true,
-          details: true,
-          hotlist: true,
-          calendar: false,
-          show_popup_button: true,
-          popup_width: "1000",
-          popup_height: "650",
-        });
-      }
-    };
-    document.head.appendChild(script);
+    script.type = "text/javascript";
+    script.textContent = JSON.stringify({
+      autosize: true,
+      symbol: `DSEBD:${currentSymbol}`,
+      interval: "D",
+      timezone: "Asia/Dhaka",
+      theme: "dark",
+      style: "1",
+      locale: "en",
+      backgroundColor: "rgba(15, 23, 42, 1)",
+      gridColor: "rgba(42, 46, 57, 0.3)",
+      allow_symbol_change: true,
+      hide_top_toolbar: false,
+      hide_legend: false,
+      save_image: true,
+      calendar: false,
+      studies: ["RSI@tv-basicstudies", "MACD@tv-basicstudies"],
+      support_host: "https://www.tradingview.com",
+    });
+    container.appendChild(script);
 
     return () => {
-      try {
-        document.head.removeChild(script);
-      } catch {
-        /* already removed */
-      }
+      container.innerHTML = "";
     };
   }, [currentSymbol]);
 
@@ -94,11 +83,10 @@ export default function AdvancedChart() {
 
       {/* TradingView chart container */}
       <div
-        className="bg-[var(--surface)] border border-[var(--border)] rounded-lg overflow-hidden"
+        ref={containerRef}
+        className="tradingview-widget-container bg-[var(--surface)] border border-[var(--border)] rounded-lg overflow-hidden"
         style={{ height: "calc(100vh - 140px)", minHeight: "500px" }}
-      >
-        <div id="tradingview-chart" ref={containerRef} className="w-full h-full" />
-      </div>
+      />
     </div>
   );
 }
