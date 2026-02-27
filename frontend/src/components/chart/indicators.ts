@@ -202,3 +202,195 @@ export function computeVWAP(
 
   return result;
 }
+
+/** Stochastic RSI: Apply Stochastic formula to RSI values instead of price.
+ *  Returns %K and %D in 0-100 range. More sensitive than regular Stochastic. */
+export function computeStochRSI(
+  closes: number[],
+  rsiPeriod = 14,
+  stochPeriod = 14,
+  kSmooth = 3,
+  dSmooth = 3,
+): { k: (number | null)[]; d: (number | null)[] } {
+  const len = closes.length;
+  const rsiValues = computeRSI(closes, rsiPeriod);
+
+  // Apply Stochastic formula to RSI values
+  const rawK: (number | null)[] = new Array(len).fill(null);
+  for (let i = 0; i < len; i++) {
+    if (rsiValues[i] == null) continue;
+    // Look back stochPeriod bars of RSI
+    let lowestRSI = Infinity;
+    let highestRSI = -Infinity;
+    let valid = true;
+    for (let j = i - stochPeriod + 1; j <= i; j++) {
+      if (j < 0 || rsiValues[j] == null) { valid = false; break; }
+      if (rsiValues[j]! < lowestRSI) lowestRSI = rsiValues[j]!;
+      if (rsiValues[j]! > highestRSI) highestRSI = rsiValues[j]!;
+    }
+    if (!valid) continue;
+    const range = highestRSI - lowestRSI;
+    rawK[i] = range === 0 ? 50 : ((rsiValues[i]! - lowestRSI) / range) * 100;
+  }
+
+  // Smooth %K with SMA
+  const kLine: (number | null)[] = new Array(len).fill(null);
+  for (let i = 0; i < len; i++) {
+    if (rawK[i] == null) continue;
+    let sum = 0;
+    let count = 0;
+    for (let j = i - kSmooth + 1; j <= i; j++) {
+      if (j >= 0 && rawK[j] != null) { sum += rawK[j]!; count++; }
+    }
+    if (count === kSmooth) kLine[i] = sum / kSmooth;
+  }
+
+  // %D = SMA of smoothed %K
+  const dLine: (number | null)[] = new Array(len).fill(null);
+  for (let i = 0; i < len; i++) {
+    if (kLine[i] == null) continue;
+    let sum = 0;
+    let count = 0;
+    for (let j = i - dSmooth + 1; j <= i; j++) {
+      if (j >= 0 && kLine[j] != null) { sum += kLine[j]!; count++; }
+    }
+    if (count === dSmooth) dLine[i] = sum / dSmooth;
+  }
+
+  return { k: kLine, d: dLine };
+}
+
+/** Average True Range — measures volatility. */
+export function computeATR(
+  highs: number[],
+  lows: number[],
+  closes: number[],
+  period = 14,
+): (number | null)[] {
+  const len = closes.length;
+  const result: (number | null)[] = new Array(len).fill(null);
+  if (len < 2) return result;
+
+  // True Range for each bar (from index 1 onward)
+  const tr: number[] = [highs[0] - lows[0]];
+  for (let i = 1; i < len; i++) {
+    tr.push(Math.max(
+      highs[i] - lows[i],
+      Math.abs(highs[i] - closes[i - 1]),
+      Math.abs(lows[i] - closes[i - 1]),
+    ));
+  }
+
+  // Initial ATR = SMA of first `period` TRs
+  if (len < period) return result;
+  let sum = 0;
+  for (let i = 0; i < period; i++) sum += tr[i];
+  let atr = sum / period;
+  result[period - 1] = atr;
+
+  // Smoothed ATR (Wilder's method)
+  for (let i = period; i < len; i++) {
+    atr = (atr * (period - 1) + tr[i]) / period;
+    result[i] = atr;
+  }
+
+  return result;
+}
+
+/** On-Balance Volume — cumulative volume indicator for accumulation/distribution. */
+export function computeOBV(
+  closes: number[],
+  volumes: number[],
+): (number | null)[] {
+  const len = closes.length;
+  if (len === 0) return [];
+  const result: (number | null)[] = new Array(len).fill(null);
+  result[0] = 0;
+  let obv = 0;
+
+  for (let i = 1; i < len; i++) {
+    if (closes[i] > closes[i - 1]) obv += volumes[i];
+    else if (closes[i] < closes[i - 1]) obv -= volumes[i];
+    // unchanged: obv stays the same
+    result[i] = obv;
+  }
+
+  return result;
+}
+
+/** ADX (Average Directional Index) with +DI and -DI.
+ *  Measures trend strength (not direction). ADX > 25 = trending. */
+export function computeADX(
+  highs: number[],
+  lows: number[],
+  closes: number[],
+  period = 14,
+): { adx: (number | null)[]; plusDI: (number | null)[]; minusDI: (number | null)[] } {
+  const len = closes.length;
+  const adx: (number | null)[] = new Array(len).fill(null);
+  const plusDI: (number | null)[] = new Array(len).fill(null);
+  const minusDI: (number | null)[] = new Array(len).fill(null);
+  if (len < period + 1) return { adx, plusDI, minusDI };
+
+  // Directional Movement
+  const plusDM: number[] = [0];
+  const minusDM: number[] = [0];
+  const tr: number[] = [highs[0] - lows[0]];
+
+  for (let i = 1; i < len; i++) {
+    const upMove = highs[i] - highs[i - 1];
+    const downMove = lows[i - 1] - lows[i];
+    plusDM.push(upMove > downMove && upMove > 0 ? upMove : 0);
+    minusDM.push(downMove > upMove && downMove > 0 ? downMove : 0);
+    tr.push(Math.max(
+      highs[i] - lows[i],
+      Math.abs(highs[i] - closes[i - 1]),
+      Math.abs(lows[i] - closes[i - 1]),
+    ));
+  }
+
+  // Smoothed sums (Wilder's smoothing) for first period
+  let smoothTR = 0, smoothPlusDM = 0, smoothMinusDM = 0;
+  for (let i = 1; i <= period; i++) {
+    smoothTR += tr[i];
+    smoothPlusDM += plusDM[i];
+    smoothMinusDM += minusDM[i];
+  }
+
+  // First DI values
+  plusDI[period] = smoothTR === 0 ? 0 : (smoothPlusDM / smoothTR) * 100;
+  minusDI[period] = smoothTR === 0 ? 0 : (smoothMinusDM / smoothTR) * 100;
+
+  // DX for first period
+  const diSum0 = plusDI[period]! + minusDI[period]!;
+  const dx: number[] = [];
+  dx.push(diSum0 === 0 ? 0 : (Math.abs(plusDI[period]! - minusDI[period]!) / diSum0) * 100);
+
+  // Continue smoothing
+  for (let i = period + 1; i < len; i++) {
+    smoothTR = smoothTR - smoothTR / period + tr[i];
+    smoothPlusDM = smoothPlusDM - smoothPlusDM / period + plusDM[i];
+    smoothMinusDM = smoothMinusDM - smoothMinusDM / period + minusDM[i];
+
+    plusDI[i] = smoothTR === 0 ? 0 : (smoothPlusDM / smoothTR) * 100;
+    minusDI[i] = smoothTR === 0 ? 0 : (smoothMinusDM / smoothTR) * 100;
+
+    const diSum = plusDI[i]! + minusDI[i]!;
+    dx.push(diSum === 0 ? 0 : (Math.abs(plusDI[i]! - minusDI[i]!) / diSum) * 100);
+  }
+
+  // ADX = smoothed average of DX values (first ADX at index 2*period-1)
+  if (dx.length >= period) {
+    let adxSum = 0;
+    for (let i = 0; i < period; i++) adxSum += dx[i];
+    let adxVal = adxSum / period;
+    adx[2 * period - 1] = adxVal;
+
+    for (let i = period; i < dx.length; i++) {
+      adxVal = (adxVal * (period - 1) + dx[i]) / period;
+      adx[period + i] = adxVal;
+    }
+  }
+
+  return { adx, plusDI, minusDI };
+}

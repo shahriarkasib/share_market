@@ -23,6 +23,10 @@ import {
   computeMACD,
   computeStochastic,
   computeVWAP,
+  computeStochRSI,
+  computeATR,
+  computeOBV,
+  computeADX,
 } from "./indicators.ts";
 type ChartType = "candlestick" | "line" | "area";
 
@@ -36,6 +40,7 @@ const OVERLAY_DEFS = [
   { key: "ema9", label: "EMA 9", color: "#3b82f6" },
   { key: "ema21", label: "EMA 21", color: "#f97316" },
   { key: "sma50", label: "SMA 50", color: "#a855f7" },
+  { key: "sma200", label: "SMA 200", color: "#dc2626" },
   { key: "bb", label: "BB", color: "#64748b" },
   { key: "vwap", label: "VWAP", color: "#eab308" },
 ] as const;
@@ -44,6 +49,10 @@ const SUB_PANE_DEFS = [
   { key: "rsi", label: "RSI" },
   { key: "macd", label: "MACD" },
   { key: "stoch", label: "Stoch" },
+  { key: "stochrsi", label: "StochRSI" },
+  { key: "atr", label: "ATR" },
+  { key: "obv", label: "OBV" },
+  { key: "adx", label: "ADX" },
 ] as const;
 
 /** Read current CSS variable values for chart theming. */
@@ -288,6 +297,9 @@ export default function PriceChart({ symbol, signal, height: baseHeight = 420 }:
         if (overlays.has("sma50")) {
           addLineSeries(chart, "sma50", dates, computeSMA(closes, 50), "#a855f7", refs);
         }
+        if (overlays.has("sma200")) {
+          addLineSeries(chart, "sma200", dates, computeSMA(closes, 200), "#dc2626", refs, 1, LineStyle.Solid);
+        }
         if (overlays.has("bb")) {
           const bb = computeBollingerBands(closes);
           addLineSeries(chart, "bb_upper", dates, bb.upper, "#64748b", refs, 1, LineStyle.Dashed);
@@ -351,6 +363,43 @@ export default function PriceChart({ symbol, signal, height: baseHeight = 420 }:
           const constDates = dates.filter((_, i) => stochData.k[i] != null);
           addConstantLine(chart, "stoch_80", constDates, 80, "#ef4444", refs, paneIdx);
           addConstantLine(chart, "stoch_20", constDates, 20, "#22c55e", refs, paneIdx);
+        }
+
+        if (subPanes.has("stochrsi")) {
+          const paneIdx = nextPane++;
+          const stochRsiData = computeStochRSI(closes);
+          addLineSeriesToPane(chart, "stochrsi_k", dates, stochRsiData.k, "#3b82f6", refs, paneIdx, 2);
+          addLineSeriesToPane(chart, "stochrsi_d", dates, stochRsiData.d, "#ef4444", refs, paneIdx, 1);
+          const constDates = dates.filter((_, i) => stochRsiData.k[i] != null);
+          addConstantLine(chart, "stochrsi_80", constDates, 80, "#ef4444", refs, paneIdx);
+          addConstantLine(chart, "stochrsi_20", constDates, 20, "#22c55e", refs, paneIdx);
+        }
+
+        if (subPanes.has("atr")) {
+          const paneIdx = nextPane++;
+          const highs = bars.map((b) => b.high);
+          const lows = bars.map((b) => b.low);
+          const atrData = computeATR(highs, lows, closes);
+          addLineSeriesToPane(chart, "atr_line", dates, atrData, "#f97316", refs, paneIdx, 2);
+        }
+
+        if (subPanes.has("obv")) {
+          const paneIdx = nextPane++;
+          const vols = bars.map((b) => b.volume);
+          const obvData = computeOBV(closes, vols);
+          addLineSeriesToPane(chart, "obv_line", dates, obvData, "#06b6d4", refs, paneIdx, 2);
+        }
+
+        if (subPanes.has("adx")) {
+          const paneIdx = nextPane++;
+          const highs = bars.map((b) => b.high);
+          const lows = bars.map((b) => b.low);
+          const adxData = computeADX(highs, lows, closes);
+          addLineSeriesToPane(chart, "adx_line", dates, adxData.adx, "#eab308", refs, paneIdx, 2);
+          addLineSeriesToPane(chart, "adx_plusdi", dates, adxData.plusDI, "#22c55e", refs, paneIdx, 1);
+          addLineSeriesToPane(chart, "adx_minusdi", dates, adxData.minusDI, "#ef4444", refs, paneIdx, 1);
+          const constDates = dates.filter((_, i) => adxData.adx[i] != null);
+          addConstantLine(chart, "adx_25", constDates, 25, "#ffffff40", refs, paneIdx);
         }
 
         // ---- Prediction overlay ----
