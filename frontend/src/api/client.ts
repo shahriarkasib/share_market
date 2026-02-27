@@ -17,9 +17,14 @@ import type {
 
 const api = axios.create({
   baseURL: "/api/v1",
-  timeout: 30_000,
+  timeout: 60_000,
   headers: { "Content-Type": "application/json" },
 });
+
+// Keep Render backend warm — ping every 10 minutes to prevent cold starts
+setInterval(() => {
+  fetch("/api/v1/market/summary", { method: "HEAD" }).catch(() => {});
+}, 10 * 60 * 1000);
 
 api.interceptors.response.use(
   (response) => response,

@@ -55,40 +55,34 @@ export const useMarketStore = create<MarketState>((set) => ({
 
   fetchDashboard: async () => {
     set({ isLoading: true, error: null });
-    try {
-      const [
-        marketSummary,
-        topBuySignals,
-        topSellSignals,
-        allPrices,
-        signalsSummary,
-        suggestions,
-        dsexHistory,
-      ] = await Promise.all([
-        fetchMarketSummary(),
-        fetchTopBuySignals(10),
-        fetchTopSellSignals(10),
-        fetchAllPrices(),
-        fetchSignalsSummary(),
-        fetchSuggestions(),
-        fetchDSEXHistory(),
-      ]);
 
-      set({
-        marketSummary,
-        topBuySignals,
-        topSellSignals,
-        allPrices,
-        signalsSummary,
-        suggestions,
-        dsexHistory,
-        isLoading: false,
-        lastUpdated: new Date(),
-      });
-    } catch (err) {
-      const message =
-        err instanceof Error ? err.message : "Failed to fetch dashboard data";
-      set({ error: message, isLoading: false });
-    }
+    // Use allSettled so partial data still shows — no all-or-nothing
+    const results = await Promise.allSettled([
+      fetchMarketSummary(),
+      fetchTopBuySignals(10),
+      fetchTopSellSignals(10),
+      fetchAllPrices(),
+      fetchSignalsSummary(),
+      fetchSuggestions(),
+      fetchDSEXHistory(),
+    ]);
+
+    const val = <T,>(r: PromiseSettledResult<T>, fallback: T): T =>
+      r.status === "fulfilled" ? r.value : fallback;
+
+    const failed = results.filter((r) => r.status === "rejected").length;
+
+    set((state) => ({
+      marketSummary: val(results[0], state.marketSummary),
+      topBuySignals: val(results[1], state.topBuySignals),
+      topSellSignals: val(results[2], state.topSellSignals),
+      allPrices: val(results[3], state.allPrices),
+      signalsSummary: val(results[4], state.signalsSummary),
+      suggestions: val(results[5], state.suggestions),
+      dsexHistory: val(results[6], state.dsexHistory),
+      isLoading: false,
+      lastUpdated: new Date(),
+      error: failed > 0 ? `${failed} data source(s) unavailable` : null,
+    }));
   },
 }));

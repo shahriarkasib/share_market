@@ -101,6 +101,16 @@ def _run_background_init():
 
     def _init():
         try:
+            # 0. Fetch live prices (don't block startup)
+            import asyncio
+            logger.info("Background: fetching live prices...")
+            try:
+                loop = asyncio.new_event_loop()
+                loop.run_until_complete(fetch_live_prices())
+                loop.close()
+            except Exception as e:
+                logger.warning(f"Background live price fetch failed: {e}")
+
             from data.repository import get_daily_prices_count
             count = get_daily_prices_count()
 
@@ -168,12 +178,8 @@ async def lifespan(app: FastAPI):
     scheduler.start()
     logger.info("Background scheduler started")
 
-    # Fetch initial live data (fast — just scrapes current prices)
-    logger.info("Fetching initial market data...")
-    await fetch_live_prices()
-
-    # Run heavy tasks (historical load, sectors, signals) in background
-    # so the server starts responding immediately
+    # Run ALL data fetching in background so server starts instantly
+    # (live prices, historical load, sectors, signals)
     _run_background_init()
 
     yield
