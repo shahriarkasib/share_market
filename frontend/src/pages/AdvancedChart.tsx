@@ -210,19 +210,21 @@ export default function AdvancedChart() {
       }
       setSignals(sigMap);
       setSidebarLoading(false);
-
-      // Auto-select top stock if none selected (so chart + indicators show immediately)
-      if (!symbolParam && pricesResult.status === "fulfilled" && pricesResult.value.length > 0) {
-        const top = pricesResult.value[0].symbol;
-        setSelectedStock(top);
-        setSearchParams({ symbol: top }, { replace: true });
-      }
     });
 
     return () => {
       cancelled = true;
     };
   }, []);
+
+  // Auto-select top stock when sidebar loads (so candlestick + indicators show immediately)
+  useEffect(() => {
+    if (!selectedStock && aCatStocks.length > 0) {
+      const top = aCatStocks[0].symbol;
+      setSelectedStock(top);
+      setSearchParams({ symbol: top }, { replace: true });
+    }
+  }, [aCatStocks, selectedStock, setSearchParams]);
 
   // Load DSEX chart data
   useEffect(() => {
