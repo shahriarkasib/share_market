@@ -90,6 +90,7 @@ def init_database():
             symbol TEXT PRIMARY KEY,
             company_name TEXT,
             sector TEXT,
+            category TEXT,
             pe_ratio REAL,
             eps REAL,
             book_value REAL,
@@ -192,6 +193,14 @@ def init_database():
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
     """)
+
+    conn.commit()
+
+    # Migrations for existing databases
+    try:
+        conn.execute("ALTER TABLE fundamentals ADD COLUMN category TEXT")
+    except Exception:
+        pass  # Column already exists
 
     conn.commit()
     conn.close()

@@ -64,8 +64,22 @@ export async function fetchTopSellSignals(
   return data;
 }
 
-export async function fetchAllPrices(): Promise<StockPrice[]> {
-  const { data } = await api.get<StockPrice[]>("/market/all-prices");
+export async function fetchAllPrices(category?: string): Promise<StockPrice[]> {
+  const { data } = await api.get<StockPrice[]>("/market/all-prices", {
+    params: category ? { category } : undefined,
+  });
+  return data;
+}
+
+export interface DSEXChartBar {
+  date: string;
+  value: number;
+  volume: number;
+  turnover: number;
+}
+
+export async function fetchDSEXChart(): Promise<DSEXChartBar[]> {
+  const { data } = await api.get<DSEXChartBar[]>("/market/dsex-chart");
   return data;
 }
 

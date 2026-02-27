@@ -111,29 +111,64 @@ async def get_top_movers(type: str = "gainers", limit: int = 20):
 
 
 @router.get("/all-prices")
-async def get_all_prices():
-    """Get live prices for all stocks."""
-    cached = cache.get("all_prices")
+async def get_all_prices(category: str = None):
+    """Get live prices for all stocks. Optional ?category=A filter."""
+    cache_key = f"all_prices_{category}" if category else "all_prices"
+    cached = cache.get(cache_key)
     if cached:
         return cached
 
-    # Try reading from DB first (fast)
     conn = get_connection()
-    rows = conn.execute("SELECT * FROM live_prices").fetchall()
+    if category:
+        rows = conn.execute("""
+            SELECT lp.*, f.category FROM live_prices lp
+            LEFT JOIN fundamentals f ON lp.symbol = f.symbol
+            WHERE f.category = ?
+            ORDER BY lp.value DESC
+        """, (category.upper(),)).fetchall()
+    else:
+        rows = conn.execute("SELECT * FROM live_prices").fetchall()
     conn.close()
 
     if rows:
         result = _clean_nan([dict(r) for r in rows])
-        cache.set("all_prices", result, CACHE_TTL_LIVE_PRICES)
+        cache.set(cache_key, result, CACHE_TTL_LIVE_PRICES)
         return result
 
-    # Fallback to live fetch
-    df = fetcher.get_live_prices()
-    if df.empty:
-        return []
+    if not category:
+        df = fetcher.get_live_prices()
+        if not df.empty:
+            result = _clean_nan(df.to_dict("records"))
+            cache.set(cache_key, result, CACHE_TTL_LIVE_PRICES)
+            return result
 
-    result = _clean_nan(df.to_dict("records"))
-    cache.set("all_prices", result, CACHE_TTL_LIVE_PRICES)
+    return []
+
+
+@router.get("/dsex-chart")
+async def get_dsex_chart():
+    """Get DSEX index history formatted for charting."""
+    cached = cache.get("dsex_chart")
+    if cached:
+        return cached
+
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT date, dsex_index, total_volume, total_value FROM dsex_history ORDER BY date"
+    ).fetchall()
+    conn.close()
+
+    result = [
+        {
+            "date": r["date"],
+            "value": r["dsex_index"],
+            "volume": r["total_volume"] or 0,
+            "turnover": r["total_value"] or 0,
+        }
+        for r in rows if r["dsex_index"] and r["dsex_index"] > 0
+    ]
+
+    cache.set("dsex_chart", result, 3600)
     return result
 
 

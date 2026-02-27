@@ -14,6 +14,7 @@ from data.repository import (
     backfill_signal_accuracy,
     get_signal_history_for_symbol,
     get_signal_accuracy_report,
+    get_a_category_symbols,
 )
 from analysis.signals import SignalGenerator
 from config import CACHE_TTL_SIGNALS, MIN_DAILY_VALUE
@@ -325,9 +326,19 @@ def _compute_all_signals_background():
             df_live["value"] = pd.to_numeric(df_live["value"], errors="coerce")
             df_live = df_live[df_live["value"] >= MIN_DAILY_VALUE]
 
-        # 3. Top 100 by trading value
+        # 3. Top stocks by trading value — prefer A category
         df_live = df_live.sort_values("value", ascending=False)
-        top_symbols = df_live["symbol"].head(100).tolist()
+        all_top = df_live["symbol"].head(200).tolist()
+
+        # Filter to A category stocks only (from DSE market categories)
+        a_cat_symbols = set(get_a_category_symbols())
+        if a_cat_symbols:
+            top_symbols = [s for s in all_top if s in a_cat_symbols][:100]
+            logger.info(f"Filtered to {len(top_symbols)} A-category stocks (from {len(a_cat_symbols)} total A-cat)")
+        else:
+            # Fallback: if categories not yet scraped, use top 100 by value
+            top_symbols = all_top[:100]
+            logger.warning("No A-category data yet, using top 100 by value")
 
         logger.info(f"Computing signals for {len(top_symbols)} stocks...")
 

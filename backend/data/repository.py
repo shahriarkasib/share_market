@@ -276,6 +276,46 @@ def load_signals_from_db() -> list[dict]:
     return signals
 
 
+# ======================== categories ========================
+
+
+def get_a_category_symbols() -> list[str]:
+    """Get list of A category stock symbols."""
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT symbol FROM fundamentals WHERE category = 'A'"
+    ).fetchall()
+    conn.close()
+    return [r["symbol"] for r in rows]
+
+
+def get_category_count() -> int:
+    """Count how many symbols have a category set."""
+    conn = get_connection()
+    count = conn.execute(
+        "SELECT COUNT(*) FROM fundamentals WHERE category IS NOT NULL"
+    ).fetchone()[0]
+    conn.close()
+    return count
+
+
+def save_stock_categories(categories: dict[str, str]):
+    """Save stock categories to fundamentals table."""
+    conn = get_connection()
+    for symbol, category in categories.items():
+        conn.execute(
+            """INSERT INTO fundamentals (symbol, category, updated_at)
+               VALUES (?, ?, CURRENT_TIMESTAMP)
+               ON CONFLICT(symbol) DO UPDATE SET
+                 category = excluded.category,
+                 updated_at = CURRENT_TIMESTAMP""",
+            (symbol, category),
+        )
+    conn.commit()
+    conn.close()
+    logger.info(f"Saved categories for {len(categories)} symbols")
+
+
 # ======================== signal_history ========================
 
 

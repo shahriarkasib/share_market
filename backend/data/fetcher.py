@@ -375,3 +375,36 @@ class DSEDataFetcher:
             except Exception:
                 pass
         return []
+
+    @staticmethod
+    def scrape_stock_category(symbol: str) -> str | None:
+        """Scrape market category (A/B/N/Z) for a stock from DSE website."""
+        try:
+            url = f"https://www.dsebd.org/displayCompany.php?name={symbol}"
+            resp = requests.get(url, headers=HEADERS, timeout=15)
+            resp.raise_for_status()
+            soup = BeautifulSoup(resp.text, "lxml")
+            for td in soup.find_all("td"):
+                if "Market Category" in td.get_text():
+                    next_td = td.find_next_sibling("td")
+                    if next_td:
+                        cat = next_td.get_text(strip=True)
+                        if cat in ("A", "B", "N", "Z"):
+                            return cat
+        except Exception as e:
+            logger.debug(f"Category scrape failed for {symbol}: {e}")
+        return None
+
+    @staticmethod
+    def scrape_all_categories(symbols: list[str]) -> dict[str, str]:
+        """Scrape categories for a list of symbols. Rate-limited to ~3 req/sec."""
+        results = {}
+        for i, sym in enumerate(symbols):
+            cat = DSEDataFetcher.scrape_stock_category(sym)
+            if cat:
+                results[sym] = cat
+            if (i + 1) % 3 == 0:
+                time_module.sleep(1)  # Rate limit
+            if (i + 1) % 50 == 0:
+                logger.info(f"  Category scrape progress: {i + 1}/{len(symbols)}, found {len(results)}")
+        return results

@@ -218,6 +218,26 @@ def _run_background_init():
                 logger.info("Background: seeding DSEX history from bdshare...")
                 _seed_dsex_history()
 
+            # 2c. Scrape DSE categories if mostly missing
+            from data.repository import get_category_count, save_stock_categories
+            cat_count = get_category_count()
+            if cat_count < 50:
+                logger.info(f"Background: scraping DSE categories ({cat_count} existing)...")
+                try:
+                    conn_sym = get_connection()
+                    all_syms = [r["symbol"] for r in conn_sym.execute(
+                        "SELECT symbol FROM live_prices"
+                    ).fetchall()]
+                    conn_sym.close()
+                    if all_syms:
+                        from data.fetcher import DSEDataFetcher
+                        cats = DSEDataFetcher.scrape_all_categories(all_syms)
+                        if cats:
+                            save_stock_categories(cats)
+                            logger.info(f"Scraped {len(cats)} categories from DSE")
+                except Exception as e:
+                    logger.error(f"Category scraping failed: {e}")
+
             # 3. Compute signals if needed
             from data.cache import cache
             all_signals = cache.get("all_signals")
