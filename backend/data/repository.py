@@ -21,37 +21,54 @@ def get_daily_prices_count() -> int:
 
 
 def bulk_insert_daily_prices(df: pd.DataFrame) -> int:
-    """Insert historical OHLCV DataFrame into daily_prices (INSERT OR IGNORE)."""
+    """Insert historical OHLCV DataFrame into daily_prices using batch insert."""
     if df.empty:
         return 0
 
-    conn = get_connection()
-    inserted = 0
+    import psycopg2.extras
+    from config import DATABASE_URL_DIRECT
+
+    # Prepare tuples
+    rows = []
     for _, row in df.iterrows():
-        try:
-            conn.execute(
-                """INSERT INTO daily_prices
-                   (symbol, date, open, high, low, close, volume, value, trade_count)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                   ON CONFLICT (symbol, date) DO NOTHING""",
-                (
-                    row.get("symbol", ""),
-                    str(row.get("date", ""))[:10],
-                    _safe_float(row.get("open")),
-                    _safe_float(row.get("high")),
-                    _safe_float(row.get("low")),
-                    _safe_float(row.get("close")),
-                    int(row.get("volume", 0) or 0),
-                    _safe_float(row.get("value")),
-                    int(row.get("trade_count", 0) or 0),
-                ),
-            )
-            inserted += 1
-        except Exception as e:
-            logger.error(f"Insert error for {row.get('symbol')}: {e}")
-    conn.commit()
-    conn.close()
-    return inserted
+        date_str = str(row.get("date", ""))[:10]
+        if not date_str or date_str == "NaT":
+            continue
+        rows.append((
+            row.get("symbol", ""),
+            date_str,
+            _safe_float(row.get("open")),
+            _safe_float(row.get("high")),
+            _safe_float(row.get("low")),
+            _safe_float(row.get("close")),
+            int(row.get("volume", 0) or 0),
+            _safe_float(row.get("value")),
+            int(row.get("trade_count", 0) or 0),
+        ))
+
+    if not rows:
+        return 0
+
+    # Use direct connection + execute_values for fast batch insert
+    import psycopg2
+    conn = psycopg2.connect(DATABASE_URL_DIRECT)
+    try:
+        cur = conn.cursor()
+        sql = """INSERT INTO daily_prices
+                 (symbol, date, open, high, low, close, volume, value, trade_count)
+                 VALUES %s ON CONFLICT (symbol, date) DO NOTHING"""
+        chunk_size = 5000
+        for i in range(0, len(rows), chunk_size):
+            psycopg2.extras.execute_values(cur, sql, rows[i:i + chunk_size], page_size=1000)
+            conn.commit()
+        cur.close()
+    except Exception as e:
+        logger.error(f"Batch insert error: {e}")
+        conn.rollback()
+    finally:
+        conn.close()
+
+    return len(rows)
 
 
 def upsert_today_prices(df: pd.DataFrame, today_str: str):
