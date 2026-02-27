@@ -69,7 +69,7 @@ export default function Dashboard() {
 
       {/* Entry & Exit suggestion panels */}
       {suggestions && (suggestions.entry.length > 0 || suggestions.exit.length > 0) && (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {suggestions.entry.length > 0 && (
             <EntryPicksPanel picks={suggestions.entry} />
           )}
@@ -80,9 +80,9 @@ export default function Dashboard() {
       )}
 
       {/* Main grid: signals (2/3) + movers (1/3) */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         {/* Left: Buy and Sell signal tables */}
-        <div className="lg:col-span-2 space-y-4">
+        <div className="md:col-span-2 lg:col-span-2 space-y-4">
           <SignalsTable
             signals={topBuySignals}
             type="buy"

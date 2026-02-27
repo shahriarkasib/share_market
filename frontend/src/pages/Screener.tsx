@@ -142,8 +142,8 @@ export default function Screener() {
       </div>
 
       {/* Horizontal filter bar */}
-      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-lg px-4 py-3">
-        <div className="flex items-end gap-3 flex-wrap">
+      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-lg px-4 py-3 overflow-x-auto">
+        <div className="flex items-end gap-3 flex-wrap min-w-max sm:min-w-0">
           {/* Signal type */}
           <div className="flex flex-col gap-1">
             <label className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider">Signal</label>

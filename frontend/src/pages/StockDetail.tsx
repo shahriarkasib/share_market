@@ -130,7 +130,7 @@ export default function StockDetail() {
 
         {/* Price stats grid */}
         {price && (
-          <div className="grid grid-cols-3 sm:grid-cols-6 gap-3 mt-5">
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-3 mt-5">
             <StatBox label="Open" value={formatBDT(price.open)} />
             <StatBox label="High" value={formatBDT(price.high)} />
             <StatBox label="Low" value={formatBDT(price.low)} />
@@ -282,7 +282,7 @@ function PredictionPanel({ signal, currentPrice }: { signal: StockSignal; curren
 
       {/* Prediction table */}
       {hasData ? (
-        <div className="mb-4">
+        <div className="mb-4 overflow-x-auto">
           <table className="w-full text-xs">
             <thead>
               <tr className="text-[10px] text-[var(--text-dim)] uppercase tracking-wider border-b border-[var(--border)]">

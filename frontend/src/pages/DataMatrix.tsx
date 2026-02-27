@@ -169,7 +169,7 @@ export default function DataMatrix() {
         </div>
 
         {/* Search */}
-        <div className="relative w-56">
+        <div className="relative w-full sm:w-56">
           <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-[var(--text-dim)]" />
           <input
             type="text"

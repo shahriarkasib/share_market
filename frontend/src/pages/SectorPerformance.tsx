@@ -123,7 +123,7 @@ export default function SectorPerformancePage() {
 
           return (
             <div key={s.sector} className="flex items-center gap-3 text-xs">
-              <span className="w-36 shrink-0 truncate text-[var(--text-muted)] text-right">
+              <span className="w-20 sm:w-36 shrink-0 truncate text-[var(--text-muted)] text-right">
                 {s.sector}
               </span>
               <div className="flex-1 h-5 relative">

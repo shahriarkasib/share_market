@@ -1,6 +1,6 @@
 import { NavLink } from "react-router-dom";
-import { useEffect } from "react";
-import { Activity, BarChart3, Search, Eye, Briefcase, Grid3X3, PieChart, Table2, Sun, Moon } from "lucide-react";
+import { useState, useEffect } from "react";
+import { Activity, BarChart3, Search, Eye, Briefcase, Grid3X3, PieChart, Table2, Sun, Moon, Menu, X } from "lucide-react";
 import { clsx } from "clsx";
 import { useMarketStore } from "../../store/marketStore.ts";
 import { useThemeStore } from "../../store/themeStore.ts";
@@ -20,9 +20,15 @@ export default function Header() {
   const marketSummary = useMarketStore((s) => s.marketSummary);
   const lastUpdated = useMarketStore((s) => s.lastUpdated);
   const { theme, toggleTheme } = useThemeStore();
+  const [mobileOpen, setMobileOpen] = useState(false);
 
   const statusText = marketSummary?.market_status ?? "---";
   const isOpen = statusText.toLowerCase().includes("open");
+
+  // Close mobile menu on route change
+  useEffect(() => {
+    setMobileOpen(false);
+  }, []);
 
   // "/" shortcut focuses search
   useEffect(() => {
@@ -38,17 +44,17 @@ export default function Header() {
 
   return (
     <header className="sticky top-0 z-50 bg-[var(--surface)] border-b border-[var(--border)]">
-      <div className="max-w-[1440px] mx-auto px-4 lg:px-8 flex items-center h-12">
+      <div className="max-w-[1440px] mx-auto px-3 sm:px-4 lg:px-8 flex items-center h-12">
         {/* Logo */}
-        <NavLink to="/" className="flex items-center gap-2 mr-8 shrink-0">
+        <NavLink to="/" className="flex items-center gap-2 mr-4 sm:mr-8 shrink-0">
           <Activity className="h-5 w-5 text-blue-500" />
           <span className="text-sm font-bold text-[var(--text)] tracking-tight hidden sm:inline">
             DSE Trading
           </span>
         </NavLink>
 
-        {/* Navigation tabs */}
-        <nav className="flex items-center gap-1">
+        {/* Desktop navigation */}
+        <nav className="hidden md:flex items-center gap-1">
           {links.map(({ to, label, icon: Icon }) => (
             <NavLink
               key={to}
@@ -64,34 +70,30 @@ export default function Header() {
               }
             >
               <Icon className="h-3.5 w-3.5 shrink-0" />
-              <span className="hidden sm:inline">{label}</span>
+              <span>{label}</span>
             </NavLink>
           ))}
         </nav>
 
-        {/* Global search */}
+        {/* Global search (desktop) */}
         <div className="ml-auto mr-3 hidden sm:block w-56 lg:w-72" data-global-search>
           <SymbolSearch placeholder="Search stock... ( / )" compact />
         </div>
 
-        {/* Right side: theme toggle + market status + last updated */}
-        <div className="flex items-center gap-3">
+        {/* Right side */}
+        <div className="ml-auto sm:ml-0 flex items-center gap-2 sm:gap-3">
           {/* Theme toggle */}
           <button
             onClick={toggleTheme}
             className="p-1.5 rounded-md text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--hover)] transition-colors"
             title={`Switch to ${theme === "light" ? "dark" : "light"} mode`}
           >
-            {theme === "light" ? (
-              <Moon className="h-4 w-4" />
-            ) : (
-              <Sun className="h-4 w-4" />
-            )}
+            {theme === "light" ? <Moon className="h-4 w-4" /> : <Sun className="h-4 w-4" />}
           </button>
 
           <span
             className={clsx(
-              "flex items-center gap-1.5 text-xs font-medium",
+              "hidden sm:flex items-center gap-1.5 text-xs font-medium",
               isOpen ? "text-green-500" : "text-[var(--text-dim)]",
             )}
           >
@@ -104,12 +106,61 @@ export default function Header() {
             {statusText}
           </span>
           {lastUpdated && (
-            <span className="text-[10px] text-[var(--text-dim)] hidden md:block tabular-nums">
+            <span className="text-[10px] text-[var(--text-dim)] hidden lg:block tabular-nums">
               {lastUpdated.toLocaleTimeString()}
             </span>
           )}
+
+          {/* Mobile hamburger */}
+          <button
+            onClick={() => setMobileOpen(!mobileOpen)}
+            className="md:hidden p-1.5 rounded-md text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--hover)] transition-colors"
+          >
+            {mobileOpen ? <X className="h-4 w-4" /> : <Menu className="h-4 w-4" />}
+          </button>
         </div>
       </div>
+
+      {/* Mobile nav drawer */}
+      {mobileOpen && (
+        <nav className="md:hidden border-t border-[var(--border)] bg-[var(--surface)] px-3 pb-3 pt-2 space-y-1">
+          {/* Mobile search */}
+          <div className="mb-2 sm:hidden" data-global-search>
+            <SymbolSearch placeholder="Search stock..." compact />
+          </div>
+          {links.map(({ to, label, icon: Icon }) => (
+            <NavLink
+              key={to}
+              to={to}
+              end={to === "/"}
+              onClick={() => setMobileOpen(false)}
+              className={({ isActive }) =>
+                clsx(
+                  "flex items-center gap-2.5 px-3 py-2.5 rounded-md text-sm font-medium transition-colors",
+                  isActive
+                    ? "bg-[var(--surface-active)] text-[var(--text)]"
+                    : "text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--hover)]",
+                )
+              }
+            >
+              <Icon className="h-4 w-4 shrink-0" />
+              {label}
+            </NavLink>
+          ))}
+          {/* Mobile market status */}
+          <div className="flex items-center gap-2 px-3 pt-2 border-t border-[var(--border)] mt-2">
+            <span
+              className={clsx(
+                "h-1.5 w-1.5 rounded-full",
+                isOpen ? "bg-green-500" : "bg-[var(--text-dim)]",
+              )}
+            />
+            <span className={clsx("text-xs", isOpen ? "text-green-500" : "text-[var(--text-dim)]")}>
+              {statusText}
+            </span>
+          </div>
+        </nav>
+      )}
     </header>
   );
 }

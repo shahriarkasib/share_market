@@ -51,7 +51,7 @@ export default function MarketBar({
   return (
     <div className="bg-[var(--surface)] border border-[var(--border)] rounded-lg px-4 py-2 flex items-center gap-4 overflow-x-auto text-xs whitespace-nowrap">
       {/* DSEX index */}
-      <div className="flex items-center gap-2 font-medium">
+      <div className="flex items-center gap-2 font-medium shrink-0">
         <span className="text-[var(--text-muted)]">DSEX</span>
         <span className="text-[var(--text)] tabular-nums">
           {formatNumber(market.dsex_index)}
@@ -70,7 +70,7 @@ export default function MarketBar({
       <Separator />
 
       {/* Advances / Declines */}
-      <div className="flex items-center gap-1.5">
+      <div className="flex items-center gap-1.5 shrink-0">
         <span className="text-green-400 tabular-nums">
           {"\u2191"}{market.advances}
         </span>
@@ -82,7 +82,7 @@ export default function MarketBar({
       <Separator />
 
       {/* Volume */}
-      <div className="flex items-center gap-1">
+      <div className="flex items-center gap-1 shrink-0">
         <span className="text-[var(--text-muted)]">Vol:</span>
         <span className="text-[var(--text)] tabular-nums">
           {formatCompact(market.total_volume)}
@@ -90,7 +90,7 @@ export default function MarketBar({
       </div>
 
       {/* Trades */}
-      <div className="flex items-center gap-1">
+      <div className="flex items-center gap-1 shrink-0">
         <span className="text-[var(--text-muted)]">Trades:</span>
         <span className="text-[var(--text)] tabular-nums">
           {formatCompact(market.total_trade)}
@@ -100,7 +100,7 @@ export default function MarketBar({
       <Separator />
 
       {/* Market status */}
-      <div className="flex items-center gap-1.5">
+      <div className="flex items-center gap-1.5 shrink-0">
         <span
           className={clsx(
             "h-1.5 w-1.5 rounded-full",
@@ -118,7 +118,7 @@ export default function MarketBar({
 
       {/* Signal counts */}
       {signals && (
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 shrink-0">
           <span className="text-green-400 tabular-nums">{buyCount} Buy</span>
           <span className="text-red-400 tabular-nums">{sellCount} Sell</span>
           <span className="text-[var(--text-muted)] tabular-nums">{holdCount} Hold</span>
@@ -126,14 +126,14 @@ export default function MarketBar({
       )}
 
       {/* Spacer */}
-      <div className="flex-1" />
+      <div className="flex-1 min-w-4" />
 
       {/* Refresh timer */}
       <button
         type="button"
         onClick={onRefresh}
         disabled={isRefreshing}
-        className="flex items-center gap-1.5 text-[var(--text-muted)] hover:text-[var(--text)] transition-colors disabled:opacity-50"
+        className="flex items-center gap-1.5 shrink-0 text-[var(--text-muted)] hover:text-[var(--text)] transition-colors disabled:opacity-50"
       >
         <span className="tabular-nums">Next: {timerText}</span>
         {isRefreshing ? (
