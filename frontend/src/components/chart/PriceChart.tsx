@@ -62,9 +62,11 @@ function getChartColors() {
 interface Props {
   symbol: string;
   signal?: StockSignal | null;
+  /** Base chart height in px. Defaults to 420. Sub-panes add 120px each. */
+  height?: number;
 }
 
-export default function PriceChart({ symbol, signal }: Props) {
+export default function PriceChart({ symbol, signal, height: baseHeight = 420 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRefs = useRef<Map<string, ISeriesApi<SeriesType>>>(new Map());
@@ -102,7 +104,7 @@ export default function PriceChart({ symbol, signal }: Props) {
     if (!containerRef.current) return;
 
     const colors = getChartColors();
-    const chartHeight = 420 + subPanes.size * 120;
+    const chartHeight = baseHeight + subPanes.size * 120;
     const chart = createChart(containerRef.current, {
       width: containerRef.current.clientWidth,
       height: chartHeight,
@@ -133,7 +135,7 @@ export default function PriceChart({ symbol, signal }: Props) {
 
     const handleResize = () => {
       if (containerRef.current) {
-        const h = 420 + subPanesRef.current.size * 120;
+        const h = baseHeight + subPanesRef.current.size * 120;
         chart.resize(containerRef.current.clientWidth, h);
       }
     };
@@ -152,7 +154,7 @@ export default function PriceChart({ symbol, signal }: Props) {
   useEffect(() => {
     const chart = chartRef.current;
     if (!chart || !containerRef.current) return;
-    const h = 420 + subPanes.size * 120;
+    const h = baseHeight + subPanes.size * 120;
     chart.resize(containerRef.current.clientWidth, h);
   }, [subPanes]);
 
