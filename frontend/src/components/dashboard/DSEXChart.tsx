@@ -113,7 +113,7 @@ export default function DSEXChart({ data }: Props) {
 
     // Clear any existing series
     try {
-      for (const s of chart.getSeries()) {
+      for (const s of (chart as any).getSeries?.() ?? []) {
         chart.removeSeries(s);
       }
     } catch { /* fresh chart */ }

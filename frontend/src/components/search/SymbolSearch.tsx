@@ -32,7 +32,7 @@ export default function SymbolSearch({
   const [activeIdx, setActiveIdx] = useState(-1);
   const inputRef = useRef<HTMLInputElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-  const debounceRef = useRef<ReturnType<typeof setTimeout>>();
+  const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   // Get prices from global store (already fetched on Dashboard load)
   const allPrices = useMarketStore((s) => s.allPrices);

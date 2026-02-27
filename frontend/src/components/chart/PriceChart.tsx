@@ -319,7 +319,7 @@ export default function PriceChart({ symbol, signal }: Props) {
             priceScaleId: "",
             lastValueVisible: false,
             priceLineVisible: false,
-          }, { pane: paneIdx });
+          }, { pane: paneIdx } as any);
           const histData: { time: Time; value: number; color: string }[] = [];
           for (let i = 0; i < dates.length; i++) {
             if (macdData.histogram[i] != null) {
@@ -526,12 +526,12 @@ function addLineSeries(
   values: (number | null)[],
   color: string,
   refs: Map<string, ISeriesApi<SeriesType>>,
-  lineWidth = 1,
+  lineWidth: number = 1,
   lineStyle = LineStyle.Solid,
 ) {
   const series = chart.addSeries(LineSeries, {
     color,
-    lineWidth,
+    lineWidth: lineWidth as any,
     lineStyle,
     crosshairMarkerVisible: false,
     lastValueVisible: false,
@@ -556,17 +556,17 @@ function addLineSeriesToPane(
   color: string,
   refs: Map<string, ISeriesApi<SeriesType>>,
   pane: number,
-  lineWidth = 1,
+  lineWidth: number = 1,
   lineStyle = LineStyle.Solid,
 ) {
   const series = chart.addSeries(LineSeries, {
     color,
-    lineWidth,
+    lineWidth: lineWidth as any,
     lineStyle,
     crosshairMarkerVisible: false,
     lastValueVisible: false,
     priceLineVisible: false,
-  }, { pane });
+  }, { pane } as any);
   const data: { time: Time; value: number }[] = [];
   for (let i = 0; i < dates.length; i++) {
     if (values[i] != null) {
@@ -595,7 +595,7 @@ function addConstantLine(
     crosshairMarkerVisible: false,
     lastValueVisible: false,
     priceLineVisible: false,
-  }, { pane });
+  }, { pane } as any);
   series.setData(dates.map((t) => ({ time: t, value })));
   refs.set(key, series);
 }
