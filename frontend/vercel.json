@@ -6,6 +6,10 @@
     {
       "source": "/api/:path*",
       "destination": "https://share-market-kk7e.onrender.com/api/:path*"
+    },
+    {
+      "source": "/((?!assets/).*)",
+      "destination": "/index.html"
     }
   ]
 }
