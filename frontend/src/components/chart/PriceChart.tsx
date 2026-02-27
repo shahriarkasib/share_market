@@ -103,6 +103,9 @@ export default function PriceChart({ symbol, signal, height: baseHeight = 420 }:
   const [subPanes, setSubPanes] = useState<Set<string>>(() => new Set());
   const subPanesRef = useRef(subPanes);
   subPanesRef.current = subPanes;
+  const subPaneCount = subPanes.size;
+  const totalHeightRef = useRef(baseHeight);
+  totalHeightRef.current = baseHeight + subPaneCount * 150;
   const toggleSubPane = useCallback((key: string) => {
     setSubPanes((prev) => {
       const n = new Set(prev);
@@ -112,14 +115,15 @@ export default function PriceChart({ symbol, signal, height: baseHeight = 420 }:
     });
   }, []);
 
-  // Create chart on mount
+  // Create chart — recreate when sub-pane count changes so height allocates correctly
   useEffect(() => {
     if (!containerRef.current) return;
 
     const colors = getChartColors();
+    const h = totalHeightRef.current;
     const chart = createChart(containerRef.current, {
       width: containerRef.current.clientWidth,
-      height: baseHeight,
+      height: h,
       layout: {
         background: { color: colors.bg },
         textColor: colors.text,
@@ -149,7 +153,7 @@ export default function PriceChart({ symbol, signal, height: baseHeight = 420 }:
       if (containerRef.current) {
         const w = containerRef.current.clientWidth;
         if (w === 0) return;
-        chart.resize(w, baseHeightRef.current);
+        chart.resize(w, totalHeightRef.current);
       }
     };
     const ro = new ResizeObserver(handleResize);
@@ -161,13 +165,13 @@ export default function PriceChart({ symbol, signal, height: baseHeight = 420 }:
       chartRef.current = null;
       seriesRefs.current.clear();
     };
-  }, []);
+  }, [subPaneCount]);
 
   // Resize chart when baseHeight changes
   useEffect(() => {
     const chart = chartRef.current;
     if (!chart || !containerRef.current) return;
-    chart.resize(containerRef.current.clientWidth, baseHeight);
+    chart.resize(containerRef.current.clientWidth, totalHeightRef.current);
   }, [baseHeight]);
 
   // Update chart colors when theme changes

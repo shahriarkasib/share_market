@@ -674,7 +674,7 @@ export default function AdvancedChart() {
         </div>
 
         {/* ── Chart Area ── */}
-        <div className="flex-1 overflow-hidden p-1">
+        <div className="flex-1 overflow-y-auto p-1">
           {selectedStock ? (
             /* Stock candlestick chart */
             <PriceChart
