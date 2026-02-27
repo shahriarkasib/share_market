@@ -94,6 +94,58 @@ async def _bulk_load_historical():
         logger.error(f"Bulk historical load failed: {e}")
 
 
+def _run_background_init():
+    """Run heavy initialization tasks in a background thread."""
+    import threading
+    import time
+
+    def _init():
+        try:
+            from data.repository import get_daily_prices_count
+            count = get_daily_prices_count()
+
+            # 1. Bulk historical load if needed
+            if count == 0:
+                logger.info("Background: bulk loading historical data...")
+                import asyncio
+                loop = asyncio.new_event_loop()
+                loop.run_until_complete(_bulk_load_historical())
+                loop.close()
+            else:
+                logger.info(f"Background: found {count} rows in daily_prices")
+
+            # 2. Seed sector mapping if empty
+            from data.sector_scraper import scrape_sector_mapping
+            conn_check = get_connection()
+            sector_count = conn_check.execute(
+                "SELECT COUNT(*) FROM fundamentals WHERE sector IS NOT NULL"
+            ).fetchone()[0]
+            conn_check.close()
+            if sector_count == 0:
+                logger.info("Background: seeding sector mapping from DSE...")
+                try:
+                    scrape_sector_mapping()
+                    logger.info("Background: sector mapping seeded")
+                except Exception as e:
+                    logger.warning(f"Sector seeding failed: {e}")
+
+            # 3. Compute signals if needed
+            from data.cache import cache
+            all_signals = cache.get("all_signals")
+            if not all_signals:
+                logger.info("Background: starting signal computation...")
+                from api.routes_signals import start_background_computation
+                start_background_computation()
+
+            logger.info("Background initialization complete")
+        except Exception as e:
+            logger.error(f"Background init error: {e}", exc_info=True)
+
+    t = threading.Thread(target=_init, daemon=True, name="bg-init")
+    t.start()
+    return t
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application startup and shutdown."""
@@ -101,31 +153,8 @@ async def lifespan(app: FastAPI):
     init_database()
     logger.info("Database initialized")
 
-    # 1. Check if we need a bulk historical load (first run)
-    from data.repository import get_daily_prices_count, load_signals_from_db
-
-    count = get_daily_prices_count()
-    if count == 0:
-        logger.info("First run: bulk loading historical data...")
-        await _bulk_load_historical()
-    else:
-        logger.info(f"Found {count} rows in daily_prices, skipping bulk load")
-
-    # 2. Seed sector mapping if empty
-    from data.sector_scraper import scrape_sector_mapping
-    conn_check = get_connection()
-    sector_count = conn_check.execute("SELECT COUNT(*) FROM fundamentals WHERE sector IS NOT NULL").fetchone()[0]
-    conn_check.close()
-    if sector_count == 0:
-        logger.info("Seeding sector mapping from DSE...")
-        try:
-            scrape_sector_mapping()
-        except Exception as e:
-            logger.warning(f"Sector seeding failed (non-critical): {e}")
-    else:
-        logger.info(f"Found {sector_count} stocks with sector data")
-
-    # 3. Load signals from DB into cache (instant startup)
+    # Load cached signals from DB (instant)
+    from data.repository import load_signals_from_db
     from data.cache import cache
     from config import CACHE_TTL_SIGNALS
 
@@ -134,20 +163,18 @@ async def lifespan(app: FastAPI):
         cache.set("all_signals", db_signals, CACHE_TTL_SIGNALS * 2)
         logger.info(f"Loaded {len(db_signals)} signals from DB into cache")
 
-    # 4. Start scheduler
+    # Start scheduler
     scheduler = setup_scheduler()
     scheduler.start()
     logger.info("Background scheduler started")
 
-    # 5. Fetch initial live data
+    # Fetch initial live data (fast — just scrapes current prices)
     logger.info("Fetching initial market data...")
     await fetch_live_prices()
 
-    # 6. Start background signal recomputation (non-blocking)
-    from api.routes_signals import start_background_computation
-
-    logger.info("Starting background signal recomputation...")
-    start_background_computation()
+    # Run heavy tasks (historical load, sectors, signals) in background
+    # so the server starts responding immediately
+    _run_background_init()
 
     yield
 
@@ -199,4 +226,23 @@ async def root():
 
 @app.get("/health")
 async def health():
-    return {"status": "healthy"}
+    from data.repository import get_daily_prices_count
+    conn = get_connection()
+    sector_count = conn.execute(
+        "SELECT COUNT(*) FROM fundamentals WHERE sector IS NOT NULL"
+    ).fetchone()[0]
+    live_count = conn.execute("SELECT COUNT(*) FROM live_prices").fetchone()[0]
+    conn.close()
+    return {
+        "status": "healthy",
+        "daily_prices": get_daily_prices_count(),
+        "live_prices": live_count,
+        "sectors": sector_count,
+    }
+
+
+@app.post("/api/v1/admin/init")
+async def trigger_init():
+    """Manually trigger background data initialization."""
+    _run_background_init()
+    return {"status": "initialization started in background"}

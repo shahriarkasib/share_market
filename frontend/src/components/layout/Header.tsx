@@ -1,6 +1,6 @@
 import { NavLink } from "react-router-dom";
 import { useState, useEffect } from "react";
-import { Activity, BarChart3, Search, Eye, Briefcase, Grid3X3, PieChart, Table2, Sun, Moon, Menu, X } from "lucide-react";
+import { Activity, BarChart3, Search, Eye, Briefcase, Grid3X3, PieChart, Table2, Sun, Moon, Menu, X, LineChart } from "lucide-react";
 import { clsx } from "clsx";
 import { useMarketStore } from "../../store/marketStore.ts";
 import { useThemeStore } from "../../store/themeStore.ts";
@@ -14,6 +14,7 @@ const links = [
   { to: "/screener", label: "Screener", icon: Search },
   { to: "/portfolio", label: "Portfolio", icon: Briefcase },
   { to: "/watchlist", label: "Watchlist", icon: Eye },
+  { to: "/chart", label: "Chart", icon: LineChart },
 ] as const;
 
 export default function Header() {
