@@ -155,68 +155,27 @@ function rsiColor(rsi: number | null | undefined): string {
 
 type SortKey = "change_pct" | "rsi" | "value" | "symbol";
 
-/* ─── localStorage cache for instant load on hard refresh ─── */
-const CHART_CACHE_KEY = "dse_chart_cache";
-const CHART_CACHE_MAX_AGE = 30 * 60 * 1000; // 30 minutes
-
-interface ChartCache {
-  aCatStocks: StockPrice[];
-  signals: Record<string, StockSignal>;
-  dsexData: DSEXChartBar[];
-  ts: number;
-}
-
-function loadChartCache(): ChartCache | null {
-  try {
-    const raw = localStorage.getItem(CHART_CACHE_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as ChartCache;
-    if (Date.now() - parsed.ts > CHART_CACHE_MAX_AGE) return null;
-    return parsed;
-  } catch {
-    return null;
-  }
-}
-
-function saveChartCache(data: Omit<ChartCache, "ts">) {
-  try {
-    localStorage.setItem(
-      CHART_CACHE_KEY,
-      JSON.stringify({ ...data, ts: Date.now() }),
-    );
-  } catch { /* quota exceeded — ignore */ }
-}
-
 /* ─── Main Component ─── */
 
 export default function AdvancedChart() {
   const [searchParams, setSearchParams] = useSearchParams();
   const symbolParam = searchParams.get("symbol");
 
-  // Load cached data for instant display
-  const cached = useMemo(() => loadChartCache(), []);
-
   // null means DSEX view, string means stock view
   const [selectedStock, setSelectedStock] = useState<string | null>(
     symbolParam || null,
   );
 
-  // Sidebar data — initialize from cache
-  const [aCatStocks, setACatStocks] = useState<StockPrice[]>(
-    cached?.aCatStocks ?? [],
-  );
-  const [signals, setSignals] = useState<Map<string, StockSignal>>(
-    () => new Map(Object.entries(cached?.signals ?? {})),
-  );
-  const [sidebarLoading, setSidebarLoading] = useState(!cached?.aCatStocks?.length);
+  // Sidebar data
+  const [aCatStocks, setACatStocks] = useState<StockPrice[]>([]);
+  const [signals, setSignals] = useState<Map<string, StockSignal>>(new Map());
+  const [sidebarLoading, setSidebarLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
   const [sortBy, setSortBy] = useState<SortKey>("value");
 
-  // DSEX chart data — initialize from cache
-  const [dsexData, setDsexData] = useState<DSEXChartBar[]>(
-    cached?.dsexData ?? [],
-  );
-  const [dsexLoading, setDsexLoading] = useState(!cached?.dsexData?.length);
+  // DSEX chart data
+  const [dsexData, setDsexData] = useState<DSEXChartBar[]>([]);
+  const [dsexLoading, setDsexLoading] = useState(true);
 
   // Selected stock signal
   const [stockSignal, setStockSignal] = useState<StockSignal | null>(null);
@@ -225,9 +184,10 @@ export default function AdvancedChart() {
   // Sidebar collapse on mobile
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
-  // Load sidebar data: A category stocks + signals (background refresh)
+  // Load sidebar data: A category stocks + signals
   useEffect(() => {
     let cancelled = false;
+    setSidebarLoading(true);
 
     Promise.allSettled([
       fetchAllPrices("A"),
@@ -236,9 +196,9 @@ export default function AdvancedChart() {
     ]).then(([pricesResult, buyResult, sellResult]) => {
       if (cancelled) return;
 
-      const newStocks =
-        pricesResult.status === "fulfilled" ? pricesResult.value : [];
-      if (newStocks.length > 0) setACatStocks(newStocks);
+      if (pricesResult.status === "fulfilled") {
+        setACatStocks(pricesResult.value);
+      }
 
       // Build signal map
       const sigMap = new Map<string, StockSignal>();
@@ -248,15 +208,8 @@ export default function AdvancedChart() {
       if (sellResult.status === "fulfilled") {
         for (const s of sellResult.value) sigMap.set(s.symbol, s);
       }
-      if (sigMap.size > 0) setSignals(sigMap);
+      setSignals(sigMap);
       setSidebarLoading(false);
-
-      // Save to localStorage for next visit
-      saveChartCache({
-        aCatStocks: newStocks.length > 0 ? newStocks : (cached?.aCatStocks ?? []),
-        signals: Object.fromEntries(sigMap.size > 0 ? sigMap : new Map()),
-        dsexData: [], // will be updated by DSEX effect
-      });
     });
 
     return () => {
@@ -264,15 +217,11 @@ export default function AdvancedChart() {
     };
   }, []);
 
-  // Load DSEX chart data (background refresh)
+  // Load DSEX chart data
   useEffect(() => {
+    setDsexLoading(true);
     fetchDSEXChart()
-      .then((data) => {
-        setDsexData(data);
-        // Update cache with DSEX data
-        const prev = loadChartCache();
-        if (prev) saveChartCache({ ...prev, dsexData: data });
-      })
+      .then(setDsexData)
       .catch(() => {})
       .finally(() => setDsexLoading(false));
   }, []);

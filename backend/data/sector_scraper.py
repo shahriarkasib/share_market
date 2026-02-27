@@ -81,7 +81,7 @@ def _upsert_sector_data(sector_name: str, stocks: list[tuple[str, str]]):
     conn = get_connection()
     try:
         conn.execute(
-            "INSERT OR REPLACE INTO sectors (name, stock_count, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)",
+            "INSERT INTO sectors (name, stock_count, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP) ON CONFLICT (name) DO UPDATE SET stock_count = EXCLUDED.stock_count, updated_at = CURRENT_TIMESTAMP",
             (sector_name, len(stocks)),
         )
         for symbol, company_name in stocks:

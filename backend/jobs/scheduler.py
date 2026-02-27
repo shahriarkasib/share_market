@@ -32,10 +32,16 @@ async def fetch_live_prices():
         for _, row in df.iterrows():
             try:
                 conn.execute(
-                    """INSERT OR REPLACE INTO live_prices
+                    """INSERT INTO live_prices
                        (symbol, ltp, high, low, open, close_prev, change, change_pct,
                         volume, value, trade_count, updated_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                       ON CONFLICT (symbol) DO UPDATE SET
+                         ltp = EXCLUDED.ltp, high = EXCLUDED.high, low = EXCLUDED.low,
+                         open = EXCLUDED.open, close_prev = EXCLUDED.close_prev,
+                         change = EXCLUDED.change, change_pct = EXCLUDED.change_pct,
+                         volume = EXCLUDED.volume, value = EXCLUDED.value,
+                         trade_count = EXCLUDED.trade_count, updated_at = EXCLUDED.updated_at""",
                     (
                         row.get("symbol", ""),
                         row.get("ltp", 0),
@@ -118,11 +124,18 @@ async def sync_market_summary():
 
         conn = get_connection()
         conn.execute(
-            """INSERT OR REPLACE INTO market_summary
+            """INSERT INTO market_summary
                (id, dsex_index, dsex_change, dsex_change_pct, total_volume,
                 total_value, total_trade, advances, declines, unchanged,
                 market_status, updated_at)
-               VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT (id) DO UPDATE SET
+                 dsex_index = EXCLUDED.dsex_index, dsex_change = EXCLUDED.dsex_change,
+                 dsex_change_pct = EXCLUDED.dsex_change_pct, total_volume = EXCLUDED.total_volume,
+                 total_value = EXCLUDED.total_value, total_trade = EXCLUDED.total_trade,
+                 advances = EXCLUDED.advances, declines = EXCLUDED.declines,
+                 unchanged = EXCLUDED.unchanged, market_status = EXCLUDED.market_status,
+                 updated_at = EXCLUDED.updated_at""",
             (
                 summary.get("dsex_index", 0),
                 summary.get("dsex_change", 0),

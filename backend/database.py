@@ -1,206 +1,331 @@
-"""SQLite database setup and connection management."""
+"""PostgreSQL database setup and connection management (Supabase).
 
-import sqlite3
-import os
-from config import DATABASE_PATH
+Provides a compatibility wrapper so existing code using sqlite3-style
+conn.execute(sql, (?,?,...)) works unchanged with psycopg2.
+"""
 
-DB_PATH = os.path.join(os.path.dirname(__file__), DATABASE_PATH)
+import re
+import logging
+import psycopg2
+import psycopg2.extras
+import psycopg2.pool
+from config import DATABASE_URL, DATABASE_URL_DIRECT
+
+logger = logging.getLogger(__name__)
+
+# Connection pool (lazy-initialized)
+_pool: psycopg2.pool.ThreadedConnectionPool | None = None
 
 
-def get_connection() -> sqlite3.Connection:
-    """Get a SQLite connection with row factory."""
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA foreign_keys=ON")
-    return conn
+def _get_pool() -> psycopg2.pool.ThreadedConnectionPool:
+    """Get or create the connection pool."""
+    global _pool
+    if _pool is None or _pool.closed:
+        _pool = psycopg2.pool.ThreadedConnectionPool(
+            minconn=1,
+            maxconn=10,
+            dsn=DATABASE_URL,
+            cursor_factory=psycopg2.extras.RealDictCursor,
+        )
+    return _pool
+
+
+def _convert_placeholders(sql: str) -> str:
+    """Convert sqlite3 '?' placeholders to psycopg2 '%s' placeholders.
+
+    Skips '?' inside string literals (single quotes).
+    """
+    result = []
+    in_string = False
+    for char in sql:
+        if char == "'" and not in_string:
+            in_string = True
+            result.append(char)
+        elif char == "'" and in_string:
+            in_string = False
+            result.append(char)
+        elif char == "?" and not in_string:
+            result.append("%s")
+        else:
+            result.append(char)
+    return "".join(result)
+
+
+class DictRow(dict):
+    """A dict that also supports integer indexing like sqlite3.Row.
+
+    row["column_name"] and row[0] both work.  dict(row) also works.
+    """
+
+    def __init__(self, data):
+        super().__init__(data)
+        self._keys = list(data.keys())
+
+    def __getitem__(self, key):
+        if isinstance(key, int):
+            return super().__getitem__(self._keys[key])
+        return super().__getitem__(key)
+
+
+def _wrap_row(row):
+    """Wrap a RealDictRow into a DictRow supporting integer indexing."""
+    if row is None:
+        return None
+    return DictRow(row)
+
+
+class PgCursor:
+    """Wrapper around psycopg2 cursor that supports dict(row) like sqlite3.Row."""
+
+    def __init__(self, cursor):
+        self._cursor = cursor
+
+    def fetchall(self):
+        rows = self._cursor.fetchall()
+        return [DictRow(r) for r in rows]
+
+    def fetchone(self):
+        return _wrap_row(self._cursor.fetchone())
+
+    def __iter__(self):
+        return (DictRow(r) for r in self._cursor)
+
+    @property
+    def rowcount(self):
+        return self._cursor.rowcount
+
+
+class PgConnection:
+    """Wrapper around psycopg2 connection mimicking sqlite3 Connection API.
+
+    - Converts ? placeholders to %s
+    - Returns PgCursor wrapping RealDictCursor
+    - Manages pool return on close()
+    """
+
+    def __init__(self, conn):
+        self._conn = conn
+
+    def execute(self, sql: str, params=None) -> PgCursor:
+        sql = _convert_placeholders(sql)
+        cursor = self._conn.cursor()
+        try:
+            cursor.execute(sql, params)
+        except Exception:
+            self._conn.rollback()
+            raise
+        return PgCursor(cursor)
+
+    def executescript(self, sql: str):
+        """Execute multiple SQL statements separated by semicolons."""
+        cursor = self._conn.cursor()
+        # Split by semicolon, filter empty
+        statements = [s.strip() for s in sql.split(";") if s.strip()]
+        for stmt in statements:
+            try:
+                cursor.execute(stmt)
+            except Exception as e:
+                self._conn.rollback()
+                logger.error(f"DDL error: {e} | statement: {stmt[:100]}")
+                raise
+        self._conn.commit()
+
+    def commit(self):
+        self._conn.commit()
+
+    def rollback(self):
+        self._conn.rollback()
+
+    def close(self):
+        try:
+            _get_pool().putconn(self._conn)
+        except Exception:
+            pass
+
+
+def get_connection() -> PgConnection:
+    """Get a PostgreSQL connection from the pool."""
+    pool = _get_pool()
+    conn = pool.getconn()
+    conn.autocommit = False
+    return PgConnection(conn)
 
 
 def init_database():
-    """Create all tables if they don't exist."""
-    conn = get_connection()
+    """Create all tables if they don't exist (uses direct connection for DDL)."""
+    conn = psycopg2.connect(DATABASE_URL_DIRECT)
+    conn.autocommit = True
     cursor = conn.cursor()
 
-    cursor.executescript("""
-        -- Daily OHLCV data for technical analysis
-        CREATE TABLE IF NOT EXISTS daily_prices (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+    # Execute each CREATE TABLE separately (PostgreSQL DDL)
+    statements = [
+        """CREATE TABLE IF NOT EXISTS daily_prices (
+            id SERIAL PRIMARY KEY,
             symbol TEXT NOT NULL,
             date DATE NOT NULL,
-            open REAL,
-            high REAL,
-            low REAL,
-            close REAL,
-            volume INTEGER,
-            value REAL,
+            open DOUBLE PRECISION,
+            high DOUBLE PRECISION,
+            low DOUBLE PRECISION,
+            close DOUBLE PRECISION,
+            volume BIGINT,
+            value DOUBLE PRECISION,
             trade_count INTEGER,
             UNIQUE(symbol, date)
-        );
-        CREATE INDEX IF NOT EXISTS idx_daily_symbol_date ON daily_prices(symbol, date);
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_daily_symbol_date ON daily_prices(symbol, date)",
 
-        -- Latest intraday snapshot (overwritten every 5 minutes)
-        CREATE TABLE IF NOT EXISTS live_prices (
+        """CREATE TABLE IF NOT EXISTS live_prices (
             symbol TEXT PRIMARY KEY,
             company_name TEXT,
-            ltp REAL,
-            high REAL,
-            low REAL,
-            open REAL,
-            close_prev REAL,
-            change REAL,
-            change_pct REAL,
-            volume INTEGER,
-            value REAL,
+            ltp DOUBLE PRECISION,
+            high DOUBLE PRECISION,
+            low DOUBLE PRECISION,
+            open DOUBLE PRECISION,
+            close_prev DOUBLE PRECISION,
+            change DOUBLE PRECISION,
+            change_pct DOUBLE PRECISION,
+            volume BIGINT,
+            value DOUBLE PRECISION,
             trade_count INTEGER,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
+        )""",
 
-        -- Computed trading signals
-        CREATE TABLE IF NOT EXISTS signals (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+        """CREATE TABLE IF NOT EXISTS signals (
+            id SERIAL PRIMARY KEY,
             symbol TEXT NOT NULL,
             company_name TEXT,
-            ltp REAL,
-            change_pct REAL,
+            ltp DOUBLE PRECISION,
+            change_pct DOUBLE PRECISION,
             signal_type TEXT NOT NULL,
-            confidence REAL,
-            short_term_score REAL,
-            long_term_score REAL,
-            rsi REAL,
+            confidence DOUBLE PRECISION,
+            short_term_score DOUBLE PRECISION,
+            long_term_score DOUBLE PRECISION,
+            rsi DOUBLE PRECISION,
             macd_signal TEXT,
             bb_position TEXT,
             ema_crossover TEXT,
             volume_signal TEXT,
-            support_level REAL,
-            resistance_level REAL,
+            support_level DOUBLE PRECISION,
+            resistance_level DOUBLE PRECISION,
             pattern TEXT,
-            target_price REAL,
-            stop_loss REAL,
-            risk_reward_ratio REAL,
+            target_price DOUBLE PRECISION,
+            stop_loss DOUBLE PRECISION,
+            risk_reward_ratio DOUBLE PRECISION,
             reasoning TEXT,
             timing TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE(symbol, created_at)
-        );
-        CREATE INDEX IF NOT EXISTS idx_signals_symbol ON signals(symbol);
-        CREATE INDEX IF NOT EXISTS idx_signals_type ON signals(signal_type);
+            prediction_json TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_signals_symbol ON signals(symbol)",
+        "CREATE INDEX IF NOT EXISTS idx_signals_type ON signals(signal_type)",
 
-        -- Company fundamentals
-        CREATE TABLE IF NOT EXISTS fundamentals (
+        """CREATE TABLE IF NOT EXISTS fundamentals (
             symbol TEXT PRIMARY KEY,
             company_name TEXT,
             sector TEXT,
             category TEXT,
-            pe_ratio REAL,
-            eps REAL,
-            book_value REAL,
-            market_cap REAL,
-            dividend_yield REAL,
-            year_high REAL,
-            year_low REAL,
+            pe_ratio DOUBLE PRECISION,
+            eps DOUBLE PRECISION,
+            book_value DOUBLE PRECISION,
+            market_cap DOUBLE PRECISION,
+            dividend_yield DOUBLE PRECISION,
+            year_high DOUBLE PRECISION,
+            year_low DOUBLE PRECISION,
             updated_at TIMESTAMP
-        );
+        )""",
 
-        -- Portfolio holdings
-        CREATE TABLE IF NOT EXISTS holdings (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+        """CREATE TABLE IF NOT EXISTS holdings (
+            id SERIAL PRIMARY KEY,
             symbol TEXT NOT NULL,
             quantity INTEGER NOT NULL,
-            buy_price REAL NOT NULL,
+            buy_price DOUBLE PRECISION NOT NULL,
             buy_date DATE NOT NULL,
             maturity_date DATE NOT NULL,
-            sell_price REAL,
+            sell_price DOUBLE PRECISION,
             sell_date DATE,
             sell_quantity INTEGER DEFAULT 0,
             status TEXT DEFAULT 'ACTIVE',
             notes TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-        CREATE INDEX IF NOT EXISTS idx_holdings_symbol ON holdings(symbol);
-        CREATE INDEX IF NOT EXISTS idx_holdings_status ON holdings(status);
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_holdings_symbol ON holdings(symbol)",
+        "CREATE INDEX IF NOT EXISTS idx_holdings_status ON holdings(status)",
 
-        -- User watchlist
-        CREATE TABLE IF NOT EXISTS watchlist (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+        """CREATE TABLE IF NOT EXISTS watchlist (
+            id SERIAL PRIMARY KEY,
             symbol TEXT NOT NULL UNIQUE,
             added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             notes TEXT
-        );
+        )""",
 
-        -- Market summary cache
-        CREATE TABLE IF NOT EXISTS market_summary (
+        """CREATE TABLE IF NOT EXISTS market_summary (
             id INTEGER PRIMARY KEY CHECK (id = 1),
-            dsex_index REAL,
-            dsex_change REAL,
-            dsex_change_pct REAL,
-            total_volume INTEGER,
-            total_value REAL,
+            dsex_index DOUBLE PRECISION,
+            dsex_change DOUBLE PRECISION,
+            dsex_change_pct DOUBLE PRECISION,
+            total_volume BIGINT,
+            total_value DOUBLE PRECISION,
             total_trade INTEGER,
             advances INTEGER,
             declines INTEGER,
             unchanged INTEGER,
             market_status TEXT,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
+        )""",
 
-        -- DSEX index daily history
-        CREATE TABLE IF NOT EXISTS dsex_history (
+        """CREATE TABLE IF NOT EXISTS dsex_history (
             date DATE PRIMARY KEY,
-            dsex_index REAL,
-            dses_index REAL,
-            ds30_index REAL,
-            total_volume INTEGER,
-            total_value REAL,
+            dsex_index DOUBLE PRECISION,
+            dses_index DOUBLE PRECISION,
+            ds30_index DOUBLE PRECISION,
+            total_volume BIGINT,
+            total_value DOUBLE PRECISION,
             total_trade INTEGER
-        );
+        )""",
 
-        -- Signal history — append-only daily snapshots for accuracy tracking
-        CREATE TABLE IF NOT EXISTS signal_history (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+        """CREATE TABLE IF NOT EXISTS signal_history (
+            id SERIAL PRIMARY KEY,
             symbol TEXT NOT NULL,
             date DATE NOT NULL,
             signal_type TEXT NOT NULL,
-            ltp REAL,
-            target_price REAL,
-            stop_loss REAL,
-            confidence REAL,
-            short_term_score REAL,
-            predicted_day2 REAL,
-            predicted_day3 REAL,
-            predicted_day5 REAL,
-            predicted_day7 REAL,
-            expected_return_pct REAL,
+            ltp DOUBLE PRECISION,
+            target_price DOUBLE PRECISION,
+            stop_loss DOUBLE PRECISION,
+            confidence DOUBLE PRECISION,
+            short_term_score DOUBLE PRECISION,
+            predicted_day2 DOUBLE PRECISION,
+            predicted_day3 DOUBLE PRECISION,
+            predicted_day5 DOUBLE PRECISION,
+            predicted_day7 DOUBLE PRECISION,
+            expected_return_pct DOUBLE PRECISION,
             reasoning TEXT,
-            -- Filled in later when we verify accuracy
-            actual_day2 REAL,
-            actual_day3 REAL,
-            actual_day5 REAL,
-            actual_day7 REAL,
+            actual_day2 DOUBLE PRECISION,
+            actual_day3 DOUBLE PRECISION,
+            actual_day5 DOUBLE PRECISION,
+            actual_day7 DOUBLE PRECISION,
             target_hit INTEGER DEFAULT 0,
             stop_hit INTEGER DEFAULT 0,
-            actual_return_pct REAL,
+            actual_return_pct DOUBLE PRECISION,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(symbol, date)
-        );
-        CREATE INDEX IF NOT EXISTS idx_signal_history_symbol ON signal_history(symbol);
-        CREATE INDEX IF NOT EXISTS idx_signal_history_date ON signal_history(date);
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_signal_history_symbol ON signal_history(symbol)",
+        "CREATE INDEX IF NOT EXISTS idx_signal_history_date ON signal_history(date)",
 
-        -- Sector reference table
-        CREATE TABLE IF NOT EXISTS sectors (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+        """CREATE TABLE IF NOT EXISTS sectors (
+            id SERIAL PRIMARY KEY,
             name TEXT NOT NULL UNIQUE,
             stock_count INTEGER DEFAULT 0,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-    """)
+        )""",
+    ]
 
-    conn.commit()
+    for stmt in statements:
+        try:
+            cursor.execute(stmt)
+        except Exception as e:
+            logger.error(f"DDL error: {e}")
 
-    # Migrations for existing databases
-    try:
-        conn.execute("ALTER TABLE fundamentals ADD COLUMN category TEXT")
-    except Exception:
-        pass  # Column already exists
-
-    conn.commit()
+    cursor.close()
     conn.close()
+    logger.info("PostgreSQL tables initialized")

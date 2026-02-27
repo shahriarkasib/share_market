@@ -243,9 +243,13 @@ def _seed_dsex_history():
 
             if dsex > 0:
                 conn.execute(
-                    """INSERT OR REPLACE INTO dsex_history
+                    """INSERT INTO dsex_history
                        (date, dsex_index, dses_index, ds30_index, total_volume, total_value, total_trade)
-                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                       VALUES (?, ?, ?, ?, ?, ?, ?)
+                       ON CONFLICT (date) DO UPDATE SET
+                         dsex_index = EXCLUDED.dsex_index, dses_index = EXCLUDED.dses_index,
+                         ds30_index = EXCLUDED.ds30_index, total_volume = EXCLUDED.total_volume,
+                         total_value = EXCLUDED.total_value, total_trade = EXCLUDED.total_trade""",
                     (iso_date, dsex, dses, ds30, volume, value, trade),
                 )
 

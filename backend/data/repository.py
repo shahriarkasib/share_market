@@ -30,9 +30,10 @@ def bulk_insert_daily_prices(df: pd.DataFrame) -> int:
     for _, row in df.iterrows():
         try:
             conn.execute(
-                """INSERT OR IGNORE INTO daily_prices
+                """INSERT INTO daily_prices
                    (symbol, date, open, high, low, close, volume, value, trade_count)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT (symbol, date) DO NOTHING""",
                 (
                     row.get("symbol", ""),
                     str(row.get("date", ""))[:10],
@@ -61,9 +62,13 @@ def upsert_today_prices(df: pd.DataFrame, today_str: str):
     for _, row in df.iterrows():
         try:
             conn.execute(
-                """INSERT OR REPLACE INTO daily_prices
+                """INSERT INTO daily_prices
                    (symbol, date, open, high, low, close, volume, value, trade_count)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT (symbol, date) DO UPDATE SET
+                     open = EXCLUDED.open, high = EXCLUDED.high, low = EXCLUDED.low,
+                     close = EXCLUDED.close, volume = EXCLUDED.volume, value = EXCLUDED.value,
+                     trade_count = EXCLUDED.trade_count""",
                 (
                     row.get("symbol", ""),
                     today_str,
@@ -328,11 +333,18 @@ def save_signal_history(signals: list[dict]):
         try:
             pp = s.get("predicted_prices", {})
             conn.execute(
-                """INSERT OR REPLACE INTO signal_history
+                """INSERT INTO signal_history
                    (symbol, date, signal_type, ltp, target_price, stop_loss,
                     confidence, short_term_score, predicted_day2, predicted_day3,
                     predicted_day5, predicted_day7, expected_return_pct, reasoning)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT (symbol, date) DO UPDATE SET
+                     signal_type = EXCLUDED.signal_type, ltp = EXCLUDED.ltp,
+                     target_price = EXCLUDED.target_price, stop_loss = EXCLUDED.stop_loss,
+                     confidence = EXCLUDED.confidence, short_term_score = EXCLUDED.short_term_score,
+                     predicted_day2 = EXCLUDED.predicted_day2, predicted_day3 = EXCLUDED.predicted_day3,
+                     predicted_day5 = EXCLUDED.predicted_day5, predicted_day7 = EXCLUDED.predicted_day7,
+                     expected_return_pct = EXCLUDED.expected_return_pct, reasoning = EXCLUDED.reasoning""",
                 (
                     s.get("symbol"),
                     today,
@@ -366,7 +378,7 @@ def backfill_signal_accuracy():
         """SELECT id, symbol, date, ltp, target_price, stop_loss,
                   predicted_day2, predicted_day3, predicted_day5, predicted_day7
            FROM signal_history
-           WHERE actual_day2 IS NULL AND date < date('now', '-2 days')
+           WHERE actual_day2 IS NULL AND date < CURRENT_DATE - INTERVAL '2 days'
            ORDER BY date LIMIT 500"""
     ).fetchall()
 
@@ -533,11 +545,12 @@ def insert_holding(symbol: str, quantity: int, buy_price: float,
     conn = get_connection()
     cursor = conn.execute(
         """INSERT INTO holdings (symbol, quantity, buy_price, buy_date, maturity_date, notes)
-           VALUES (?, ?, ?, ?, ?, ?)""",
+           VALUES (?, ?, ?, ?, ?, ?) RETURNING id""",
         (symbol.upper(), quantity, buy_price, buy_date, maturity_date, notes),
     )
+    row = cursor.fetchone()
+    holding_id = row["id"] if row else 0
     conn.commit()
-    holding_id = cursor.lastrowid
     conn.close()
     return holding_id
 
@@ -634,17 +647,19 @@ def _make_json_safe(obj):
 
 def _ensure_prediction_column(conn):
     """Add prediction_json column to signals table if it doesn't exist."""
-    if not _has_column(conn, "signals", "prediction_json"):
-        try:
-            conn.execute("ALTER TABLE signals ADD COLUMN prediction_json TEXT")
-        except Exception:
-            pass  # Column already exists or table issue
+    try:
+        conn.execute("ALTER TABLE signals ADD COLUMN IF NOT EXISTS prediction_json TEXT")
+    except Exception:
+        pass  # Column already exists or table issue
 
 
 def _has_column(conn, table: str, column: str) -> bool:
-    """Check if a column exists in a table."""
+    """Check if a column exists in a table (PostgreSQL)."""
     try:
-        info = conn.execute(f"PRAGMA table_info({table})").fetchall()
-        return any(row["name"] == column for row in info)
+        result = conn.execute(
+            "SELECT 1 FROM information_schema.columns WHERE table_name = ? AND column_name = ?",
+            (table, column),
+        ).fetchone()
+        return result is not None
     except Exception:
         return False

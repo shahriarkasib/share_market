@@ -105,7 +105,7 @@ def _seed_sectors_from_json():
         total = 0
         for sector_name, symbols in sectors.items():
             conn.execute(
-                "INSERT OR REPLACE INTO sectors (name, stock_count, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)",
+                "INSERT INTO sectors (name, stock_count, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP) ON CONFLICT (name) DO UPDATE SET stock_count = EXCLUDED.stock_count, updated_at = CURRENT_TIMESTAMP",
                 (sector_name, len(symbols)),
             )
             for sym in symbols:
@@ -152,9 +152,13 @@ def _seed_dsex_history():
             dsex = float(row.get("DSEX Index", 0) or 0)
             if dsex > 0:
                 conn.execute(
-                    """INSERT OR REPLACE INTO dsex_history
+                    """INSERT INTO dsex_history
                        (date, dsex_index, dses_index, ds30_index, total_volume, total_value, total_trade)
-                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                       VALUES (?, ?, ?, ?, ?, ?, ?)
+                       ON CONFLICT (date) DO UPDATE SET
+                         dsex_index = EXCLUDED.dsex_index, dses_index = EXCLUDED.dses_index,
+                         ds30_index = EXCLUDED.ds30_index, total_volume = EXCLUDED.total_volume,
+                         total_value = EXCLUDED.total_value, total_trade = EXCLUDED.total_trade""",
                     (iso_date, dsex,
                      float(row.get("DSES Index", 0) or 0),
                      float(row.get("DS30 Index", 0) or 0),
@@ -417,7 +421,7 @@ async def seed_sectors(payload: dict):
     total = 0
     for sector_name, stocks in payload.get("sectors", {}).items():
         conn.execute(
-            "INSERT OR REPLACE INTO sectors (name, stock_count, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)",
+            "INSERT INTO sectors (name, stock_count, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP) ON CONFLICT (name) DO UPDATE SET stock_count = EXCLUDED.stock_count, updated_at = CURRENT_TIMESTAMP",
             (sector_name, len(stocks)),
         )
         for s in stocks:
@@ -454,9 +458,13 @@ async def seed_dsex(payload: dict):
     for r in rows:
         try:
             conn.execute(
-                """INSERT OR REPLACE INTO dsex_history
+                """INSERT INTO dsex_history
                    (date, dsex_index, dses_index, ds30_index, total_volume, total_value, total_trade)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT (date) DO UPDATE SET
+                     dsex_index = EXCLUDED.dsex_index, dses_index = EXCLUDED.dses_index,
+                     ds30_index = EXCLUDED.ds30_index, total_volume = EXCLUDED.total_volume,
+                     total_value = EXCLUDED.total_value, total_trade = EXCLUDED.total_trade""",
                 (
                     r.get("date", ""),
                     float(r.get("dsex_index", 0) or 0),
