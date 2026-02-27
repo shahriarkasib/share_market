@@ -5,7 +5,7 @@
   "rewrites": [
     {
       "source": "/api/:path*",
-      "destination": "https://dse-trading-backend.onrender.com/api/:path*"
+      "destination": "https://share-market-kk7e.onrender.com/api/:path*"
     }
   ]
 }
