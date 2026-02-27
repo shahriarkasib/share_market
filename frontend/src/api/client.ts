@@ -221,6 +221,63 @@ export async function deleteHolding(holdingId: number): Promise<void> {
   await api.delete(`/portfolio/${holdingId}`);
 }
 
+/* ========================== Signal History & Accuracy ========================== */
+
+export interface SignalHistoryEntry {
+  id: number;
+  symbol: string;
+  date: string;
+  signal_type: string;
+  ltp: number;
+  target_price: number;
+  stop_loss: number;
+  confidence: number;
+  short_term_score: number;
+  predicted_day2: number | null;
+  predicted_day7: number | null;
+  expected_return_pct: number;
+  actual_day2: number | null;
+  actual_day7: number | null;
+  target_hit: number;
+  stop_hit: number;
+  actual_return_pct: number | null;
+  reasoning: string;
+}
+
+export interface SignalAccuracy {
+  total_verified: number;
+  correct_direction?: number;
+  accuracy_pct?: number;
+  by_signal_type?: {
+    signal_type: string;
+    count: number;
+    avg_return: number;
+    targets_hit: number;
+    stops_hit: number;
+    profitable: number;
+  }[];
+  best_calls?: { symbol: string; date: string; signal_type: string; actual_return_pct: number }[];
+  worst_calls?: { symbol: string; date: string; signal_type: string; actual_return_pct: number }[];
+  recent_daily?: { date: string; signals: number; avg_return: number; targets_hit: number }[];
+  message?: string;
+}
+
+export async function fetchSignalHistory(
+  symbol: string,
+  limit = 30,
+): Promise<SignalHistoryEntry[]> {
+  const { data } = await api.get<SignalHistoryEntry[]>(
+    `/signals/history/${symbol}`,
+    { params: { limit } },
+  );
+  return data;
+}
+
+export async function fetchSignalAccuracy(): Promise<SignalAccuracy> {
+  const { data } = await api.get<SignalAccuracy>("/signals/accuracy");
+  return data;
+}
+
 /* ========================== Suggestions ========================== */
 
 export async function fetchSuggestions(): Promise<Suggestions> {

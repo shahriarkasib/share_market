@@ -153,6 +153,37 @@ def init_database():
             total_trade INTEGER
         );
 
+        -- Signal history — append-only daily snapshots for accuracy tracking
+        CREATE TABLE IF NOT EXISTS signal_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            symbol TEXT NOT NULL,
+            date DATE NOT NULL,
+            signal_type TEXT NOT NULL,
+            ltp REAL,
+            target_price REAL,
+            stop_loss REAL,
+            confidence REAL,
+            short_term_score REAL,
+            predicted_day2 REAL,
+            predicted_day3 REAL,
+            predicted_day5 REAL,
+            predicted_day7 REAL,
+            expected_return_pct REAL,
+            reasoning TEXT,
+            -- Filled in later when we verify accuracy
+            actual_day2 REAL,
+            actual_day3 REAL,
+            actual_day5 REAL,
+            actual_day7 REAL,
+            target_hit INTEGER DEFAULT 0,
+            stop_hit INTEGER DEFAULT 0,
+            actual_return_pct REAL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(symbol, date)
+        );
+        CREATE INDEX IF NOT EXISTS idx_signal_history_symbol ON signal_history(symbol);
+        CREATE INDEX IF NOT EXISTS idx_signal_history_date ON signal_history(date);
+
         -- Sector reference table
         CREATE TABLE IF NOT EXISTS sectors (
             id INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -10,6 +10,10 @@ from data.repository import (
     load_signals_from_db,
     read_historical_for_symbol,
     get_active_holdings,
+    save_signal_history,
+    backfill_signal_accuracy,
+    get_signal_history_for_symbol,
+    get_signal_accuracy_report,
 )
 from analysis.signals import SignalGenerator
 from config import CACHE_TTL_SIGNALS, MIN_DAILY_VALUE
@@ -240,6 +244,25 @@ async def get_suggestions():
     return result
 
 
+@router.get("/accuracy")
+async def get_accuracy():
+    """Get signal accuracy report — how well did past predictions perform?"""
+    cached = cache.get("signal_accuracy")
+    if cached:
+        return cached
+
+    report = get_signal_accuracy_report()
+    if report.get("total_verified", 0) > 0:
+        cache.set("signal_accuracy", report, CACHE_TTL_SIGNALS)
+    return report
+
+
+@router.get("/history/{symbol}")
+async def get_signal_history(symbol: str, limit: int = 30):
+    """Get historical signal decisions for a specific stock."""
+    return get_signal_history_for_symbol(symbol, limit)
+
+
 @router.get("/{symbol}")
 async def get_stock_signal(symbol: str):
     """Get detailed signal for a specific stock."""
@@ -339,6 +362,15 @@ def _compute_all_signals_background():
         cache.set("all_signals", signals, CACHE_TTL_SIGNALS * 2)
         cache.delete("signals_summary")
         save_signals_to_db(signals)
+
+        # 7. Save daily snapshot to signal_history (append-only for accuracy tracking)
+        save_signal_history(signals)
+
+        # 8. Backfill accuracy for older entries
+        try:
+            backfill_signal_accuracy()
+        except Exception as e:
+            logger.error(f"Accuracy backfill error: {e}")
 
         _last_compute_time = datetime.now()
         logger.info(f"=== Computed {len(signals)} signals ({processed} processed) ===")

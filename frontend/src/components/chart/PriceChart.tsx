@@ -70,6 +70,10 @@ export default function PriceChart({ symbol, signal, height: baseHeight = 420 }:
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRefs = useRef<Map<string, ISeriesApi<SeriesType>>>(new Map());
+  const baseHeightRef = useRef(baseHeight);
+  baseHeightRef.current = baseHeight;
+  const signalRef = useRef(signal);
+  signalRef.current = signal;
   const theme = "dark" as const;
 
   const [chartType, setChartType] = useState<ChartType>("candlestick");
@@ -135,8 +139,10 @@ export default function PriceChart({ symbol, signal, height: baseHeight = 420 }:
 
     const handleResize = () => {
       if (containerRef.current) {
-        const h = baseHeight + subPanesRef.current.size * 120;
-        chart.resize(containerRef.current.clientWidth, h);
+        const w = containerRef.current.clientWidth;
+        if (w === 0) return; // Skip if not laid out yet
+        const h = baseHeightRef.current + subPanesRef.current.size * 120;
+        chart.resize(w, h);
       }
     };
     const ro = new ResizeObserver(handleResize);
@@ -150,13 +156,13 @@ export default function PriceChart({ symbol, signal, height: baseHeight = 420 }:
     };
   }, []);
 
-  // Resize chart when sub-panes change
+  // Resize chart when sub-panes or baseHeight change
   useEffect(() => {
     const chart = chartRef.current;
     if (!chart || !containerRef.current) return;
     const h = baseHeight + subPanes.size * 120;
     chart.resize(containerRef.current.clientWidth, h);
-  }, [subPanes]);
+  }, [subPanes, baseHeight]);
 
   // Update chart colors when theme changes
   useEffect(() => {
@@ -348,8 +354,9 @@ export default function PriceChart({ symbol, signal, height: baseHeight = 420 }:
         }
 
         // ---- Prediction overlay ----
-        if (signal?.predicted_prices) {
-          const pp = signal.predicted_prices;
+        const sig = signalRef.current;
+        if (sig?.predicted_prices) {
+          const pp = sig.predicted_prices;
           const lastDate = bars[bars.length - 1].date;
           const predData: { time: Time; value: number }[] = [
             { time: lastDate as Time, value: closes[closes.length - 1] },
@@ -386,9 +393,9 @@ export default function PriceChart({ symbol, signal, height: baseHeight = 420 }:
 
         // ---- Support / Resistance price lines ----
         const mainSeries = seriesRefs.current.get("main");
-        if (mainSeries && signal?.support_level) {
+        if (mainSeries && sig?.support_level) {
           mainSeries.createPriceLine({
-            price: signal.support_level,
+            price: sig.support_level,
             color: "#22c55e80",
             lineWidth: 1,
             lineStyle: LineStyle.Dashed,
@@ -396,9 +403,9 @@ export default function PriceChart({ symbol, signal, height: baseHeight = 420 }:
             title: "S",
           });
         }
-        if (mainSeries && signal?.resistance_level) {
+        if (mainSeries && sig?.resistance_level) {
           mainSeries.createPriceLine({
-            price: signal.resistance_level,
+            price: sig.resistance_level,
             color: "#ef444480",
             lineWidth: 1,
             lineStyle: LineStyle.Dashed,
@@ -419,7 +426,7 @@ export default function PriceChart({ symbol, signal, height: baseHeight = 420 }:
 
     void render();
     return () => { cancelled = true; };
-  }, [symbol, period, chartType, overlays, signal, subPanes]);
+  }, [symbol, period, chartType, overlays, subPanes]);
 
   return (
     <div className="bg-[var(--surface)] border border-[var(--border)] rounded-lg p-4">

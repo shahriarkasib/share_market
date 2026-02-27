@@ -276,6 +276,214 @@ def load_signals_from_db() -> list[dict]:
     return signals
 
 
+# ======================== signal_history ========================
+
+
+def save_signal_history(signals: list[dict]):
+    """Save daily signal snapshot to history (append-only, one per symbol per day)."""
+    conn = get_connection()
+    today = datetime.now().strftime("%Y-%m-%d")
+    saved = 0
+    for s in signals:
+        try:
+            pp = s.get("predicted_prices", {})
+            conn.execute(
+                """INSERT OR REPLACE INTO signal_history
+                   (symbol, date, signal_type, ltp, target_price, stop_loss,
+                    confidence, short_term_score, predicted_day2, predicted_day3,
+                    predicted_day5, predicted_day7, expected_return_pct, reasoning)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    s.get("symbol"),
+                    today,
+                    s.get("signal_type", "HOLD"),
+                    s.get("ltp", 0),
+                    s.get("target_price", 0),
+                    s.get("stop_loss", 0),
+                    s.get("confidence", 0),
+                    s.get("short_term_score", 0),
+                    pp.get("day_2"),
+                    pp.get("day_3"),
+                    pp.get("day_5"),
+                    pp.get("day_7"),
+                    s.get("expected_return_pct", 0),
+                    s.get("reasoning", ""),
+                ),
+            )
+            saved += 1
+        except Exception as e:
+            logger.error(f"Signal history save error for {s.get('symbol')}: {e}")
+    conn.commit()
+    conn.close()
+    logger.info(f"Saved {saved} signal history entries for {today}")
+
+
+def backfill_signal_accuracy():
+    """Compare past predictions with actual prices and update accuracy columns."""
+    conn = get_connection()
+    # Get history entries that haven't been verified yet (actual_day2 is NULL)
+    rows = conn.execute(
+        """SELECT id, symbol, date, ltp, target_price, stop_loss,
+                  predicted_day2, predicted_day3, predicted_day5, predicted_day7
+           FROM signal_history
+           WHERE actual_day2 IS NULL AND date < date('now', '-2 days')
+           ORDER BY date LIMIT 500"""
+    ).fetchall()
+
+    if not rows:
+        conn.close()
+        return 0
+
+    updated = 0
+    for r in rows:
+        r = dict(r)
+        symbol = r["symbol"]
+        sig_date = r["date"]
+        entry_price = r["ltp"] or 0
+
+        # Get actual prices for day+2, day+3, day+5, day+7
+        prices = conn.execute(
+            """SELECT date, close FROM daily_prices
+               WHERE symbol = ? AND date > ? ORDER BY date LIMIT 7""",
+            (symbol, sig_date),
+        ).fetchall()
+
+        if len(prices) < 2:
+            continue
+
+        actual = {}
+        for i, p in enumerate(prices):
+            day_num = i + 1
+            if day_num in (2, 3, 5, 7):
+                actual[day_num] = p["close"]
+
+        # Check if target or stop was hit within 7 days
+        target = r["target_price"] or 0
+        stop = r["stop_loss"] or 0
+        target_hit = 0
+        stop_hit = 0
+        max_price = 0
+        min_price = float("inf")
+
+        for p in prices:
+            close = p["close"] or 0
+            if close > max_price:
+                max_price = close
+            if close < min_price:
+                min_price = close
+            if target > 0 and close >= target:
+                target_hit = 1
+            if stop > 0 and close <= stop:
+                stop_hit = 1
+
+        # Calculate actual return (day 7 vs entry)
+        actual_return = 0
+        last_actual = actual.get(7) or actual.get(5) or actual.get(3) or actual.get(2)
+        if entry_price > 0 and last_actual:
+            actual_return = (last_actual - entry_price) / entry_price * 100
+
+        conn.execute(
+            """UPDATE signal_history SET
+                  actual_day2 = ?, actual_day3 = ?, actual_day5 = ?, actual_day7 = ?,
+                  target_hit = ?, stop_hit = ?, actual_return_pct = ?
+               WHERE id = ?""",
+            (
+                actual.get(2), actual.get(3), actual.get(5), actual.get(7),
+                target_hit, stop_hit, round(actual_return, 2),
+                r["id"],
+            ),
+        )
+        updated += 1
+
+    conn.commit()
+    conn.close()
+    logger.info(f"Backfilled accuracy for {updated} signal history entries")
+    return updated
+
+
+def get_signal_history_for_symbol(symbol: str, limit: int = 30) -> list[dict]:
+    """Get signal history for a specific symbol."""
+    conn = get_connection()
+    rows = conn.execute(
+        """SELECT * FROM signal_history
+           WHERE symbol = ? ORDER BY date DESC LIMIT ?""",
+        (symbol.upper(), limit),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_signal_accuracy_report() -> dict:
+    """Generate accuracy report from signal history."""
+    conn = get_connection()
+
+    # Overall stats
+    total = conn.execute(
+        "SELECT COUNT(*) FROM signal_history WHERE actual_day2 IS NOT NULL"
+    ).fetchone()[0]
+
+    if total == 0:
+        conn.close()
+        return {"total_verified": 0, "message": "No verified signals yet. Accuracy data will appear after 2+ trading days."}
+
+    # By signal type
+    by_type = conn.execute(
+        """SELECT signal_type,
+                  COUNT(*) as count,
+                  AVG(actual_return_pct) as avg_return,
+                  SUM(CASE WHEN target_hit = 1 THEN 1 ELSE 0 END) as targets_hit,
+                  SUM(CASE WHEN stop_hit = 1 THEN 1 ELSE 0 END) as stops_hit,
+                  SUM(CASE WHEN actual_return_pct > 0 THEN 1 ELSE 0 END) as profitable
+           FROM signal_history
+           WHERE actual_day2 IS NOT NULL
+           GROUP BY signal_type"""
+    ).fetchall()
+
+    # Overall profitable
+    profitable = conn.execute(
+        """SELECT COUNT(*) FROM signal_history
+           WHERE actual_day2 IS NOT NULL
+             AND ((signal_type IN ('BUY', 'STRONG_BUY') AND actual_return_pct > 0)
+               OR (signal_type IN ('SELL', 'STRONG_SELL') AND actual_return_pct < 0))"""
+    ).fetchone()[0]
+
+    # Best and worst calls
+    best = conn.execute(
+        """SELECT symbol, date, signal_type, ltp, actual_return_pct, target_hit
+           FROM signal_history WHERE actual_day2 IS NOT NULL
+           ORDER BY actual_return_pct DESC LIMIT 5"""
+    ).fetchall()
+
+    worst = conn.execute(
+        """SELECT symbol, date, signal_type, ltp, actual_return_pct, stop_hit
+           FROM signal_history WHERE actual_day2 IS NOT NULL
+           ORDER BY actual_return_pct ASC LIMIT 5"""
+    ).fetchall()
+
+    # Recent accuracy (last 7 days that have verification)
+    recent = conn.execute(
+        """SELECT date,
+                  COUNT(*) as signals,
+                  AVG(actual_return_pct) as avg_return,
+                  SUM(CASE WHEN target_hit = 1 THEN 1 ELSE 0 END) as targets_hit
+           FROM signal_history
+           WHERE actual_day2 IS NOT NULL
+           GROUP BY date ORDER BY date DESC LIMIT 7"""
+    ).fetchall()
+
+    conn.close()
+
+    return {
+        "total_verified": total,
+        "correct_direction": profitable,
+        "accuracy_pct": round(profitable / total * 100, 1) if total > 0 else 0,
+        "by_signal_type": [dict(r) for r in by_type],
+        "best_calls": [dict(r) for r in best],
+        "worst_calls": [dict(r) for r in worst],
+        "recent_daily": [dict(r) for r in recent],
+    }
+
+
 # ======================== holdings ========================
 
 
