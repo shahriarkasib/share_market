@@ -24,6 +24,14 @@ import {
   Trophy,
   XCircle,
   ArrowDownCircle,
+  Activity,
+  ShoppingCart,
+  Zap,
+  Hand,
+  BookOpen,
+  LogOut,
+  Brain,
+  Sparkles,
 } from "lucide-react";
 import {
   fetchDailyAnalysis,
@@ -32,8 +40,12 @@ import {
   fetchAnalysisStatus,
   getAnalysisExcelUrl,
   fetchLiveTracker,
+  fetchLiveScan,
+  getLiveScanExcelUrl,
+  triggerLiveScan,
+  fetchLLMScan,
 } from "../api/client.ts";
-import type { DailyAnalysis, DailyAnalysisResponse, LiveTrackerStock, LiveTrackerResponse } from "../types/index.ts";
+import type { DailyAnalysis, DailyAnalysisResponse, LiveTrackerStock, LiveTrackerResponse, LiveScanResult, LiveScanResponse, LLMScanResponse } from "../types/index.ts";
 import { formatNumber, formatPct, colorBySign } from "../lib/format.ts";
 import { useAutoRefresh } from "../hooks/useAutoRefresh.ts";
 
@@ -76,10 +88,23 @@ const STATUS_CONFIG: Record<string, { color: string; bg: string; border: string;
   WATCHING:    { color: "text-[var(--text-dim)]", bg: "bg-[var(--surface)]", border: "border-[var(--border)]", icon: Eye, label: "Watching", note: "Above entry zone" },
 };
 
+/* ── scan recommendation config ───────────────────────────── */
+
+const REC_CONFIG: Record<string, { color: string; bg: string; border: string; icon: typeof Eye; label: string }> = {
+  "BUY NOW":      { color: "text-green-300",  bg: "bg-green-500/20",  border: "border-green-500/50", icon: ShoppingCart,   label: "BUY NOW" },
+  READY:          { color: "text-emerald-400", bg: "bg-emerald-500/15", border: "border-emerald-500/40", icon: Zap,           label: "READY" },
+  ACCUMULATE:     { color: "text-blue-400",    bg: "bg-blue-500/10",    border: "border-blue-500/30", icon: TrendingDown,   label: "Accumulate" },
+  "WEAK-WAIT":    { color: "text-amber-400",   bg: "bg-amber-500/10",   border: "border-amber-500/30", icon: Hand,           label: "Weak—Wait" },
+  "BOOK PARTIAL": { color: "text-purple-400",  bg: "bg-purple-500/10",  border: "border-purple-500/30", icon: BookOpen,       label: "Book Partial" },
+  "BOOK FULL":    { color: "text-purple-300",  bg: "bg-purple-500/15",  border: "border-purple-500/40", icon: CheckCircle2,   label: "Book Full" },
+  EXIT:           { color: "text-red-400",     bg: "bg-red-500/15",     border: "border-red-500/50", icon: LogOut,         label: "EXIT" },
+  WATCH:          { color: "text-[var(--text-dim)]", bg: "bg-[var(--surface)]", border: "border-[var(--border)]", icon: Eye, label: "Watch" },
+};
+
 /* ── main page ─────────────────────────────────────────────── */
 
 export default function DailyAnalysisPage() {
-  const [mode, setMode] = useState<"analysis" | "live">("analysis");
+  const [mode, setMode] = useState<"analysis" | "live" | "scan">("analysis");
   const [data, setData] = useState<DailyAnalysisResponse | null>(null);
   const [dates, setDates] = useState<string[]>([]);
   const [selectedDate, setSelectedDate] = useState<string>("");
@@ -91,6 +116,16 @@ export default function DailyAnalysisPage() {
   const [liveData, setLiveData] = useState<LiveTrackerResponse | null>(null);
   const [liveLoading, setLiveLoading] = useState(false);
   const [liveStatusFilter, setLiveStatusFilter] = useState<string>("");
+
+  // Live scan (market depth)
+  const [scanData, setScanData] = useState<LiveScanResponse | null>(null);
+  const [scanLoading, setScanLoading] = useState(false);
+  const [scanRecFilter, setScanRecFilter] = useState<string>("");
+  const [scanTriggering, setScanTriggering] = useState(false);
+
+  // LLM analysis
+  const [llmData, setLlmData] = useState<LLMScanResponse | null>(null);
+  const [llmLoading, setLlmLoading] = useState(false);
 
   // Filters
   const [searchQuery, setSearchQuery] = useState("");
@@ -281,6 +316,86 @@ export default function DailyAnalysisPage() {
     if (mode === "live" && !liveData) fetchLiveData();
   }, [mode, liveData, fetchLiveData]);
 
+  // Live scan fetch
+  const fetchScanData = useCallback(async () => {
+    setScanLoading(true);
+    try {
+      const r = await fetchLiveScan();
+      setScanData(r);
+    } catch {
+      // silent
+    } finally {
+      setScanLoading(false);
+    }
+  }, []);
+
+  // Auto-refresh scan every 60s
+  const { secondsToRefresh: scanSecondsToRefresh, refresh: refreshScan } = useAutoRefresh({
+    fetchFn: fetchScanData,
+    intervalMs: 60_000,
+    immediate: mode === "scan",
+  });
+
+  // Fetch scan data when switching to scan mode
+  useEffect(() => {
+    if (mode === "scan" && !scanData) fetchScanData();
+  }, [mode, scanData, fetchScanData]);
+
+  // Handle scan trigger
+  const handleTriggerScan = async () => {
+    setScanTriggering(true);
+    try {
+      await triggerLiveScan();
+      // Poll until new results appear
+      setTimeout(async () => {
+        await fetchScanData();
+        setScanTriggering(false);
+      }, 30000); // Scan takes ~26s
+    } catch {
+      setScanTriggering(false);
+    }
+  };
+
+  // LLM analysis fetch
+  const fetchLlmData = useCallback(async () => {
+    setLlmLoading(true);
+    try {
+      const r = await fetchLLMScan(selectedDate || undefined);
+      setLlmData(r);
+    } catch {
+      // silent
+    } finally {
+      setLlmLoading(false);
+    }
+  }, [selectedDate]);
+
+  // Fetch LLM data when switching to scan mode
+  useEffect(() => {
+    if (mode === "scan" && !llmData) fetchLlmData();
+  }, [mode, llmData, fetchLlmData]);
+
+  // Filtered scan results
+  const filteredScanResults = useMemo(() => {
+    if (!scanData?.results) return [];
+    let results = scanData.results;
+    if (scanRecFilter) results = results.filter((r) => r.recommendation === scanRecFilter);
+    if (sectorFilter) results = results.filter((r) => r.sector === sectorFilter);
+    if (categoryFilter) results = results.filter((r) => r.category === categoryFilter);
+    return results;
+  }, [scanData, scanRecFilter, sectorFilter, categoryFilter]);
+
+  // Scan recommendation counts
+  const scanRecCounts = useMemo(() => {
+    if (!scanData?.results) return {} as Record<string, number>;
+    const c: Record<string, number> = {};
+    for (const r of scanData.results) {
+      if (sectorFilter && r.sector !== sectorFilter) continue;
+      if (categoryFilter && r.category !== categoryFilter) continue;
+      c[r.recommendation] = (c[r.recommendation] || 0) + 1;
+    }
+    return c;
+  }, [scanData, sectorFilter, categoryFilter]);
+
   // Filtered live stocks
   const filteredLiveStocks = useMemo(() => {
     if (!liveData?.stocks) return [];
@@ -330,6 +445,16 @@ export default function DailyAnalysisPage() {
             >
               <Radio className="h-3 w-3" />
               Live
+            </button>
+            <button
+              onClick={() => setMode("scan")}
+              className={clsx(
+                "px-2.5 py-1 rounded-md text-xs font-medium transition-colors flex items-center gap-1",
+                mode === "scan" ? "bg-purple-500/15 text-purple-400" : "text-[var(--text-dim)] hover:text-[var(--text)]",
+              )}
+            >
+              <Activity className="h-3 w-3" />
+              Depth
             </button>
           </div>
         </div>
@@ -637,6 +762,151 @@ export default function DailyAnalysisPage() {
                 <LiveTrackerRow key={stock.symbol} stock={stock} />
               ))}
               {filteredLiveStocks.length === 0 && (
+                <p className="text-center text-sm text-[var(--text-dim)] py-8">No stocks match filters</p>
+              )}
+            </div>
+          )}
+        </>
+      )}
+
+      {/* ════ DEPTH SCAN MODE ════ */}
+      {mode === "scan" && (
+        <>
+          {/* Scan header */}
+          <div className="flex flex-wrap items-center gap-3">
+            <span className="flex items-center gap-1.5 text-xs text-[var(--text-muted)]">
+              <Activity className="h-3.5 w-3.5 text-purple-400" />
+              Order Book Depth Scanner
+            </span>
+
+            {scanData?.timestamp && (
+              <span className="text-[10px] text-[var(--text-dim)]">
+                Last scan: {new Date(scanData.timestamp).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}
+              </span>
+            )}
+            <span className="text-[10px] text-[var(--text-dim)]">
+              Next: {scanSecondsToRefresh}s
+            </span>
+            <button onClick={refreshScan} className="text-[10px] text-blue-400 hover:text-blue-300 flex items-center gap-0.5">
+              <RefreshCw className={clsx("h-3 w-3", scanLoading && "animate-spin")} /> Refresh
+            </button>
+
+            <div className="flex items-center gap-2 ml-auto">
+              {/* Trigger scan */}
+              <button
+                onClick={handleTriggerScan}
+                disabled={scanTriggering}
+                className={clsx(
+                  "flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium transition-colors",
+                  scanTriggering
+                    ? "bg-amber-500/10 text-amber-400 border border-amber-500/30"
+                    : "bg-purple-500/10 text-purple-400 border border-purple-500/30 hover:bg-purple-500/20",
+                )}
+              >
+                {scanTriggering ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Activity className="h-3.5 w-3.5" />}
+                {scanTriggering ? "Scanning..." : "Scan Now"}
+              </button>
+
+              {/* Excel download */}
+              <a
+                href={getLiveScanExcelUrl(scanData?.date)}
+                download
+                className="flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium bg-[var(--surface)] border border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--hover)] transition-colors"
+              >
+                <Download className="h-3.5 w-3.5" />
+                Excel
+              </a>
+
+              <span className="text-xs text-[var(--text-muted)]">
+                <span className="font-bold text-[var(--text)]">{scanData?.total ?? 0}</span> stocks
+              </span>
+            </div>
+          </div>
+
+          {!scanData?.timestamp && (
+            <div className="bg-purple-500/5 border border-purple-500/20 rounded-lg px-3 py-2 text-xs text-purple-400">
+              No scan results yet. Click "Scan Now" to run a manual scan, or wait for the next scheduled scan during market hours (9:55-14:30).
+            </div>
+          )}
+
+          {/* LLM Insights Panel */}
+          {llmData?.market_outlook && (
+            <LLMInsightsPanel data={llmData} onRefresh={fetchLlmData} loading={llmLoading} />
+          )}
+          {!llmData?.market_outlook && !llmLoading && (
+            <div className="bg-[var(--surface)] border border-[var(--border)] rounded-lg px-3 py-2 flex items-center gap-2">
+              <Brain className="h-4 w-4 text-[var(--text-dim)]" />
+              <span className="text-xs text-[var(--text-dim)]">
+                No AI analysis yet. Run <code className="text-[10px] bg-[var(--hover)] px-1 py-0.5 rounded">python3 scripts/llm_scanner.py</code> on the GCP VM.
+              </span>
+              <button onClick={fetchLlmData} className="text-[10px] text-blue-400 hover:text-blue-300 ml-auto flex items-center gap-0.5">
+                <RefreshCw className={clsx("h-3 w-3", llmLoading && "animate-spin")} /> Check
+              </button>
+            </div>
+          )}
+
+          {/* Recommendation filter pills */}
+          {scanData?.results && scanData.results.length > 0 && (
+            <div className="flex flex-wrap gap-2">
+              <button
+                onClick={() => setScanRecFilter("")}
+                className={clsx(
+                  "px-2.5 py-1 rounded-lg text-xs font-medium border transition-colors",
+                  !scanRecFilter ? "bg-purple-500/15 text-purple-400 border-purple-500/30" : "bg-[var(--surface)] border-[var(--border)] text-[var(--text-dim)]",
+                )}
+              >
+                All ({scanData.total})
+              </button>
+              {(["BUY NOW", "READY", "ACCUMULATE", "WEAK-WAIT", "BOOK PARTIAL", "BOOK FULL", "EXIT", "WATCH"] as const).map((rec) => {
+                const cnt = scanRecCounts[rec] ?? 0;
+                if (cnt === 0) return null;
+                const rc = REC_CONFIG[rec] ?? REC_CONFIG.WATCH;
+                return (
+                  <button
+                    key={rec}
+                    onClick={() => setScanRecFilter(scanRecFilter === rec ? "" : rec)}
+                    className={clsx(
+                      "flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium border transition-colors",
+                      scanRecFilter === rec ? `${rc.bg} ${rc.color} ${rc.border}` : "bg-[var(--surface)] border-[var(--border)] text-[var(--text-dim)]",
+                    )}
+                  >
+                    <rc.icon className="h-3 w-3" />
+                    {rc.label} ({cnt})
+                  </button>
+                );
+              })}
+
+              {/* Sector/category filters */}
+              <select value={sectorFilter} onChange={(e) => setSectorFilter(e.target.value)} className="bg-[var(--surface)] border border-[var(--border)] rounded-md px-2 py-1 text-xs text-[var(--text)] focus:outline-none focus:ring-1 focus:ring-blue-500 max-w-36">
+                <option value="">All Sectors</option>
+                {[...new Set(scanData.results.map((s) => s.sector).filter(Boolean))].sort().map((s) => (
+                  <option key={s} value={s}>{s}</option>
+                ))}
+              </select>
+              <select value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)} className="bg-[var(--surface)] border border-[var(--border)] rounded-md px-2 py-1 text-xs text-[var(--text)] focus:outline-none focus:ring-1 focus:ring-blue-500">
+                <option value="">All Cat</option>
+                {["A", "B", "Z"].map((c) => <option key={c} value={c}>{c}</option>)}
+              </select>
+            </div>
+          )}
+
+          {/* Scan results */}
+          {scanLoading && !scanData ? (
+            <div className="flex items-center justify-center py-20">
+              <Loader2 className="h-6 w-6 animate-spin text-[var(--text-dim)]" />
+            </div>
+          ) : !scanData || scanData.total === 0 ? (
+            <div className="text-center py-20">
+              <Activity className="h-10 w-10 text-[var(--text-dim)] mx-auto mb-3" />
+              <p className="text-sm text-[var(--text-muted)]">No scan results available</p>
+              <p className="text-xs text-[var(--text-dim)] mt-1">Click "Scan Now" or wait for scheduled scan</p>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {filteredScanResults.map((result, i) => (
+                <LiveScanRow key={`${result.symbol}-${i}`} result={result} />
+              ))}
+              {filteredScanResults.length === 0 && (
                 <p className="text-center text-sm text-[var(--text-dim)] py-8">No stocks match filters</p>
               )}
             </div>
@@ -1001,6 +1271,290 @@ function LiveTrackerRow({ stock }: { stock: LiveTrackerStock }) {
             {sc.note}
           </div>
         </div>
+      )}
+    </div>
+  );
+}
+
+/* ── live scan row (market depth) ─────────────────────────── */
+
+function LiveScanRow({ result }: { result: LiveScanResult }) {
+  const [expanded, setExpanded] = useState(false);
+  const rc = REC_CONFIG[result.recommendation] ?? REC_CONFIG.WATCH;
+  const actionCfg = getActionCfg(result.action);
+
+  const ratioColor = result.buy_sell_ratio >= 2 ? "text-green-400"
+    : result.buy_sell_ratio >= 1.2 ? "text-emerald-400"
+    : result.buy_sell_ratio >= 0.8 ? "text-amber-400"
+    : "text-red-400";
+
+  return (
+    <div className={clsx(
+      "bg-[var(--surface)] border rounded-lg overflow-hidden transition-all",
+      rc.border,
+      result.recommendation === "BUY NOW" && "ring-1 ring-green-500/30",
+      result.recommendation === "EXIT" && "ring-1 ring-red-500/30",
+    )}>
+      {/* Main row */}
+      <div className="px-3 py-2.5 flex items-center gap-2 flex-wrap">
+        <Link to={`/stock/${result.symbol}`} className="text-sm font-bold text-[var(--text)] hover:text-blue-400 transition-colors min-w-[80px]">
+          {result.symbol}
+        </Link>
+        {result.category && (
+          <span className="text-[9px] px-1 py-0.5 rounded bg-[var(--hover)] text-[var(--text-dim)] font-medium">{result.category}</span>
+        )}
+
+        {/* Action badge */}
+        <span className={clsx("text-[10px] px-1.5 py-0.5 rounded font-medium border", actionCfg.bg, actionCfg.color, actionCfg.border)}>
+          {actionCfg.label}
+        </span>
+
+        {/* Live LTP + change */}
+        <div className="flex items-center gap-1.5 ml-auto">
+          <span className="text-sm font-bold tabular-nums text-[var(--text)]">{formatNumber(result.live_ltp)}</span>
+          <span className={clsx("text-[11px] font-medium tabular-nums", colorBySign(result.live_change_pct))}>
+            {result.live_change_pct > 0 ? "+" : ""}{result.live_change_pct?.toFixed(1)}%
+          </span>
+        </div>
+
+        {/* Recommendation badge */}
+        <span className={clsx(
+          "flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-semibold border min-w-[110px] justify-center",
+          rc.bg, rc.color, rc.border,
+          result.recommendation === "BUY NOW" && "animate-pulse",
+        )}>
+          <rc.icon className="h-3.5 w-3.5" />
+          {rc.label}
+        </span>
+
+        {/* B/S Ratio */}
+        <span className={clsx("text-[11px] font-bold tabular-nums w-14 text-right", ratioColor)}>
+          {result.buy_sell_ratio > 50 ? "99+" : result.buy_sell_ratio.toFixed(1)}x
+        </span>
+
+        {/* T+2 Risk badge */}
+        {result.t2_risk && (
+          <span className={clsx(
+            "text-[10px] px-1.5 py-0.5 rounded font-semibold border",
+            result.t2_risk === "HIGH" ? "text-red-400 bg-red-500/10 border-red-500/30"
+              : result.t2_risk === "MEDIUM" ? "text-amber-400 bg-amber-500/10 border-amber-500/30"
+              : "text-green-400 bg-green-500/10 border-green-500/30",
+          )}>
+            T+2 {result.t2_risk}
+          </span>
+        )}
+
+        <button
+          onClick={() => setExpanded(!expanded)}
+          className="text-[var(--text-dim)] hover:text-[var(--text)] transition-colors"
+        >
+          {expanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+        </button>
+      </div>
+
+      {/* Order book + price levels (always visible) */}
+      <div className="px-3 py-1.5 border-t border-[var(--border)] grid grid-cols-6 gap-2 text-center text-[11px]">
+        <div>
+          <div className="text-[9px] text-[var(--text-dim)]">Buy Vol</div>
+          <div className="font-medium tabular-nums text-green-400">{formatNumber(result.total_buy_vol)}</div>
+        </div>
+        <div>
+          <div className="text-[9px] text-[var(--text-dim)]">Sell Vol</div>
+          <div className="font-medium tabular-nums text-red-400">{formatNumber(result.total_sell_vol)}</div>
+        </div>
+        <div>
+          <div className="text-[9px] text-[var(--text-dim)]">Entry</div>
+          <div className="font-medium tabular-nums text-[var(--text)]">{formatNumber(result.entry_low)}–{formatNumber(result.entry_high)}</div>
+        </div>
+        <div>
+          <div className="text-[9px] text-[var(--text-dim)]">SL</div>
+          <div className="font-medium tabular-nums text-red-400">{formatNumber(result.sl)}</div>
+        </div>
+        <div>
+          <div className="text-[9px] text-[var(--text-dim)]">T1</div>
+          <div className="font-medium tabular-nums text-green-400">{formatNumber(result.t1)}</div>
+        </div>
+        <div>
+          <div className="text-[9px] text-[var(--text-dim)]">T2</div>
+          <div className="font-medium tabular-nums text-green-400">{formatNumber(result.t2)}</div>
+        </div>
+      </div>
+
+      {/* Expanded detail */}
+      {expanded && (
+        <div className="px-3 py-2 border-t border-[var(--border)] space-y-1.5 text-[11px]">
+          <div className="flex flex-wrap gap-3">
+            <span className="text-[var(--text-dim)]">Best Bid <span className="font-medium text-green-400">{formatNumber(result.best_bid)}</span></span>
+            <span className="text-[var(--text-dim)]">Best Ask <span className="font-medium text-red-400">{result.best_ask > 0 ? formatNumber(result.best_ask) : "–"}</span></span>
+            <span className="text-[var(--text-dim)]">Spread <span className="font-medium text-[var(--text)]">{result.spread_pct > 0 ? result.spread_pct.toFixed(2) + "%" : "–"}</span></span>
+            <span className="text-[var(--text-dim)]">Buy levels <span className="font-medium text-[var(--text)]">{result.buy_levels}</span></span>
+            <span className="text-[var(--text-dim)]">Sell levels <span className="font-medium text-[var(--text)]">{result.sell_levels}</span></span>
+          </div>
+          <div className="flex flex-wrap gap-3">
+            <span className="text-[var(--text-dim)]">RSI <span className={clsx("font-medium", result.rsi < 30 ? "text-green-400" : result.rsi > 70 ? "text-red-400" : "text-[var(--text)]")}>{result.rsi?.toFixed(1)}</span></span>
+            <span className="text-[var(--text-dim)]">MACD <span className={clsx("font-medium", result.macd_status?.toLowerCase().includes("bullish") ? "text-green-400" : result.macd_status?.toLowerCase().includes("bearish") ? "text-red-400" : "text-amber-400")}>{result.macd_status}</span></span>
+            <span className="text-[var(--text-dim)]">Status <span className="font-medium text-[var(--text)]">{result.status}</span></span>
+            <span className="text-[var(--text-dim)]">Dist <span className={clsx("font-medium", colorBySign(-result.distance_pct))}>{result.distance_pct > 0 ? "+" : ""}{result.distance_pct}%</span></span>
+            <span className="text-[var(--text-dim)]">Score <span className={clsx("font-medium", result.score > 30 ? "text-green-400" : result.score > 0 ? "text-blue-400" : "text-red-400")}>{result.score > 0 ? "+" : ""}{result.score?.toFixed(0)}</span></span>
+            <span className="text-[var(--text-dim)]">Vol <span className="font-medium text-[var(--text)]">{formatNumber(result.live_volume)}</span></span>
+          </div>
+          {result.sector && (
+            <div className="text-[var(--text-dim)]">Sector: <span className="font-medium text-[var(--text)]">{result.sector}</span></div>
+          )}
+          {result.t2_risk_reason && (
+            <div className={clsx(
+              "text-[11px] px-2 py-1 rounded border",
+              result.t2_risk === "HIGH" ? "bg-red-500/5 border-red-500/20 text-red-300"
+                : result.t2_risk === "MEDIUM" ? "bg-amber-500/5 border-amber-500/20 text-amber-300"
+                : "bg-green-500/5 border-green-500/20 text-green-300",
+            )}>
+              T+2 Risk: {result.t2_risk_reason}
+            </div>
+          )}
+          <p className="text-[var(--text-muted)] leading-relaxed">{result.reasoning}</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ── LLM insights panel ──────────────────────────────────── */
+
+function LLMInsightsPanel({ data, onRefresh, loading }: { data: LLMScanResponse; onRefresh: () => void; loading: boolean }) {
+  const [expanded, setExpanded] = useState(true);
+  const outlook = data.market_outlook;
+  if (!outlook) return null;
+
+  const sentimentColor = outlook.sentiment === "BULLISH" ? "text-green-400 bg-green-500/10 border-green-500/30"
+    : outlook.sentiment === "BEARISH" ? "text-red-400 bg-red-500/10 border-red-500/30"
+    : outlook.sentiment === "CAUTIOUS" ? "text-amber-400 bg-amber-500/10 border-amber-500/30"
+    : "text-blue-400 bg-blue-500/10 border-blue-500/30";
+
+  const avoidStocks = outlook.key_insights?.stocks_to_avoid ?? [];
+
+  return (
+    <div className="bg-[var(--surface)] border border-purple-500/30 rounded-lg overflow-hidden">
+      {/* Header */}
+      <div className="px-3 py-2.5 flex items-center gap-2 flex-wrap">
+        <Brain className="h-4 w-4 text-purple-400" />
+        <span className="text-xs font-bold text-purple-400">AI Analysis</span>
+        <span className={clsx("px-2 py-0.5 rounded-full text-[10px] font-bold border", sentimentColor)}>
+          {outlook.sentiment}
+        </span>
+        {data.scan_time && (
+          <span className="text-[10px] text-[var(--text-dim)]">
+            {new Date(data.scan_time).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}
+          </span>
+        )}
+        {data.scan_count && data.scan_count > 1 && (
+          <span className="text-[10px] text-[var(--text-dim)]">({data.scan_count} scans today)</span>
+        )}
+        <div className="ml-auto flex items-center gap-2">
+          <button onClick={onRefresh} className="text-[10px] text-blue-400 hover:text-blue-300 flex items-center gap-0.5">
+            <RefreshCw className={clsx("h-3 w-3", loading && "animate-spin")} /> Refresh
+          </button>
+          <button onClick={() => setExpanded(!expanded)} className="text-[var(--text-dim)] hover:text-[var(--text)]">
+            {expanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+          </button>
+        </div>
+      </div>
+
+      {/* Market summary */}
+      <div className="px-3 py-2 border-t border-[var(--border)]">
+        <p className="text-xs text-[var(--text-muted)] leading-relaxed">{outlook.summary}</p>
+      </div>
+
+      {expanded && (
+        <>
+          {/* Top Picks */}
+          {data.top_picks.length > 0 && (
+            <div className="px-3 py-2 border-t border-[var(--border)] space-y-2">
+              <div className="flex items-center gap-1.5">
+                <Sparkles className="h-3.5 w-3.5 text-green-400" />
+                <span className="text-[11px] font-bold text-[var(--text)]">Top Picks</span>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                {data.top_picks.map((pick) => {
+                  const recColor = pick.recommendation === "STRONG_BUY" ? "text-green-300 bg-green-500/15 border-green-500/40"
+                    : pick.recommendation === "BUY" ? "text-green-400 bg-green-500/10 border-green-500/30"
+                    : pick.recommendation === "WAIT" ? "text-amber-400 bg-amber-500/10 border-amber-500/30"
+                    : "text-red-400 bg-red-500/10 border-red-500/30";
+                  const confColor = pick.confidence === "HIGH" ? "text-green-400" : pick.confidence === "MEDIUM" ? "text-amber-400" : "text-[var(--text-dim)]";
+
+                  return (
+                    <div key={pick.symbol} className="bg-[var(--bg)] border border-[var(--border)] rounded-lg p-2.5 space-y-1">
+                      <div className="flex items-center gap-2">
+                        <Link to={`/stock/${pick.symbol}`} className="text-xs font-bold text-[var(--text)] hover:text-blue-400">
+                          {pick.symbol}
+                        </Link>
+                        <span className={clsx("px-1.5 py-0.5 rounded text-[10px] font-semibold border", recColor)}>
+                          {pick.recommendation}
+                        </span>
+                        <span className={clsx("text-[10px] font-medium ml-auto", confColor)}>
+                          {pick.confidence}
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-[var(--text-muted)] leading-relaxed">{pick.reasoning}</p>
+                      {pick.entry_strategy && (
+                        <p className="text-[10px] text-blue-400">
+                          <span className="font-medium">Entry:</span> {pick.entry_strategy}
+                        </p>
+                      )}
+                      {pick.risk_note && (
+                        <p className="text-[10px] text-amber-400">
+                          <span className="font-medium">Risk:</span> {pick.risk_note}
+                        </p>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Key risks + timing */}
+          <div className="px-3 py-2 border-t border-[var(--border)] flex flex-wrap gap-4 text-[11px]">
+            {outlook.key_risks.length > 0 && (
+              <div>
+                <span className="text-[10px] font-semibold text-red-400 uppercase tracking-wider">Risks</span>
+                <ul className="mt-0.5 space-y-0.5 text-[var(--text-muted)]">
+                  {outlook.key_risks.map((r, i) => (
+                    <li key={i} className="flex items-start gap-1">
+                      <AlertTriangle className="h-3 w-3 text-red-400 mt-0.5 shrink-0" />
+                      {r}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {outlook.key_insights?.timing_advice && (
+              <div>
+                <span className="text-[10px] font-semibold text-blue-400 uppercase tracking-wider">Timing</span>
+                <p className="mt-0.5 text-[var(--text-muted)]">{outlook.key_insights.timing_advice}</p>
+              </div>
+            )}
+            {outlook.key_insights?.sector_insights && (
+              <div>
+                <span className="text-[10px] font-semibold text-purple-400 uppercase tracking-wider">Sectors</span>
+                <p className="mt-0.5 text-[var(--text-muted)]">{outlook.key_insights.sector_insights}</p>
+              </div>
+            )}
+          </div>
+
+          {/* Stocks to avoid */}
+          {avoidStocks.length > 0 && (
+            <div className="px-3 py-2 border-t border-[var(--border)]">
+              <span className="text-[10px] font-semibold text-red-400 uppercase tracking-wider">Avoid Today</span>
+              <div className="mt-1 flex flex-wrap gap-2">
+                {avoidStocks.map((s, i) => (
+                  <span key={i} className="text-[10px] px-1.5 py-0.5 rounded bg-red-500/10 text-red-400 border border-red-500/20" title={s.reason}>
+                    {s.symbol}: {s.reason}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+        </>
       )}
     </div>
   );

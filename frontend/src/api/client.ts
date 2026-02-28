@@ -15,6 +15,8 @@ import type {
   HeatmapSector,
   DailyAnalysisResponse,
   AnalysisSummaryResponse,
+  LiveScanResponse,
+  LLMScanResponse,
 } from "../types/index.ts";
 
 const api = axios.create({
@@ -373,6 +375,31 @@ export async function fetchLiveTracker(
   const params: Record<string, string> = {};
   if (date) params.date = date;
   const { data } = await api.get("/analysis/live-tracker", { params });
+  return data;
+}
+
+/* ========================== Live Scan ========================== */
+
+export async function fetchLiveScan(): Promise<LiveScanResponse> {
+  const { data } = await api.get<LiveScanResponse>("/analysis/live-scan");
+  return data;
+}
+
+export function getLiveScanExcelUrl(date?: string): string {
+  const base = "/api/v1/analysis/live-scan/excel";
+  return date ? `${base}?date=${date}` : base;
+}
+
+export async function triggerLiveScan(): Promise<{ status: string; message?: string }> {
+  const { data } = await api.post<{ status: string; message?: string }>("/analysis/live-scan/trigger");
+  return data;
+}
+
+/* ========================== LLM Scan ========================== */
+
+export async function fetchLLMScan(date?: string): Promise<LLMScanResponse> {
+  const params = date ? { date } : undefined;
+  const { data } = await api.get<LLMScanResponse>("/analysis/llm-scan", { params });
   return data;
 }
 

@@ -240,6 +240,33 @@ def setup_scheduler() -> AsyncIOScheduler:
         replace_existing=True,
     )
 
+    # Live intraday scanner — market depth + buy signal tracking every 5 min
+    scheduler.add_job(
+        run_live_scanner,
+        trigger=CronTrigger(
+            day_of_week="sun,mon,tue,wed,thu",
+            hour="9-14",
+            minute="*/5",
+            timezone="Asia/Dhaka",
+        ),
+        id="live_scanner",
+        name="Live intraday scanner",
+        replace_existing=True,
+    )
+
+    # Verify past scan decisions — check actual outcomes at T+1..T+7
+    scheduler.add_job(
+        verify_scan_decisions,
+        trigger=CronTrigger(
+            day_of_week="sun,mon,tue,wed,thu",
+            hour=15, minute=30,
+            timezone="Asia/Dhaka",
+        ),
+        id="verify_decisions",
+        name="Verify past scan decisions",
+        replace_existing=True,
+    )
+
     return scheduler
 
 
@@ -253,6 +280,28 @@ async def run_post_market_analysis():
         thread.start()
     except Exception as e:
         logger.error(f"Post-market analysis failed: {e}")
+
+
+async def run_live_scanner():
+    """Run intraday live scanner (market depth + buy signal analysis)."""
+    try:
+        from analysis.live_scanner import run_live_scan
+        import threading
+        thread = threading.Thread(target=run_live_scan, daemon=True)
+        thread.start()
+    except Exception as e:
+        logger.error(f"Live scanner failed: {e}")
+
+
+async def verify_scan_decisions():
+    """Verify past scan decisions against actual outcomes."""
+    try:
+        from analysis.live_scanner import verify_past_decisions
+        import threading
+        thread = threading.Thread(target=verify_past_decisions, daemon=True)
+        thread.start()
+    except Exception as e:
+        logger.error(f"Decision verification failed: {e}")
 
 
 async def cleanup_intraday_snapshots():

@@ -4,6 +4,7 @@ import io
 import json
 import logging
 import math
+import os
 import threading
 from datetime import datetime, time as dtime
 
@@ -288,3 +289,183 @@ async def live_tracker(
         "count": len(stocks),
         "stocks": stocks,
     }
+
+
+@router.get("/live-scan")
+async def get_live_scan():
+    """Get the latest live scan results (market depth + buy signal analysis)."""
+    from analysis.live_scanner import get_latest_scan
+    scan = get_latest_scan()
+    if not scan.get("timestamp"):
+        return {"timestamp": None, "results": [], "summary": {}, "total": 0,
+                "message": "No scan results yet. Scanner runs every 5 min during market hours (9:55-14:30)."}
+    return scan
+
+
+@router.get("/live-scan/excel")
+async def download_live_scan_excel(
+    date: str = Query(default=None, description="Date YYYY-MM-DD (default: today)"),
+):
+    """Download the live scan Excel file for a date."""
+    from analysis.live_scanner import get_scan_excel_path
+
+    filepath = get_scan_excel_path(date)
+    if not filepath:
+        d = date or datetime.now(DSE_TZ).strftime("%Y-%m-%d")
+        raise HTTPException(status_code=404, detail=f"No live scan Excel for {d}")
+
+    filename = os.path.basename(filepath)
+    return StreamingResponse(
+        open(filepath, "rb"),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.post("/live-scan/trigger")
+async def trigger_live_scan():
+    """Manually trigger a live scan (for testing outside market hours)."""
+    from analysis.live_scanner import run_live_scan
+    import threading
+
+    def _run():
+        return run_live_scan()
+
+    thread = threading.Thread(target=_run, daemon=True)
+    thread.start()
+    return {"status": "started", "message": "Live scan triggered"}
+
+
+@router.get("/llm-scan")
+async def get_llm_scan(
+    date: str = Query(default=None, description="Date YYYY-MM-DD (default: today)"),
+):
+    """Get latest LLM analysis results."""
+    if not date:
+        date = datetime.now(DSE_TZ).strftime("%Y-%m-%d")
+
+    conn = get_connection()
+
+    # Get the latest scan_time for this date
+    ts_row = conn.execute(
+        "SELECT MAX(scan_time) as latest FROM llm_scan_results WHERE date = %s",
+        (date,),
+    ).fetchone()
+
+    if not ts_row or not ts_row["latest"]:
+        conn.close()
+        return {
+            "date": date,
+            "scan_time": None,
+            "market_outlook": None,
+            "top_picks": [],
+            "message": "No LLM analysis for this date. Run the scanner on the GCP VM.",
+        }
+
+    latest = ts_row["latest"]
+
+    # Load market overview
+    overview_row = conn.execute(
+        """SELECT recommendation, reasoning, key_insights, risk_factors
+           FROM llm_scan_results
+           WHERE date = %s AND scan_time = %s AND analysis_type = 'market_overview'
+           LIMIT 1""",
+        (date, latest),
+    ).fetchone()
+
+    market_outlook = None
+    if overview_row:
+        market_outlook = {
+            "sentiment": overview_row["recommendation"],
+            "summary": overview_row["reasoning"],
+            "key_insights": json.loads(overview_row["key_insights"]) if overview_row["key_insights"] else {},
+            "key_risks": json.loads(overview_row["risk_factors"]) if overview_row["risk_factors"] else [],
+        }
+
+    # Load stock picks
+    pick_rows = conn.execute(
+        """SELECT symbol, recommendation, confidence, reasoning, key_insights, risk_factors
+           FROM llm_scan_results
+           WHERE date = %s AND scan_time = %s AND analysis_type = 'stock_pick'
+           ORDER BY
+             CASE confidence
+               WHEN 'HIGH' THEN 0
+               WHEN 'MEDIUM' THEN 1
+               WHEN 'LOW' THEN 2
+               ELSE 3
+             END""",
+        (date, latest),
+    ).fetchall()
+
+    top_picks = []
+    for r in pick_rows:
+        insights = json.loads(r["key_insights"]) if r["key_insights"] else {}
+        risks = json.loads(r["risk_factors"]) if r["risk_factors"] else []
+        top_picks.append({
+            "symbol": r["symbol"],
+            "recommendation": r["recommendation"],
+            "confidence": r["confidence"],
+            "reasoning": r["reasoning"],
+            "entry_strategy": insights.get("entry_strategy", ""),
+            "risk_note": risks[0] if risks else "",
+        })
+
+    # Check how many scans today
+    count_row = conn.execute(
+        """SELECT COUNT(DISTINCT scan_time) as cnt FROM llm_scan_results
+           WHERE date = %s AND analysis_type = 'market_overview'""",
+        (date,),
+    ).fetchone()
+
+    conn.close()
+
+    return {
+        "date": date,
+        "scan_time": str(latest),
+        "scan_count": count_row["cnt"] if count_row else 0,
+        "market_outlook": market_outlook,
+        "top_picks": top_picks,
+    }
+
+
+@router.get("/llm-scan/history")
+async def get_llm_scan_history(
+    date: str = Query(default=None, description="Date YYYY-MM-DD"),
+):
+    """Get all LLM scan times for a date (to see how analysis evolved)."""
+    if not date:
+        date = datetime.now(DSE_TZ).strftime("%Y-%m-%d")
+
+    conn = get_connection()
+    rows = conn.execute(
+        """SELECT DISTINCT scan_time, recommendation as sentiment
+           FROM llm_scan_results
+           WHERE date = %s AND analysis_type = 'market_overview'
+           ORDER BY scan_time DESC""",
+        (date,),
+    ).fetchall()
+    conn.close()
+
+    return {
+        "date": date,
+        "scans": [{"time": str(r["scan_time"]), "sentiment": r["sentiment"]} for r in rows],
+    }
+
+
+@router.get("/decision-accuracy")
+async def get_decision_accuracy_api(
+    days: int = Query(default=30, description="Look back N days"),
+):
+    """Get accuracy stats for past scan decisions (backtesting)."""
+    from analysis.live_scanner import get_decision_accuracy
+    return get_decision_accuracy(days)
+
+
+@router.post("/verify-decisions")
+async def trigger_decision_verification():
+    """Manually trigger verification of past scan decisions."""
+    from analysis.live_scanner import verify_past_decisions
+    import threading
+    thread = threading.Thread(target=verify_past_decisions, daemon=True)
+    thread.start()
+    return {"status": "started", "message": "Verifying past decisions..."}

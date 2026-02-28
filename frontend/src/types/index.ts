@@ -269,3 +269,77 @@ export interface AnalysisSummaryResponse {
   total: number;
   by_action: Record<string, number>;
 }
+
+/* ========================== Live Scan ========================== */
+
+export interface LiveScanResult {
+  timestamp: string;
+  symbol: string;
+  action: string;
+  category: string;
+  sector: string;
+  score: number;
+  live_ltp: number;
+  live_change_pct: number;
+  live_volume: number;
+  entry_low: number;
+  entry_high: number;
+  sl: number;
+  t1: number;
+  t2: number;
+  status: string;
+  distance_pct: number;
+  total_buy_vol: number;
+  total_sell_vol: number;
+  buy_sell_ratio: number;
+  best_bid: number;
+  best_ask: number;
+  spread_pct: number;
+  buy_levels: number;
+  sell_levels: number;
+  recommendation: string;
+  reasoning: string;
+  rsi: number;
+  macd_status: string;
+  t2_risk: string;
+  t2_risk_reason: string;
+}
+
+export interface LLMStockPick {
+  symbol: string;
+  recommendation: string;
+  confidence: string;
+  reasoning: string;
+  entry_strategy: string;
+  risk_note: string;
+}
+
+export interface LLMMarketOutlook {
+  sentiment: string;
+  summary: string;
+  key_insights: {
+    sector_insights?: string;
+    timing_advice?: string;
+    stocks_to_avoid?: { symbol: string; reason: string }[];
+  };
+  key_risks: string[];
+}
+
+export interface LLMScanResponse {
+  date: string;
+  scan_time: string | null;
+  scan_count?: number;
+  market_outlook: LLMMarketOutlook | null;
+  top_picks: LLMStockPick[];
+  message?: string;
+}
+
+export interface LiveScanResponse {
+  timestamp: string | null;
+  date?: string;
+  results: LiveScanResult[];
+  summary: Record<string, number>;
+  total: number;
+  excel_path?: string;
+  message?: string;
+}
