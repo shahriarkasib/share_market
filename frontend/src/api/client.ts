@@ -367,4 +367,13 @@ export function getAnalysisExcelUrl(date?: string): string {
   return date ? `${base}?date=${date}` : base;
 }
 
+export async function fetchLiveTracker(
+  date?: string,
+): Promise<import("../types/index.ts").LiveTrackerResponse> {
+  const params: Record<string, string> = {};
+  if (date) params.date = date;
+  const { data } = await api.get("/analysis/live-tracker", { params });
+  return data;
+}
+
 export default api;

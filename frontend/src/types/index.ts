@@ -224,6 +224,46 @@ export interface DailyAnalysisResponse {
   message?: string;
 }
 
+export interface LiveTrackerStock {
+  symbol: string;
+  action: string;
+  category?: string;
+  sector?: string;
+  score: number;
+  entry_low: number;
+  entry_high: number;
+  sl: number;
+  t1: number;
+  t2: number;
+  entry_start?: string;
+  entry_end?: string;
+  exit_t1_by?: string;
+  exit_t2_by?: string;
+  hold_days_t1?: number;
+  hold_days_t2?: number;
+  reasoning: string;
+  rsi: number;
+  stoch_rsi: number;
+  macd_status: string;
+  risk_pct: number;
+  reward_pct: number;
+  live_ltp: number;
+  live_change_pct: number;
+  live_volume: number;
+  live_high: number;
+  live_low: number;
+  status: "ENTRY_ZONE" | "APPROACHING" | "BELOW_ENTRY" | "T1_HIT" | "T2_HIT" | "SL_HIT" | "WATCHING";
+  distance_pct: number;
+}
+
+export interface LiveTrackerResponse {
+  date: string;
+  market_status: string;
+  updated_at: string | null;
+  count: number;
+  stocks: LiveTrackerStock[];
+}
+
 export interface AnalysisSummaryResponse {
   date: string;
   total: number;
