@@ -206,6 +206,8 @@ export interface DailyAnalysis {
   scenarios_json: string;
   last_5_json: string;
   score: number;
+  sector?: string;
+  category?: string;
 }
 
 export interface DailyAnalysisResponse {

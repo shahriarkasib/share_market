@@ -526,19 +526,22 @@ def save_daily_analysis(analysis: list[dict], date_str: str | None = None):
 
 
 def load_daily_analysis(date_str: str | None = None, action_filter: str | None = None) -> list[dict]:
-    """Load daily analysis from DB."""
+    """Load daily analysis from DB, enriched with sector/category from fundamentals."""
     if not date_str:
         date_str = datetime.now(DSE_TZ).strftime("%Y-%m-%d")
 
     conn = get_connection()
-    sql = "SELECT * FROM daily_analysis WHERE date = ?"
+    sql = """SELECT da.*, f.sector, f.category
+             FROM daily_analysis da
+             LEFT JOIN fundamentals f ON da.symbol = f.symbol
+             WHERE da.date = ?"""
     params = [date_str]
 
     if action_filter:
-        sql += " AND action LIKE ?"
+        sql += " AND da.action LIKE ?"
         params.append(f"%{action_filter}%")
 
-    sql += " ORDER BY score DESC"
+    sql += " ORDER BY da.score DESC"
     rows = conn.execute(sql, params).fetchall()
     conn.close()
 
