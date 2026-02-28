@@ -32,7 +32,9 @@ import { formatNumber, formatPct, colorBySign } from "../lib/format.ts";
 /* ── action config ─────────────────────────────────────────── */
 
 const ACTION_CONFIG: Record<string, { color: string; bg: string; border: string; icon: typeof TrendingUp; label: string }> = {
+  "BUY (strong)":                   { color: "text-green-300", bg: "bg-green-500/15", border: "border-green-500/40", icon: TrendingUp,    label: "Strong Buy" },
   BUY:                              { color: "text-green-400", bg: "bg-green-500/10", border: "border-green-500/30", icon: TrendingUp,    label: "BUY" },
+  "BUY on pullback":                { color: "text-teal-400", bg: "bg-teal-500/10", border: "border-teal-500/30", icon: TrendingUp,    label: "Pullback" },
   "BUY on dip":                     { color: "text-emerald-400", bg: "bg-emerald-500/10", border: "border-emerald-500/30", icon: Target,       label: "BUY on Dip" },
   "BUY (wait for MACD cross)":      { color: "text-amber-400", bg: "bg-amber-500/10", border: "border-amber-500/30", icon: Clock,        label: "Wait MACD" },
   "HOLD/WAIT":                      { color: "text-blue-400", bg: "bg-blue-500/10", border: "border-blue-500/30", icon: Shield,       label: "Hold/Wait" },
@@ -40,7 +42,7 @@ const ACTION_CONFIG: Record<string, { color: string; bg: string; border: string;
   AVOID:                            { color: "text-red-400", bg: "bg-red-500/10", border: "border-red-500/30", icon: TrendingDown,  label: "Avoid" },
 };
 
-const TAB_ORDER = ["BUY", "BUY on dip", "BUY (wait for MACD cross)", "HOLD/WAIT", "SELL/AVOID", "AVOID"];
+const TAB_ORDER = ["BUY (strong)", "BUY", "BUY on pullback", "BUY on dip", "BUY (wait for MACD cross)", "HOLD/WAIT", "SELL/AVOID", "AVOID"];
 
 function getActionCfg(action: string) {
   return ACTION_CONFIG[action] ?? { color: "text-[var(--text-muted)]", bg: "bg-[var(--surface)]", border: "border-[var(--border)]", icon: BarChart3, label: action };

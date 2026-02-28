@@ -369,6 +369,7 @@ def init_database():
             last_5_json TEXT,
             ltp DOUBLE PRECISION,
             score DOUBLE PRECISION,
+            category TEXT,
             created_at TIMESTAMP DEFAULT NOW(),
             UNIQUE(date, symbol)
         )""",

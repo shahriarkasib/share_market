@@ -311,6 +311,82 @@ def get_a_category_symbols() -> list[str]:
     return [r["symbol"] for r in rows]
 
 
+def get_all_symbols_with_category() -> dict[str, str]:
+    """Get all stock symbols mapped to their category (A/B/Z)."""
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT symbol, COALESCE(category, 'Z') as category FROM fundamentals"
+    ).fetchall()
+    conn.close()
+    return {r["symbol"]: r["category"] for r in rows}
+
+
+def get_signal_history_accuracy(symbol: str) -> dict:
+    """Get historical signal accuracy metrics for a stock."""
+    conn = get_connection()
+    row = conn.execute(
+        """SELECT
+              COUNT(*) as total,
+              SUM(CASE WHEN signal_type IN ('BUY', 'STRONG_BUY') THEN 1 ELSE 0 END) as buy_signals,
+              SUM(CASE WHEN signal_type IN ('BUY', 'STRONG_BUY') AND actual_return_pct > 0 THEN 1 ELSE 0 END) as buy_wins,
+              SUM(CASE WHEN target_hit = 1 THEN 1 ELSE 0 END) as targets_hit,
+              AVG(actual_return_pct) as avg_return
+           FROM signal_history
+           WHERE symbol = ? AND actual_day2 IS NOT NULL""",
+        (symbol,),
+    ).fetchone()
+    conn.close()
+
+    if not row or row["total"] == 0:
+        return {"total_signals": 0, "buy_win_rate": 0.5, "target_hit_rate": 0.5, "avg_return": 0}
+
+    total = row["total"]
+    buy_signals = row["buy_signals"] or 0
+    buy_wins = row["buy_wins"] or 0
+    targets_hit = row["targets_hit"] or 0
+
+    return {
+        "total_signals": total,
+        "buy_signals": buy_signals,
+        "buy_win_rate": buy_wins / buy_signals if buy_signals > 0 else 0.5,
+        "target_hit_rate": targets_hit / total if total > 0 else 0.5,
+        "avg_return": float(row["avg_return"] or 0),
+    }
+
+
+def get_bulk_signal_accuracy(symbols: list[str]) -> dict[str, dict]:
+    """Get signal accuracy for multiple symbols in one query."""
+    conn = get_connection()
+    rows = conn.execute(
+        """SELECT
+              symbol,
+              COUNT(*) as total,
+              SUM(CASE WHEN signal_type IN ('BUY', 'STRONG_BUY') THEN 1 ELSE 0 END) as buy_signals,
+              SUM(CASE WHEN signal_type IN ('BUY', 'STRONG_BUY') AND actual_return_pct > 0 THEN 1 ELSE 0 END) as buy_wins,
+              SUM(CASE WHEN target_hit = 1 THEN 1 ELSE 0 END) as targets_hit,
+              AVG(actual_return_pct) as avg_return
+           FROM signal_history
+           WHERE actual_day2 IS NOT NULL
+           GROUP BY symbol"""
+    ).fetchall()
+    conn.close()
+
+    result = {}
+    for r in rows:
+        total = r["total"]
+        buy_signals = r["buy_signals"] or 0
+        buy_wins = r["buy_wins"] or 0
+        targets_hit = r["targets_hit"] or 0
+        result[r["symbol"]] = {
+            "total_signals": total,
+            "buy_signals": buy_signals,
+            "buy_win_rate": buy_wins / buy_signals if buy_signals > 0 else 0.5,
+            "target_hit_rate": targets_hit / total if total > 0 else 0.5,
+            "avg_return": float(r["avg_return"] or 0),
+        }
+    return result
+
+
 def get_category_count() -> int:
     """Count how many symbols have a category set."""
     conn = get_connection()

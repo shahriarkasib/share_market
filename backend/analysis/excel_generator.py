@@ -31,8 +31,16 @@ _THIN_BORDER = Border(
 _WRAP = Alignment(wrap_text=True, vertical="top")
 
 
+_STRONG_BUY_FILL = PatternFill(start_color="92D050", end_color="92D050", fill_type="solid")
+_PULLBACK_FILL = PatternFill(start_color="B4E6C8", end_color="B4E6C8", fill_type="solid")
+
+
 def _fill_for_action(action: str) -> PatternFill | None:
     a = action.upper()
+    if "STRONG" in a:
+        return _STRONG_BUY_FILL
+    if "PULLBACK" in a:
+        return _PULLBACK_FILL
     if a == "BUY":
         return _BUY_FILL
     if "MACD" in a:
@@ -77,10 +85,13 @@ def generate_analysis_excel(data: list[dict], output) -> None:
         output: file path string or BytesIO buffer
     """
     # Categorize
+    strong_buys = [s for s in data if s.get("action") == "BUY (strong)"]
     buys = [s for s in data if s.get("action") == "BUY"]
+    pullback_buys = [s for s in data if "pullback" in str(s.get("action", "")).lower()]
     macd_wait = [s for s in data if "MACD" in str(s.get("action", ""))]
     dip_buy = [s for s in data if "dip" in str(s.get("action", "")).lower()]
-    hold = [s for s in data if "HOLD" in str(s.get("action", "")) or "WAIT" in str(s.get("action", ""))]
+    hold = [s for s in data if "HOLD" in str(s.get("action", "")) or
+            (s.get("action") == "HOLD/WAIT")]
     avoid = [s for s in data if "AVOID" in str(s.get("action", "")) or "SELL" in str(s.get("action", ""))]
 
     wb = openpyxl.Workbook()
@@ -99,7 +110,10 @@ def generate_analysis_excel(data: list[dict], output) -> None:
     ws1.cell(row=r, column=1, value=f"DSE Daily Analysis — {len(data)} Stocks").font = Font(bold=True, size=16, color="2F5496")
     r += 1
     ws1.merge_cells(start_row=r, start_column=1, end_row=r, end_column=cols)
-    ws1.cell(row=r, column=1, value=f"BUY: {len(buys)} | MACD wait: {len(macd_wait)} | Buy on dip: {len(dip_buy)} | HOLD: {len(hold)} | AVOID: {len(avoid)}").font = Font(italic=True, size=10, color="666666")
+    ws1.cell(row=r, column=1, value=(
+        f"Strong BUY: {len(strong_buys)} | BUY: {len(buys)} | Pullback: {len(pullback_buys)} | "
+        f"Dip: {len(dip_buy)} | MACD wait: {len(macd_wait)} | HOLD: {len(hold)} | AVOID: {len(avoid)}"
+    )).font = Font(italic=True, size=10, color="666666")
     r += 2
 
     def _write_group(ws, r, title, stocks, fill):
@@ -129,9 +143,11 @@ def generate_analysis_excel(data: list[dict], output) -> None:
             r += 1
         return r + 1
 
+    r = _write_group(ws1, r, f"STRONG BUY ({len(strong_buys)})", strong_buys, _STRONG_BUY_FILL)
     r = _write_group(ws1, r, f"BUY NOW ({len(buys)})", buys, _BUY_FILL)
-    r = _write_group(ws1, r, f"BUY — Wait for MACD ({len(macd_wait)})", macd_wait, _MACD_FILL)
+    r = _write_group(ws1, r, f"BUY ON PULLBACK ({len(pullback_buys)})", pullback_buys, _PULLBACK_FILL)
     r = _write_group(ws1, r, f"BUY ON DIP ({len(dip_buy)})", dip_buy, _DIP_FILL)
+    r = _write_group(ws1, r, f"BUY — Wait for MACD ({len(macd_wait)})", macd_wait, _MACD_FILL)
     r = _write_group(ws1, r, f"HOLD/WAIT ({len(hold)})", hold, _WAIT_FILL)
     r = _write_group(ws1, r, f"SELL/AVOID ({len(avoid)})", avoid, _AVOID_FILL)
 
@@ -141,7 +157,7 @@ def generate_analysis_excel(data: list[dict], output) -> None:
     ws2 = wb.create_sheet("Execution Plans")
     ws2.sheet_properties.tabColor = "00B050"
 
-    all_buys = buys + macd_wait + dip_buy
+    all_buys = strong_buys + buys + pullback_buys + dip_buy + macd_wait
     r = 1
     ws2.merge_cells(start_row=r, start_column=1, end_row=r, end_column=8)
     ws2.cell(row=r, column=1, value=f"EXECUTION PLANS — {len(all_buys)} Actionable Stocks").font = Font(bold=True, size=16, color="00B050")
