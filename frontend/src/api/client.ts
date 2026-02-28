@@ -13,6 +13,8 @@ import type {
   Suggestions,
   SectorPerformance,
   HeatmapSector,
+  DailyAnalysisResponse,
+  AnalysisSummaryResponse,
 } from "../types/index.ts";
 
 const api = axios.create({
@@ -322,6 +324,47 @@ export async function fetchSectorDetail(
     `/market/sectors/${encodeURIComponent(sectorName)}`,
   );
   return data;
+}
+
+/* ========================== Daily Analysis ========================== */
+
+export async function fetchDailyAnalysis(
+  date?: string,
+  action?: string,
+): Promise<DailyAnalysisResponse> {
+  const params: Record<string, string> = {};
+  if (date) params.date = date;
+  if (action) params.action = action;
+  const { data } = await api.get<DailyAnalysisResponse>("/analysis/daily", { params });
+  return data;
+}
+
+export async function fetchAnalysisDates(): Promise<{ dates: string[] }> {
+  const { data } = await api.get<{ dates: string[] }>("/analysis/dates");
+  return data;
+}
+
+export async function fetchAnalysisSummary(
+  date?: string,
+): Promise<AnalysisSummaryResponse> {
+  const params = date ? { date } : undefined;
+  const { data } = await api.get<AnalysisSummaryResponse>("/analysis/summary", { params });
+  return data;
+}
+
+export async function triggerAnalysis(): Promise<{ status: string; message?: string }> {
+  const { data } = await api.post<{ status: string; message?: string }>("/analysis/trigger");
+  return data;
+}
+
+export async function fetchAnalysisStatus(): Promise<{ running: boolean }> {
+  const { data } = await api.get<{ running: boolean }>("/analysis/status");
+  return data;
+}
+
+export function getAnalysisExcelUrl(date?: string): string {
+  const base = "/api/v1/analysis/excel";
+  return date ? `${base}?date=${date}` : base;
 }
 
 export default api;

@@ -61,6 +61,32 @@ async def fetch_live_prices():
                 logger.error(f"Error saving price for {row.get('symbol')}: {e}")
 
         conn.commit()
+
+        # Append intraday snapshots (5-min history for buy/sell pressure analysis)
+        now_ts = datetime.now(DSE_TZ).replace(second=0, microsecond=0).isoformat()
+        for _, row in df.iterrows():
+            try:
+                conn.execute(
+                    """INSERT INTO intraday_snapshots
+                       (symbol, ts, ltp, open, high, low, volume, value, trade_count)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                       ON CONFLICT (symbol, ts) DO NOTHING""",
+                    (
+                        row.get("symbol", ""),
+                        now_ts,
+                        row.get("ltp", 0),
+                        row.get("open", 0),
+                        row.get("high", 0),
+                        row.get("low", 0),
+                        int(row.get("volume", 0)),
+                        row.get("value", 0),
+                        int(row.get("trade_count", 0)),
+                    ),
+                )
+            except Exception as e:
+                logger.error(f"Intraday snapshot error for {row.get('symbol')}: {e}")
+
+        conn.commit()
         conn.close()
 
         # Clear price caches
@@ -192,4 +218,52 @@ def setup_scheduler() -> AsyncIOScheduler:
         replace_existing=True,
     )
 
+    # Cleanup old intraday snapshots (keep 7 days)
+    scheduler.add_job(
+        cleanup_intraday_snapshots,
+        trigger=CronTrigger(hour=0, minute=30, timezone="Asia/Dhaka"),
+        id="cleanup_intraday",
+        name="Cleanup old intraday snapshots",
+        replace_existing=True,
+    )
+
+    # Post-market daily analysis (15:00 BST, after market close)
+    scheduler.add_job(
+        run_post_market_analysis,
+        trigger=CronTrigger(
+            day_of_week="sun,mon,tue,wed,thu",
+            hour=15, minute=0,
+            timezone="Asia/Dhaka",
+        ),
+        id="daily_analysis",
+        name="Post-market daily analysis",
+        replace_existing=True,
+    )
+
     return scheduler
+
+
+async def run_post_market_analysis():
+    """Run daily analysis after market close."""
+    try:
+        logger.info("Triggering post-market daily analysis...")
+        from analysis.daily_report import run_daily_analysis
+        import threading
+        thread = threading.Thread(target=run_daily_analysis, daemon=True)
+        thread.start()
+    except Exception as e:
+        logger.error(f"Post-market analysis failed: {e}")
+
+
+async def cleanup_intraday_snapshots():
+    """Delete intraday snapshots older than 7 days."""
+    try:
+        conn = get_connection()
+        conn.execute(
+            "DELETE FROM intraday_snapshots WHERE ts < NOW() - INTERVAL '7 days'"
+        )
+        conn.commit()
+        conn.close()
+        logger.info("Cleaned up old intraday snapshots")
+    except Exception as e:
+        logger.error(f"Intraday cleanup failed: {e}")

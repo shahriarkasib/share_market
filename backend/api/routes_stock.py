@@ -1,7 +1,8 @@
 """Individual stock API routes."""
 
 import math
-from fastapi import APIRouter, HTTPException
+from datetime import datetime
+from fastapi import APIRouter, HTTPException, Query
 from data.fetcher import DSEDataFetcher
 from data.cache import cache
 from data.repository import read_historical_for_symbol
@@ -9,6 +10,7 @@ from database import get_connection
 from api.schemas import StockPriceResponse, OHLCVResponse
 from config import CACHE_TTL_LIVE_PRICES, CACHE_TTL_HISTORICAL
 import pandas as pd
+import pytz
 
 
 def _clean_nan(records: list) -> list:
@@ -179,6 +181,34 @@ async def get_stock_indicators(symbol: str):
 
     cache.set(f"indicators_{symbol}", result, 300)
     return result
+
+
+@router.get("/{symbol}/intraday")
+async def get_intraday_snapshots(
+    symbol: str,
+    date: str = Query(default=None, description="Date in YYYY-MM-DD format (default: today)"),
+):
+    """Get 5-minute intraday snapshots for a stock on a given day."""
+    symbol = symbol.upper()
+    dse_tz = pytz.timezone("Asia/Dhaka")
+
+    if date is None:
+        date = datetime.now(dse_tz).strftime("%Y-%m-%d")
+
+    conn = get_connection()
+    rows = conn.execute(
+        """SELECT ts, ltp, open, high, low, volume, value, trade_count
+           FROM intraday_snapshots
+           WHERE symbol = ? AND ts::date = ?::date
+           ORDER BY ts""",
+        (symbol, date),
+    ).fetchall()
+    conn.close()
+
+    if not rows:
+        return []
+
+    return [dict(r) for r in rows]
 
 
 @router.get("/{symbol}/peers")

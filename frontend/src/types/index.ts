@@ -170,3 +170,54 @@ export interface HeatmapSector {
   total_size: number;
   avg_change_pct: number;
 }
+
+/* ========================== Daily Analysis ========================== */
+
+export interface DailyAnalysis {
+  symbol: string;
+  action: string;
+  reasoning: string;
+  ltp: number;
+  entry_low: number;
+  entry_high: number;
+  sl: number;
+  t1: number;
+  t2: number;
+  risk_pct: number;
+  reward_pct: number;
+  rsi: number;
+  stoch_rsi: number;
+  macd_line: number;
+  macd_signal: number;
+  macd_hist: number;
+  macd_status: string;
+  bb_pct: number;
+  atr: number;
+  atr_pct: number;
+  volatility: number;
+  max_dd: number;
+  support: number;
+  resistance: number;
+  trend_50d: number;
+  avg_vol: number;
+  vol_ratio: number;
+  wait_days: string;
+  vol_entry: string;
+  scenarios_json: string;
+  last_5_json: string;
+  score: number;
+}
+
+export interface DailyAnalysisResponse {
+  date: string;
+  count: number;
+  summary: Record<string, number>;
+  analysis: DailyAnalysis[];
+  message?: string;
+}
+
+export interface AnalysisSummaryResponse {
+  date: string;
+  total: number;
+  by_action: Record<string, number>;
+}

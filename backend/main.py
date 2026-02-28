@@ -349,6 +349,7 @@ from api.routes_signals import router as signals_router
 from api.routes_screener import router as screener_router
 from api.routes_watchlist import router as watchlist_router
 from api.routes_portfolio import router as portfolio_router
+from api.routes_analysis import router as analysis_router
 
 app.include_router(market_router, prefix=f"{API_PREFIX}/market", tags=["Market"])
 app.include_router(stock_router, prefix=f"{API_PREFIX}/stock", tags=["Stock"])
@@ -356,6 +357,7 @@ app.include_router(signals_router, prefix=f"{API_PREFIX}/signals", tags=["Signal
 app.include_router(screener_router, prefix=f"{API_PREFIX}/screener", tags=["Screener"])
 app.include_router(watchlist_router, prefix=f"{API_PREFIX}/watchlist", tags=["Watchlist"])
 app.include_router(portfolio_router, prefix=f"{API_PREFIX}/portfolio", tags=["Portfolio"])
+app.include_router(analysis_router, prefix=f"{API_PREFIX}/analysis", tags=["Analysis"])
 
 
 @app.get("/")
