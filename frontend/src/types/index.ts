@@ -203,6 +203,12 @@ export interface DailyAnalysis {
   vol_ratio: number;
   wait_days: string;
   vol_entry: string;
+  entry_start?: string;
+  entry_end?: string;
+  exit_t1_by?: string;
+  exit_t2_by?: string;
+  hold_days_t1?: number;
+  hold_days_t2?: number;
   scenarios_json: string;
   last_5_json: string;
   score: number;

@@ -29,6 +29,14 @@ import {
 import type { DailyAnalysis, DailyAnalysisResponse } from "../types/index.ts";
 import { formatNumber, formatPct, colorBySign } from "../lib/format.ts";
 
+/* ── helpers ───────────────────────────────────────────────── */
+
+function formatDateShort(d?: string): string {
+  if (!d) return "–";
+  const dt = new Date(d + "T00:00:00");
+  return dt.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
+}
+
 /* ── action config ─────────────────────────────────────────── */
 
 const ACTION_CONFIG: Record<string, { color: string; bg: string; border: string; icon: typeof TrendingUp; label: string }> = {
@@ -500,32 +508,58 @@ const AnalysisCard = forwardRef<HTMLDivElement, { stock: DailyAnalysis; highligh
           </span>
         </div>
 
-        {/* Entry/Exit row */}
-        <div className="px-3 py-2 border-t border-[var(--border)] grid grid-cols-4 gap-2 text-center">
-          <div>
-            <div className="text-[10px] text-[var(--text-dim)]">Entry</div>
-            <div className="text-xs font-medium tabular-nums text-[var(--text)]">
-              {formatNumber(stock.entry_low)}–{formatNumber(stock.entry_high)}
+        {/* Entry/Exit prices + timing */}
+        <div className="px-3 py-2 border-t border-[var(--border)] space-y-1.5">
+          {/* Price row */}
+          <div className="grid grid-cols-4 gap-2 text-center">
+            <div>
+              <div className="text-[10px] text-[var(--text-dim)]">Entry Price</div>
+              <div className="text-xs font-medium tabular-nums text-[var(--text)]">
+                {formatNumber(stock.entry_low)}–{formatNumber(stock.entry_high)}
+              </div>
+            </div>
+            <div>
+              <div className="text-[10px] text-[var(--text-dim)]">Stop Loss</div>
+              <div className="text-xs font-medium tabular-nums text-red-400">
+                {formatNumber(stock.sl)}
+              </div>
+            </div>
+            <div>
+              <div className="text-[10px] text-[var(--text-dim)]">Target 1</div>
+              <div className="text-xs font-medium tabular-nums text-green-400">
+                {formatNumber(stock.t1)}
+              </div>
+            </div>
+            <div>
+              <div className="text-[10px] text-[var(--text-dim)]">Target 2</div>
+              <div className="text-xs font-medium tabular-nums text-green-400">
+                {formatNumber(stock.t2)}
+              </div>
             </div>
           </div>
-          <div>
-            <div className="text-[10px] text-[var(--text-dim)]">SL</div>
-            <div className="text-xs font-medium tabular-nums text-red-400">
-              {formatNumber(stock.sl)}
+          {/* Timing row */}
+          {(stock.entry_start || stock.exit_t1_by) && (
+            <div className="grid grid-cols-2 gap-2 text-center pt-1 border-t border-[var(--border)]/50">
+              <div>
+                <div className="text-[10px] text-[var(--text-dim)] flex items-center justify-center gap-0.5">
+                  <Clock className="h-2.5 w-2.5" /> Entry Window
+                </div>
+                <div className="text-[11px] font-medium tabular-nums text-blue-400">
+                  {formatDateShort(stock.entry_start)} – {formatDateShort(stock.entry_end)}
+                </div>
+              </div>
+              <div>
+                <div className="text-[10px] text-[var(--text-dim)] flex items-center justify-center gap-0.5">
+                  <Target className="h-2.5 w-2.5" /> Exit Window
+                </div>
+                <div className="text-[11px] font-medium tabular-nums text-green-400">
+                  T1 ~{formatDateShort(stock.exit_t1_by)}
+                  <span className="text-[var(--text-dim)]"> · </span>
+                  T2 ~{formatDateShort(stock.exit_t2_by)}
+                </div>
+              </div>
             </div>
-          </div>
-          <div>
-            <div className="text-[10px] text-[var(--text-dim)]">T1</div>
-            <div className="text-xs font-medium tabular-nums text-green-400">
-              {formatNumber(stock.t1)}
-            </div>
-          </div>
-          <div>
-            <div className="text-[10px] text-[var(--text-dim)]">T2</div>
-            <div className="text-xs font-medium tabular-nums text-green-400">
-              {formatNumber(stock.t2)}
-            </div>
-          </div>
+          )}
         </div>
 
         {/* Indicators row */}
@@ -575,14 +609,26 @@ const AnalysisCard = forwardRef<HTMLDivElement, { stock: DailyAnalysis; highligh
           </div>
         )}
 
-        {/* Wait days + expand */}
+        {/* Hold duration + expand */}
         <div className="px-3 py-1.5 border-t border-[var(--border)] flex items-center justify-between">
-          {stock.wait_days && (
-            <span className="text-[10px] text-[var(--text-dim)] flex items-center gap-1">
-              <Clock className="h-3 w-3" />
-              {stock.wait_days}
-            </span>
-          )}
+          <div className="flex items-center gap-2">
+            {stock.hold_days_t1 != null && (
+              <span className="text-[10px] text-[var(--text-dim)] flex items-center gap-1">
+                <Clock className="h-3 w-3" />
+                Hold {stock.hold_days_t1}–{stock.hold_days_t2 ?? stock.hold_days_t1} days
+              </span>
+            )}
+            {stock.score != null && (
+              <span className={clsx(
+                "text-[10px] px-1.5 py-0.5 rounded font-medium",
+                stock.score > 30 ? "bg-green-500/10 text-green-400" :
+                stock.score > 0 ? "bg-blue-500/10 text-blue-400" :
+                "bg-red-500/10 text-red-400",
+              )}>
+                Score {stock.score > 0 ? "+" : ""}{stock.score?.toFixed(0)}
+              </span>
+            )}
+          </div>
           <button
             onClick={() => setExpanded(!expanded)}
             className="ml-auto flex items-center gap-0.5 text-[10px] text-[var(--text-dim)] hover:text-[var(--text)] transition-colors"

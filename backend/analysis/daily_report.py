@@ -8,7 +8,7 @@ historical accuracy feedback. Runs after market close (15:00 BST).
 import json
 import logging
 import math
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import numpy as np
 import pandas as pd
@@ -247,6 +247,13 @@ def _analyze_stock(symbol: str, df: pd.DataFrame, live: dict,
     # Volume entry threshold
     vol_entry = f">{int(avg_vol * 0.5):,}" if avg_vol > 0 else ""
 
+    # Concrete entry/exit timing
+    timing = _compute_timing(
+        action=action, atr=atr, ltp=ltp,
+        entry_mid=entry_mid, t1=t1, t2=t2,
+        volatility=volatility, score=score,
+    )
+
     # Entry scenarios
     scenarios = _generate_scenarios(
         symbol=symbol, action=action, entry_low=entry_low, entry_high=entry_high,
@@ -323,6 +330,12 @@ def _analyze_stock(symbol: str, df: pd.DataFrame, live: dict,
         "chg_20d": chg_20d,
         "wait_days": wait_days,
         "vol_entry": vol_entry,
+        "entry_start": timing["entry_start"],
+        "entry_end": timing["entry_end"],
+        "exit_t1_by": timing["exit_t1_by"],
+        "exit_t2_by": timing["exit_t2_by"],
+        "hold_days_t1": timing["hold_days_t1"],
+        "hold_days_t2": timing["hold_days_t2"],
         "scenarios_json": json.dumps(scenarios),
         "last_5_json": json.dumps(last_5_data),
     }
@@ -883,6 +896,77 @@ def _compute_entry_exit(*, action, ltp, atr, bb_lower, ema21, low_5d, support):
     return entry_low, entry_high, sl, t1, t2
 
 
+def _next_trading_day(dt: datetime, n: int = 1) -> datetime:
+    """Advance `n` DSE trading days (skip Fri/Sat)."""
+    count = 0
+    while count < n:
+        dt += timedelta(days=1)
+        if dt.weekday() not in (4, 5):  # 4=Fri, 5=Sat
+            count += 1
+    return dt
+
+
+def _compute_timing(*, action: str, atr: float, ltp: float,
+                    entry_mid: float, t1: float, t2: float,
+                    volatility: float, score: float) -> dict:
+    """Compute concrete entry and exit date windows.
+
+    Returns dict with entry_start, entry_end, exit_t1_by, exit_t2_by
+    as YYYY-MM-DD strings.
+    """
+    today = datetime.now(DSE_TZ).date()
+    base = datetime.combine(today, datetime.min.time())
+
+    # ── Entry window (trading days) ──
+    # Based on action urgency
+    if "strong" in action.lower() or action == "BUY":
+        entry_start_days, entry_end_days = 0, 1  # next 1 trading day
+    elif "pullback" in action.lower():
+        entry_start_days, entry_end_days = 1, 3
+    elif "dip" in action.lower():
+        entry_start_days, entry_end_days = 1, 5
+    elif "MACD" in action:
+        entry_start_days, entry_end_days = 3, 7
+    elif "HOLD" in action or "WAIT" in action:
+        entry_start_days, entry_end_days = 5, 15
+    elif "SELL" in action:
+        entry_start_days, entry_end_days = 10, 20
+    else:  # AVOID
+        entry_start_days, entry_end_days = 15, 30
+
+    entry_start = _next_trading_day(base, max(entry_start_days, 1))
+    entry_end = _next_trading_day(base, entry_end_days)
+
+    # ── Exit timing: estimate days to reach targets ──
+    # Use ATR-based projection: price moves ~0.5-1.0 ATR per day on avg
+    daily_move = max(atr * 0.5, ltp * 0.005)  # conservative: 0.5 ATR/day
+
+    dist_t1 = abs(t1 - entry_mid) if t1 > 0 and entry_mid > 0 else atr * 1.5
+    dist_t2 = abs(t2 - entry_mid) if t2 > 0 and entry_mid > 0 else atr * 2.5
+
+    days_to_t1 = max(2, min(30, round(dist_t1 / daily_move)))
+    days_to_t2 = max(3, min(60, round(dist_t2 / daily_move)))
+
+    # High-volatility stocks reach faster
+    if volatility and volatility > 3:
+        days_to_t1 = max(2, int(days_to_t1 * 0.7))
+        days_to_t2 = max(3, int(days_to_t2 * 0.7))
+
+    # Entry midpoint for exit calculation
+    entry_mid_day = max(entry_start_days, 1)
+    exit_t1 = _next_trading_day(base, entry_mid_day + days_to_t1)
+    exit_t2 = _next_trading_day(base, entry_mid_day + days_to_t2)
+
+    return {
+        "entry_start": entry_start.strftime("%Y-%m-%d"),
+        "entry_end": entry_end.strftime("%Y-%m-%d"),
+        "exit_t1_by": exit_t1.strftime("%Y-%m-%d"),
+        "exit_t2_by": exit_t2.strftime("%Y-%m-%d"),
+        "hold_days_t1": days_to_t1,
+        "hold_days_t2": days_to_t2,
+    }
+
+
 def _generate_scenarios(*, symbol, action, entry_low, entry_high, sl, bb_lower, support, vol_entry):
     """Generate 3 entry scenarios."""
     el, eh = entry_low, entry_high
@@ -929,12 +1013,21 @@ def save_daily_analysis(analysis: list[dict], date_str: str | None = None):
 
     conn = get_connection()
 
-    # Ensure category column exists (migration-safe)
-    try:
-        conn.execute("ALTER TABLE daily_analysis ADD COLUMN IF NOT EXISTS category TEXT")
-        conn.commit()
-    except Exception:
-        conn.rollback()
+    # Ensure new columns exist (migration-safe)
+    for col, ctype in [
+        ("category", "TEXT"),
+        ("entry_start", "DATE"),
+        ("entry_end", "DATE"),
+        ("exit_t1_by", "DATE"),
+        ("exit_t2_by", "DATE"),
+        ("hold_days_t1", "INTEGER"),
+        ("hold_days_t2", "INTEGER"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE daily_analysis ADD COLUMN IF NOT EXISTS {col} {ctype}")
+            conn.commit()
+        except Exception:
+            conn.rollback()
 
     saved = 0
     for a in analysis:
@@ -945,9 +1038,10 @@ def save_daily_analysis(analysis: list[dict], date_str: str | None = None):
                     risk_pct, reward_pct, rsi, stoch_rsi, macd_line, macd_signal, macd_hist,
                     macd_status, bb_pct, atr, atr_pct, volatility, max_dd, support, resistance,
                     trend_50d, avg_vol, vol_ratio, wait_days, vol_entry,
+                    entry_start, entry_end, exit_t1_by, exit_t2_by, hold_days_t1, hold_days_t2,
                     scenarios_json, last_5_json, ltp, score, category)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                           ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                           ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT (date, symbol) DO UPDATE SET
                      action=EXCLUDED.action, reasoning=EXCLUDED.reasoning,
                      entry_low=EXCLUDED.entry_low, entry_high=EXCLUDED.entry_high,
@@ -961,7 +1055,11 @@ def save_daily_analysis(analysis: list[dict], date_str: str | None = None):
                      support=EXCLUDED.support, resistance=EXCLUDED.resistance,
                      trend_50d=EXCLUDED.trend_50d, avg_vol=EXCLUDED.avg_vol,
                      vol_ratio=EXCLUDED.vol_ratio, wait_days=EXCLUDED.wait_days,
-                     vol_entry=EXCLUDED.vol_entry, scenarios_json=EXCLUDED.scenarios_json,
+                     vol_entry=EXCLUDED.vol_entry,
+                     entry_start=EXCLUDED.entry_start, entry_end=EXCLUDED.entry_end,
+                     exit_t1_by=EXCLUDED.exit_t1_by, exit_t2_by=EXCLUDED.exit_t2_by,
+                     hold_days_t1=EXCLUDED.hold_days_t1, hold_days_t2=EXCLUDED.hold_days_t2,
+                     scenarios_json=EXCLUDED.scenarios_json,
                      last_5_json=EXCLUDED.last_5_json, ltp=EXCLUDED.ltp, score=EXCLUDED.score,
                      category=EXCLUDED.category""",
                 (
@@ -972,6 +1070,8 @@ def save_daily_analysis(analysis: list[dict], date_str: str | None = None):
                     a["bb_pct"], a["atr"], a["atr_pct"], a["volatility"], a["max_dd"],
                     a["support"], a["resistance"], a["trend_50d"],
                     a["avg_vol"], a["vol_ratio"], a["wait_days"], a["vol_entry"],
+                    a["entry_start"], a["entry_end"], a["exit_t1_by"], a["exit_t2_by"],
+                    a["hold_days_t1"], a["hold_days_t2"],
                     a["scenarios_json"], a["last_5_json"], a["ltp"], a.get("score", 0),
                     a.get("category", ""),
                 ),
