@@ -545,6 +545,16 @@ def load_daily_analysis(date_str: str | None = None, action_filter: str | None =
     results = []
     for r in rows:
         d = dict(r)
+        # Convert date/datetime to strings for JSON serialization
+        if hasattr(d.get("date"), "isoformat"):
+            d["date"] = str(d["date"])
+        if hasattr(d.get("created_at"), "isoformat"):
+            d["created_at"] = d["created_at"].isoformat()
+        # Sanitize NaN/Inf floats (not JSON-serializable)
+        import math
+        for k, v in d.items():
+            if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
+                d[k] = None
         # Parse JSON fields
         for jfield in ("scenarios_json", "last_5_json"):
             if d.get(jfield):
