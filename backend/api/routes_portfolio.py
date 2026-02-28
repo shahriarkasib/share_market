@@ -9,7 +9,7 @@ from typing import Optional
 from database import get_connection
 from data.repository import (
     insert_holding, get_active_holdings, get_holding_by_id,
-    update_holding_sell, delete_holding, load_signals_from_db,
+    update_holding_sell, delete_holding,
 )
 from data.cache import cache
 from analysis.t2_scorer import T2Scorer
@@ -51,8 +51,9 @@ def _get_live_price(symbol: str) -> float:
 
 
 def _get_signal_for_symbol(symbol: str) -> dict | None:
-    """Get cached or DB signal for a symbol."""
-    all_signals = cache.get("all_signals") or load_signals_from_db()
+    """Get cached signal for a symbol (from daily analysis adapter)."""
+    from api.routes_signals import _get_signals
+    all_signals = _get_signals()
     for s in all_signals:
         if s.get("symbol") == symbol:
             return s

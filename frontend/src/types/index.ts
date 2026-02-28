@@ -16,6 +16,7 @@ export interface StockPrice {
 export interface StockSignal {
   symbol: string;
   company_name?: string;
+  action?: string;
   ltp: number;
   change_pct: number;
   signal_type: 'STRONG_BUY' | 'BUY' | 'HOLD' | 'SELL' | 'STRONG_SELL';

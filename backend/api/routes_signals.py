@@ -1,58 +1,260 @@
-"""Trading signals API routes - fast, cache-first design with DB persistence."""
+"""Trading signals API routes - adapter over daily_analysis table."""
 
-import threading
+import json
 import math
-from fastapi import APIRouter, BackgroundTasks
+import logging
+from datetime import datetime, date
+from fastapi import APIRouter
+
+from analysis.daily_report import load_daily_analysis
 from data.cache import cache
 from data.repository import (
-    read_all_historical_grouped,
-    save_signals_to_db,
-    load_signals_from_db,
-    read_historical_for_symbol,
     get_active_holdings,
     save_signal_history,
     backfill_signal_accuracy,
     get_signal_history_for_symbol,
     get_signal_accuracy_report,
-    get_a_category_symbols,
 )
-from analysis.signals import SignalGenerator
-from config import CACHE_TTL_SIGNALS, MIN_DAILY_VALUE
+from config import CACHE_TTL_SIGNALS
 from database import get_connection
-from datetime import datetime, date
-import logging
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
-signal_gen = SignalGenerator()
 
-# Track computation state
-_computing = False
-_last_compute_time = None
+# ── Action mapping from daily_analysis actions to signal types ──
+
+_ACTION_MAP = {
+    "BUY (strong)": "STRONG_BUY",
+    "BUY": "BUY",
+    "BUY on pullback": "BUY",
+    "BUY on dip": "BUY",
+    "BUY (wait for MACD cross)": "BUY",
+    "HOLD/WAIT": "HOLD",
+    "SELL/AVOID": "SELL",
+    "AVOID": "STRONG_SELL",
+}
 
 
-def _clean_nan_dict(d: dict) -> dict:
-    """Replace NaN/inf with None in a dict."""
+# ── Adapter: daily_analysis row -> StockSignal shape ──
+
+
+def _safe_float(val, default=0.0):
+    """Return float or default if None/NaN/Inf."""
+    if val is None:
+        return default
+    try:
+        f = float(val)
+        return default if math.isnan(f) or math.isinf(f) else f
+    except (ValueError, TypeError):
+        return default
+
+
+def _analysis_to_signal(a: dict, live_map: dict) -> dict:
+    """Map a daily_analysis row to the StockSignal dict shape."""
+    symbol = a["symbol"]
+    action = a.get("action", "HOLD/WAIT")
+    signal_type = _ACTION_MAP.get(action, "HOLD")
+
+    score = _safe_float(a.get("score"), 0)
+    confidence = min(score / 100.0, 1.0) if score > 0 else 0.0
+
+    entry_low = _safe_float(a.get("entry_low"))
+    entry_high = _safe_float(a.get("entry_high"))
+    sl = _safe_float(a.get("sl"))
+    t1 = _safe_float(a.get("t1"))
+    t2 = _safe_float(a.get("t2"))
+    vol_entry = _safe_float(a.get("vol_entry"))
+
+    risk_pct = _safe_float(a.get("risk_pct"))
+    reward_pct = _safe_float(a.get("reward_pct"))
+    risk_reward = round(reward_pct / risk_pct, 2) if risk_pct > 0 else 0.0
+
+    # LTP: prefer live, fall back to analysis row
+    live = live_map.get(symbol, {})
+    ltp = _safe_float(live.get("ltp")) or _safe_float(a.get("ltp"))
+    change_pct = _safe_float(live.get("change_pct"))
+    company_name = live.get("company_name") or symbol
+
+    # Timing
+    if signal_type in ("STRONG_BUY", "BUY"):
+        if entry_high > 0 and ltp <= entry_high:
+            timing = "BUY_NOW"
+        elif entry_low > 0 and ltp < entry_low:
+            timing = "WAIT_FOR_DIP"
+        else:
+            timing = "ACCUMULATE"
+    elif signal_type in ("SELL", "STRONG_SELL"):
+        timing = "SELL_NOW"
+    else:
+        timing = "HOLD_TIGHT"
+
+    # Indicators
+    rsi = a.get("rsi")
+    macd_status = a.get("macd_status")
+    bb_pct = _safe_float(a.get("bb_pct"), 50)
+    vol_ratio = _safe_float(a.get("vol_ratio"), 1.0)
+    stoch_rsi = a.get("stoch_rsi")
+
+    if bb_pct > 80:
+        bb_position = "UPPER"
+    elif bb_pct < 20:
+        bb_position = "LOWER"
+    else:
+        bb_position = "MIDDLE"
+
+    if vol_ratio > 2:
+        volume_signal = "SURGE"
+    elif vol_ratio > 1.5:
+        volume_signal = "HIGH"
+    elif vol_ratio > 0.8:
+        volume_signal = "NORMAL"
+    elif vol_ratio > 0.5:
+        volume_signal = "LOW"
+    else:
+        volume_signal = "VERY_LOW"
+
+    indicators = {
+        "rsi": rsi,
+        "macd_signal": macd_status,
+        "bb_position": bb_position,
+        "volume_signal": volume_signal,
+        "momentum_3d": None,
+        "stoch_k": stoch_rsi,
+    }
+
+    # Prediction data
+    pred = a.get("prediction_json")
+    if not isinstance(pred, dict):
+        pred = {}
+
+    predicted_prices = pred.get("predicted_prices", {})
+    daily_ranges = pred.get("daily_ranges", {})
+    price_range_next_3d = pred.get("price_range_next_3d", {})
+    support_level = _safe_float(pred.get("support_level")) or _safe_float(a.get("support"))
+    resistance_level = _safe_float(pred.get("resistance_level")) or _safe_float(a.get("resistance"))
+    t2_safe = pred.get("t2_safe", False)
+    risk_score = _safe_float(pred.get("risk_score"), 50)
+    expected_return_pct = _safe_float(pred.get("expected_return_pct"))
+
+    # trend_strength
+    if "trend_strength" in pred:
+        trend_strength = pred["trend_strength"]
+    else:
+        trend_50d = _safe_float(a.get("trend_50d"))
+        if trend_50d > 10:
+            trend_strength = "STRONG_UP"
+        elif trend_50d > 3:
+            trend_strength = "UP"
+        elif trend_50d > -3:
+            trend_strength = "SIDEWAYS"
+        elif trend_50d > -10:
+            trend_strength = "DOWN"
+        else:
+            trend_strength = "STRONG_DOWN"
+
+    # volatility_level
+    if "volatility_level" in pred:
+        volatility_level = pred["volatility_level"]
+    else:
+        volatility = _safe_float(a.get("volatility"), 2.0)
+        if volatility < 1.5:
+            volatility_level = "LOW"
+        elif volatility < 3:
+            volatility_level = "MEDIUM"
+        else:
+            volatility_level = "HIGH"
+
+    # hold_days
+    if "hold_days" in pred:
+        hold_days = pred["hold_days"]
+    else:
+        hold_days = a.get("hold_days_t1") or 0
+
+    # entry_strategy
+    if "entry_strategy" in pred:
+        entry_strategy = pred["entry_strategy"]
+    else:
+        parts = []
+        if entry_low > 0:
+            parts.append(f"Entry: {entry_low:.1f}-{entry_high:.1f}")
+        if vol_entry > 0:
+            parts.append(f"Vol entry: {vol_entry:.0f}")
+        entry_strategy = " | ".join(parts) if parts else ""
+
+    # exit_strategy
+    if "exit_strategy" in pred:
+        exit_strategy = pred["exit_strategy"]
+    else:
+        parts = []
+        if t1 > 0:
+            parts.append(f"T1: {t1:.1f}")
+        if t2 > 0:
+            parts.append(f"T2: {t2:.1f}")
+        if sl > 0:
+            parts.append(f"SL: {sl:.1f}")
+        exit_strategy = " | ".join(parts) if parts else ""
+
     return {
-        k: (
-            None
-            if isinstance(v, float) and (math.isnan(v) or math.isinf(v))
-            else v
-        )
-        for k, v in d.items()
+        "symbol": symbol,
+        "company_name": company_name,
+        "ltp": ltp,
+        "change_pct": change_pct,
+        "action": action,
+        "signal_type": signal_type,
+        "confidence": round(confidence, 3),
+        "short_term_score": score,
+        "long_term_score": round(score * 0.8, 1),
+        "target_price": t1,
+        "stop_loss": sl,
+        "risk_reward_ratio": risk_reward,
+        "reasoning": a.get("reasoning", ""),
+        "timing": timing,
+        "indicators": indicators,
+        "predicted_prices": predicted_prices,
+        "daily_ranges": daily_ranges,
+        "price_range_next_3d": price_range_next_3d,
+        "support_level": support_level,
+        "resistance_level": resistance_level,
+        "trend_strength": trend_strength,
+        "volatility_level": volatility_level,
+        "t2_safe": t2_safe,
+        "risk_score": risk_score,
+        "expected_return_pct": expected_return_pct,
+        "hold_days": hold_days,
+        "entry_strategy": entry_strategy,
+        "exit_strategy": exit_strategy,
+        "created_at": datetime.now().isoformat(),
     }
 
 
+# ── Data loading ──
+
+
 def _get_signals() -> list:
-    """Get signals from cache, falling back to DB."""
-    signals = cache.get("all_signals")
-    if signals is not None:
-        return signals
-    signals = load_signals_from_db()
-    if signals:
-        cache.set("all_signals", signals, CACHE_TTL_SIGNALS * 2)
-    return signals or []
+    """Get signals from cache, falling back to daily_analysis."""
+    cached = cache.get("all_signals")
+    if cached is not None:
+        return cached
+
+    analysis = load_daily_analysis()  # Latest date, all actions
+    if not analysis:
+        return []
+
+    # Enrich with live prices
+    conn = get_connection()
+    live_rows = conn.execute(
+        "SELECT symbol, ltp, change_pct, company_name FROM live_prices"
+    ).fetchall()
+    conn.close()
+    live_map = {r["symbol"]: dict(r) for r in live_rows}
+
+    signals = [_analysis_to_signal(a, live_map) for a in analysis]
+    cache.set("all_signals", signals, CACHE_TTL_SIGNALS * 2)
+    return signals
+
+
+# ── Endpoints ──
 
 
 @router.get("/top")
@@ -114,7 +316,7 @@ async def get_signals_summary():
         "strong_sell_count": strong_sell,
         "market_sentiment": sentiment,
         "last_updated": datetime.now().isoformat(),
-        "is_computing": _computing,
+        "is_computing": False,
     }
 
     if total > 0:
@@ -124,24 +326,13 @@ async def get_signals_summary():
 
 @router.get("/status")
 async def get_computation_status():
-    """Check if signal computation is in progress."""
+    """Check signal status (no background computation needed)."""
     signals = _get_signals()
     return {
-        "is_computing": _computing,
+        "is_computing": False,
         "total_signals": len(signals),
-        "last_computed": _last_compute_time.isoformat()
-        if _last_compute_time
-        else None,
+        "last_computed": None,
     }
-
-
-@router.post("/recompute")
-async def trigger_recompute(background_tasks: BackgroundTasks):
-    """Manually trigger signal recomputation."""
-    if _computing:
-        return {"message": "Already computing"}
-    background_tasks.add_task(_compute_all_signals_background)
-    return {"message": "Computation started"}
 
 
 @router.get("/suggestions")
@@ -156,12 +347,9 @@ async def get_suggestions():
         return {"entry": [], "exit": []}
 
     # ---- Entry suggestions ----
-    # Get portfolio symbols to exclude
     holdings = get_active_holdings()
     portfolio_symbols = {h["symbol"] for h in holdings}
 
-    # Filter: BUY/STRONG_BUY, not in portfolio
-    # Prefer t2_safe, but include all BUY signals ranked by composite score
     entry_candidates = []
     for s in signals:
         if s["signal_type"] not in ("STRONG_BUY", "BUY"):
@@ -216,10 +404,10 @@ async def get_suggestions():
             buy_price = h.get("buy_price", 0)
 
             if target > 0 and current >= target:
-                reasons.append(f"Target reached (৳{current:.1f} >= ৳{target:.1f})")
+                reasons.append(f"Target reached ({current:.1f} >= {target:.1f})")
 
             if stop > 0 and current <= stop:
-                reasons.append(f"Stop loss hit (৳{current:.1f} <= ৳{stop:.1f})")
+                reasons.append(f"Stop loss hit ({current:.1f} <= {stop:.1f})")
 
             # Calculate P&L
             if buy_price > 0 and current > 0:
@@ -247,7 +435,7 @@ async def get_suggestions():
 
 @router.get("/accuracy")
 async def get_accuracy():
-    """Get signal accuracy report — how well did past predictions perform?"""
+    """Get signal accuracy report -- how well did past predictions perform?"""
     cached = cache.get("signal_accuracy")
     if cached:
         return cached
@@ -269,146 +457,19 @@ async def get_stock_signal(symbol: str):
     """Get detailed signal for a specific stock."""
     symbol = symbol.upper()
 
-    # Check cached/DB signals first
     all_signals = _get_signals()
     for s in all_signals:
         if s["symbol"] == symbol:
             return s
 
-    # Compute on-demand from local DB
-    cached = cache.get(f"signal_{symbol}")
-    if cached:
-        return cached
-
-    # Read from live_prices DB
-    conn = get_connection()
-    row = conn.execute(
-        "SELECT * FROM live_prices WHERE symbol = ?", (symbol,)
-    ).fetchone()
-    conn.close()
-    live_price = dict(row) if row else None
-
-    df_hist = read_historical_for_symbol(symbol)
-    if df_hist.empty or len(df_hist) < 20:
-        return {"symbol": symbol, "signal_type": "HOLD", "reasoning": "Insufficient data"}
-
-    signal = signal_gen.generate_signal(symbol, df_hist, live_price)
-    cache.set(f"signal_{symbol}", signal, CACHE_TTL_SIGNALS)
-    return signal
-
-
-def _compute_all_signals_background():
-    """Compute signals for top stocks from LOCAL DB data (fast)."""
-    global _computing, _last_compute_time
-
-    if _computing:
-        return
-
-    _computing = True
-    try:
-        logger.info("=== Starting signal computation from local DB ===")
-
-        # 1. Get live prices from DB (not external API)
-        conn = get_connection()
-        rows = conn.execute("SELECT * FROM live_prices").fetchall()
-        conn.close()
-
-        if not rows:
-            logger.warning("No live prices in DB for signal computation")
-            return
-
-        import pandas as pd
-
-        df_live = pd.DataFrame([dict(r) for r in rows])
-
-        # 2. Filter by liquidity
-        if "value" in df_live.columns:
-            df_live["value"] = pd.to_numeric(df_live["value"], errors="coerce")
-            df_live = df_live[df_live["value"] >= MIN_DAILY_VALUE]
-
-        # 3. Top stocks by trading value — prefer A category
-        df_live = df_live.sort_values("value", ascending=False)
-        all_top = df_live["symbol"].head(200).tolist()
-
-        # Filter to A category stocks only (from DSE market categories)
-        a_cat_symbols = set(get_a_category_symbols())
-        if a_cat_symbols:
-            top_symbols = [s for s in all_top if s in a_cat_symbols][:100]
-            logger.info(f"Filtered to {len(top_symbols)} A-category stocks (from {len(a_cat_symbols)} total A-cat)")
-        else:
-            # Fallback: if categories not yet scraped, use top 100 by value
-            top_symbols = all_top[:100]
-            logger.warning("No A-category data yet, using top 100 by value")
-
-        logger.info(f"Computing signals for {len(top_symbols)} stocks...")
-
-        # 4. Read historical data from LOCAL DB (fast!)
-        all_hist = read_all_historical_grouped(min_rows_per_symbol=20)
-        logger.info(f"Loaded history for {len(all_hist)} symbols from DB")
-
-        # 5. Generate signals
-        signals = []
-        processed = 0
-        for symbol in top_symbols:
-            try:
-                stock_live = df_live[df_live["symbol"] == symbol].iloc[0].to_dict()
-                stock_live = _clean_nan_dict(stock_live)
-
-                if symbol not in all_hist or len(all_hist[symbol]) < 20:
-                    continue
-
-                df_hist = all_hist[symbol]
-                signal = signal_gen.generate_signal(symbol, df_hist, stock_live)
-                signals.append(signal)
-                processed += 1
-
-                if processed % 20 == 0:
-                    logger.info(f"  Processed {processed}/{len(top_symbols)} stocks")
-
-            except Exception as e:
-                logger.error(f"Error computing signal for {symbol}: {e}")
-                continue
-
-        # 6. Cache + persist to DB
-        cache.set("all_signals", signals, CACHE_TTL_SIGNALS * 2)
-        cache.delete("signals_summary")
-        save_signals_to_db(signals)
-
-        # 7. Save daily snapshot to signal_history (append-only for accuracy tracking)
-        save_signal_history(signals)
-
-        # 8. Backfill accuracy for older entries
-        try:
-            backfill_signal_accuracy()
-        except Exception as e:
-            logger.error(f"Accuracy backfill error: {e}")
-
-        _last_compute_time = datetime.now()
-        logger.info(f"=== Computed {len(signals)} signals ({processed} processed) ===")
-
-        # Log top signals
-        buy_signals = [
-            s
-            for s in signals
-            if s["signal_type"] in ("STRONG_BUY", "BUY")
-        ]
-        buy_signals.sort(key=lambda x: x["short_term_score"], reverse=True)
-        if buy_signals:
-            logger.info("Top buy signals:")
-            for s in buy_signals[:5]:
-                logger.info(
-                    f"  {s['symbol']}: {s['signal_type']} score={s['short_term_score']} conf={s['confidence']}"
-                )
-
-    except Exception as e:
-        logger.error(f"Signal computation failed: {e}")
-    finally:
-        _computing = False
-
-
-def start_background_computation():
-    """Start signal computation in a background thread."""
-    thread = threading.Thread(
-        target=_compute_all_signals_background, daemon=True
-    )
-    thread.start()
+    # Not found in daily analysis -- return minimal HOLD
+    return {
+        "symbol": symbol,
+        "signal_type": "HOLD",
+        "reasoning": "No analysis available for this stock",
+        "confidence": 0,
+        "short_term_score": 0,
+        "long_term_score": 0,
+        "timing": "HOLD_TIGHT",
+        "indicators": {},
+    }

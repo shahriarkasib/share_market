@@ -123,20 +123,6 @@ async def sync_daily_prices_from_live():
         logger.error(f"Daily price sync failed: {e}")
 
 
-async def compute_signals():
-    """Recompute trading signals from local DB data."""
-    try:
-        logger.info("Triggering signal recomputation...")
-        from api.routes_signals import _compute_all_signals_background
-
-        thread = threading.Thread(
-            target=_compute_all_signals_background, daemon=True
-        )
-        thread.start()
-    except Exception as e:
-        logger.error(f"Signal computation job failed: {e}")
-
-
 async def sync_market_summary():
     """Sync market summary data. Never overwrite good data with zeroes."""
     try:
@@ -184,10 +170,9 @@ async def sync_market_summary():
 
 
 async def market_data_pipeline():
-    """Full pipeline: fetch live → sync to daily → recompute signals → sync summary."""
+    """Full pipeline: fetch live → sync to daily → sync summary."""
     await fetch_live_prices()
     await sync_daily_prices_from_live()
-    await compute_signals()
     await sync_market_summary()
 
 
@@ -278,6 +263,12 @@ async def run_post_market_analysis():
         import threading
         thread = threading.Thread(target=run_daily_analysis, daemon=True)
         thread.start()
+
+        # Invalidate signal cache so next request rebuilds from fresh analysis
+        from data.cache import cache
+        cache.delete("all_signals")
+        cache.delete("signals_summary")
+        cache.delete("suggestions")
     except Exception as e:
         logger.error(f"Post-market analysis failed: {e}")
 

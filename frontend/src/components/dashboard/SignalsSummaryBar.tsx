@@ -62,7 +62,7 @@ export default function SignalsSummaryBar({ data }: Props) {
       {isComputing ? (
         <div className="flex items-center justify-center py-4 text-sm text-slate-500">
           <Loader2 className="h-4 w-4 animate-spin mr-2" />
-          Analyzing ~100 stocks... signals will appear shortly
+          Loading analysis data...
         </div>
       ) : (
         <>

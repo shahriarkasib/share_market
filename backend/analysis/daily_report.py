@@ -280,6 +280,40 @@ def _analyze_stock(symbol: str, df: pd.DataFrame, live: dict,
         else "Bearish"
     )
 
+    # ─── Price predictions (BUY-type only — expensive) ───
+    prediction_data = {}
+    if action.startswith("BUY"):
+        try:
+            from analysis.predictor import PricePredictor
+            from analysis.t2_scorer import T2Scorer
+
+            _sig_map = {"BUY (strong)": "STRONG_BUY", "BUY": "BUY",
+                        "BUY on pullback": "BUY", "BUY on dip": "BUY",
+                        "BUY (wait for MACD cross)": "BUY"}
+            pred = PricePredictor(df).predict()
+            t2_result = T2Scorer().score(
+                predictions=pred, current_price=ltp, atr=atr or 0,
+                signal_type=_sig_map.get(action, "BUY"),
+                stop_loss=sl, volume_ratio=vol_ratio,
+            )
+            prediction_data = {
+                "predicted_prices": pred.get("predicted_prices", {}),
+                "daily_ranges": pred.get("daily_ranges", {}),
+                "price_range_next_3d": pred.get("price_range_next_3d", {}),
+                "support_level": pred.get("support_level", 0),
+                "resistance_level": pred.get("resistance_level", 0),
+                "trend_strength": pred.get("trend_strength", "SIDEWAYS"),
+                "volatility_level": pred.get("volatility_level", "MEDIUM"),
+                "t2_safe": t2_result.get("t2_safe", False),
+                "risk_score": t2_result.get("risk_score", 50),
+                "expected_return_pct": round(t2_result.get("expected_return_pct", 0), 2),
+                "hold_days": t2_result.get("hold_days", 0),
+                "entry_strategy": t2_result.get("entry_strategy", ""),
+                "exit_strategy": t2_result.get("exit_strategy", ""),
+            }
+        except Exception as e:
+            logger.warning(f"Prediction failed for {symbol}: {e}")
+
     return {
         "symbol": symbol,
         "category": category,
@@ -338,6 +372,7 @@ def _analyze_stock(symbol: str, df: pd.DataFrame, live: dict,
         "hold_days_t2": timing["hold_days_t2"],
         "scenarios_json": json.dumps(scenarios),
         "last_5_json": json.dumps(last_5_data),
+        "prediction_json": json.dumps(prediction_data) if prediction_data else None,
     }
 
 
@@ -1022,6 +1057,7 @@ def save_daily_analysis(analysis: list[dict], date_str: str | None = None):
         ("exit_t2_by", "DATE"),
         ("hold_days_t1", "INTEGER"),
         ("hold_days_t2", "INTEGER"),
+        ("prediction_json", "TEXT"),
     ]:
         try:
             conn.execute(f"ALTER TABLE daily_analysis ADD COLUMN IF NOT EXISTS {col} {ctype}")
@@ -1039,9 +1075,9 @@ def save_daily_analysis(analysis: list[dict], date_str: str | None = None):
                     macd_status, bb_pct, atr, atr_pct, volatility, max_dd, support, resistance,
                     trend_50d, avg_vol, vol_ratio, wait_days, vol_entry,
                     entry_start, entry_end, exit_t1_by, exit_t2_by, hold_days_t1, hold_days_t2,
-                    scenarios_json, last_5_json, ltp, score, category)
+                    scenarios_json, last_5_json, ltp, score, category, prediction_json)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                           ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                           ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT (date, symbol) DO UPDATE SET
                      action=EXCLUDED.action, reasoning=EXCLUDED.reasoning,
                      entry_low=EXCLUDED.entry_low, entry_high=EXCLUDED.entry_high,
@@ -1061,7 +1097,7 @@ def save_daily_analysis(analysis: list[dict], date_str: str | None = None):
                      hold_days_t1=EXCLUDED.hold_days_t1, hold_days_t2=EXCLUDED.hold_days_t2,
                      scenarios_json=EXCLUDED.scenarios_json,
                      last_5_json=EXCLUDED.last_5_json, ltp=EXCLUDED.ltp, score=EXCLUDED.score,
-                     category=EXCLUDED.category""",
+                     category=EXCLUDED.category, prediction_json=EXCLUDED.prediction_json""",
                 (
                     date_str, a["symbol"], a["action"], a["reasoning"],
                     a["entry_low"], a["entry_high"], a["sl"], a["t1"], a["t2"],
@@ -1073,7 +1109,7 @@ def save_daily_analysis(analysis: list[dict], date_str: str | None = None):
                     a["entry_start"], a["entry_end"], a["exit_t1_by"], a["exit_t2_by"],
                     a["hold_days_t1"], a["hold_days_t2"],
                     a["scenarios_json"], a["last_5_json"], a["ltp"], a.get("score", 0),
-                    a.get("category", ""),
+                    a.get("category", ""), a.get("prediction_json"),
                 ),
             )
             saved += 1
@@ -1123,7 +1159,7 @@ def load_daily_analysis(date_str: str | None = None, action_filter: str | None =
             if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
                 d[k] = None
         # Parse JSON fields
-        for jfield in ("scenarios_json", "last_5_json"):
+        for jfield in ("scenarios_json", "last_5_json", "prediction_json"):
             if d.get(jfield):
                 try:
                     d[jfield] = json.loads(d[jfield])

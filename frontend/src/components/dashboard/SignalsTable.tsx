@@ -49,7 +49,7 @@ export default function SignalsTable({
         <div className="flex items-center justify-center gap-2 py-10">
           <Loader2 className="h-4 w-4 animate-spin text-blue-400" />
           <span className="text-xs text-[var(--text-muted)]">
-            Computing signals... analyzing top 100 stocks
+            Loading analysis data...
           </span>
         </div>
       ) : signals.length === 0 ? (

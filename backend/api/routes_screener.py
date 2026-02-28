@@ -2,22 +2,9 @@
 
 from fastapi import APIRouter, Query
 from typing import Optional
-from data.cache import cache
-from data.repository import load_signals_from_db
-from config import CACHE_TTL_SIGNALS
+from api.routes_signals import _get_signals
 
 router = APIRouter()
-
-
-def _get_signals() -> list:
-    """Get signals from cache, falling back to DB."""
-    signals = cache.get("all_signals")
-    if signals is not None:
-        return signals
-    signals = load_signals_from_db()
-    if signals:
-        cache.set("all_signals", signals, CACHE_TTL_SIGNALS * 2)
-    return signals or []
 
 
 @router.get("")

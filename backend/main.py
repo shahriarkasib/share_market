@@ -243,47 +243,11 @@ def _run_background_init():
                 except Exception as e:
                     logger.error(f"Category scraping failed: {e}")
 
-            # 3. Compute signals only if missing or stale (>4 hours old)
+            # 3. Warm signal cache from daily analysis
             from data.cache import cache
-            from data.repository import load_signals_from_db
-            all_signals = cache.get("all_signals")
-            if not all_signals:
-                # Cache miss — try loading from DB
-                db_sigs = load_signals_from_db()
-                if db_sigs:
-                    from config import CACHE_TTL_SIGNALS
-                    cache.set("all_signals", db_sigs, CACHE_TTL_SIGNALS * 2)
-                    all_signals = db_sigs
-                    logger.info(f"Background: loaded {len(db_sigs)} signals from DB into cache")
-
-            # Check staleness — only recompute if signals are missing or >4 hours old
-            should_compute = False
-            if not all_signals:
-                should_compute = True
-                logger.info("Background: no signals found, will compute")
-            else:
-                # Check age of signals in DB
-                conn_sig = get_connection()
-                age_row = conn_sig.execute(
-                    "SELECT created_at FROM signals ORDER BY created_at DESC LIMIT 1"
-                ).fetchone()
-                conn_sig.close()
-                if age_row and age_row["created_at"]:
-                    try:
-                        created = datetime.fromisoformat(age_row["created_at"])
-                        age_hours = (datetime.now() - created).total_seconds() / 3600
-                        if age_hours > 4:
-                            should_compute = True
-                            logger.info(f"Background: signals are {age_hours:.1f}h old, will recompute")
-                        else:
-                            logger.info(f"Background: signals are {age_hours:.1f}h old, skipping recompute")
-                    except (ValueError, TypeError):
-                        should_compute = True
-
-            if should_compute:
-                logger.info("Background: starting signal computation...")
-                from api.routes_signals import start_background_computation
-                start_background_computation()
+            from api.routes_signals import _get_signals
+            signals = _get_signals()
+            logger.info(f"Background: warmed signal cache with {len(signals)} signals from daily analysis")
 
             logger.info("Background initialization complete")
         except Exception as e:
@@ -301,15 +265,15 @@ async def lifespan(app: FastAPI):
     init_database()
     logger.info("Database initialized")
 
-    # Load cached signals from DB (instant)
-    from data.repository import load_signals_from_db
+    # Warm signal cache from daily analysis (instant)
+    from analysis.daily_report import load_daily_analysis
     from data.cache import cache
     from config import CACHE_TTL_SIGNALS
 
-    db_signals = load_signals_from_db()
-    if db_signals:
-        cache.set("all_signals", db_signals, CACHE_TTL_SIGNALS * 2)
-        logger.info(f"Loaded {len(db_signals)} signals from DB into cache")
+    analysis = load_daily_analysis()
+    if analysis:
+        # Import will trigger cache warming on first _get_signals() call
+        logger.info(f"Found {len(analysis)} daily analysis rows for cache warming")
 
     # Start scheduler
     scheduler = setup_scheduler()
