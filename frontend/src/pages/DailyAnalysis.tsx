@@ -253,8 +253,8 @@ function AnalysisCard({ stock }: { stock: DailyAnalysis }) {
   const [expanded, setExpanded] = useState(false);
   const cfg = getActionCfg(stock.action);
 
-  // Parse scenarios
-  let scenarios: { label: string; description: string }[] = [];
+  // Parse scenarios (backend stores {name, steps[]})
+  let scenarios: { name: string; steps: string[] }[] = [];
   if (stock.scenarios_json) {
     try {
       const parsed = typeof stock.scenarios_json === "string"
@@ -401,16 +401,22 @@ function AnalysisCard({ stock }: { stock: DailyAnalysis }) {
 
           {/* Scenarios */}
           {scenarios.length > 0 && (
-            <div className="space-y-1">
+            <div className="space-y-1.5">
               <div className="text-[10px] font-semibold text-[var(--text-dim)] uppercase tracking-wider">Scenarios</div>
               {scenarios.map((sc, i) => (
                 <div key={i} className="text-[11px]">
                   <span className={clsx(
                     "font-medium",
-                    sc.label.toLowerCase().includes("bull") ? "text-green-400" :
-                    sc.label.toLowerCase().includes("bear") ? "text-red-400" : "text-amber-400",
-                  )}>{sc.label}:</span>{" "}
-                  <span className="text-[var(--text-muted)]">{sc.description}</span>
+                    (sc.name || "").toLowerCase().includes("dip") ? "text-green-400" :
+                    (sc.name || "").toLowerCase().includes("gap down") ? "text-red-400" : "text-amber-400",
+                  )}>{sc.name}</span>
+                  {sc.steps && (
+                    <ul className="ml-3 mt-0.5 space-y-0.5 text-[var(--text-muted)]">
+                      {sc.steps.map((step, j) => (
+                        <li key={j} className="list-disc list-inside">{step}</li>
+                      ))}
+                    </ul>
+                  )}
                 </div>
               ))}
             </div>
