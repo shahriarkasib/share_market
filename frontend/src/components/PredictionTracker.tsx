@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { Link } from "react-router-dom";
 import { clsx } from "clsx";
 import {
@@ -236,7 +236,15 @@ export default function PredictionTracker() {
   const [filterSource, setFilterSource] = useState<string>("");
   const [filterOutcome, setFilterOutcome] = useState<string>("");
   const [filterSymbol, setFilterSymbol] = useState<string>("");
+  const [debouncedSymbol, setDebouncedSymbol] = useState<string>("");
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const handleSymbolChange = useCallback((val: string) => {
+    setFilterSymbol(val);
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => setDebouncedSymbol(val), 400);
+  }, []);
 
   // Load accuracy data
   useEffect(() => {
@@ -246,7 +254,7 @@ export default function PredictionTracker() {
         map[d.source] = d;
       }
       setAccuracy(map);
-    }).catch(() => {});
+    }).catch((e) => console.error("[PredictionTracker] accuracy fetch failed:", e));
   }, [period]);
 
   // Load predictions
@@ -255,13 +263,13 @@ export default function PredictionTracker() {
     const params: Record<string, string | number> = { limit: 200 };
     if (filterSource) params.source = filterSource;
     if (filterOutcome) params.outcome = filterOutcome;
-    if (filterSymbol) params.symbol = filterSymbol;
+    if (debouncedSymbol) params.symbol = debouncedSymbol;
 
     fetchPredictionTracker(params)
       .then((res) => setPredictions(res.predictions))
-      .catch(() => setPredictions([]))
+      .catch((e) => { console.error("[PredictionTracker] fetch failed:", e); setPredictions([]); })
       .finally(() => setLoading(false));
-  }, [filterSource, filterOutcome, filterSymbol]);
+  }, [filterSource, filterOutcome, debouncedSymbol]);
 
   // Stats
   const stats = useMemo(() => {
@@ -334,7 +342,7 @@ export default function PredictionTracker() {
             type="text"
             placeholder="Symbol..."
             value={filterSymbol}
-            onChange={(e) => setFilterSymbol(e.target.value.toUpperCase())}
+            onChange={(e) => handleSymbolChange(e.target.value.toUpperCase())}
             className="bg-[var(--surface)] border border-[var(--border)] rounded pl-6 pr-2 py-1 text-[11px] text-[var(--text)] w-24"
           />
         </div>
