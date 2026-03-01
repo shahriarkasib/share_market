@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef, useCallback } from "react";
+import { useState, useEffect, useMemo, useRef, useCallback, forwardRef } from "react";
 import { Link } from "react-router-dom";
 import { clsx } from "clsx";
 import {
@@ -273,19 +273,41 @@ export default function DailyAnalysisPage() {
 
   const hasFilters = sectorFilter || categoryFilter;
 
+  // Cleanup ref for polling timers
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const scanTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Cleanup polling on unmount
+  useEffect(() => {
+    return () => {
+      if (pollRef.current) clearInterval(pollRef.current);
+      if (scanTimeoutRef.current) clearTimeout(scanTimeoutRef.current);
+    };
+  }, []);
+
   const handleTrigger = async () => {
     setTriggering(true);
     try {
       await triggerAnalysis();
-      const poll = setInterval(async () => {
+      let attempts = 0;
+      pollRef.current = setInterval(async () => {
+        attempts++;
+        if (attempts > 60) { // 5 min max
+          if (pollRef.current) clearInterval(pollRef.current);
+          setTriggering(false);
+          return;
+        }
         const s = await fetchAnalysisStatus();
         if (!s.running) {
-          clearInterval(poll);
+          if (pollRef.current) clearInterval(pollRef.current);
           setTriggering(false);
-          const r = await fetchDailyAnalysis(selectedDate);
-          setData(r);
+          // Auto-select newest date
           const d = await fetchAnalysisDates();
-          setDates(d.dates.sort().reverse());
+          const sorted = d.dates.sort().reverse();
+          setDates(sorted);
+          if (sorted[0]) {
+            setSelectedDate(sorted[0]);
+          }
         }
       }, 5000);
     } catch {
@@ -306,17 +328,13 @@ export default function DailyAnalysisPage() {
     }
   }, [selectedDate]);
 
-  // Auto-refresh live tracker every 60s
+  // Auto-refresh live tracker every 60s — only when live mode is active
   const { secondsToRefresh, refresh: refreshLive } = useAutoRefresh({
     fetchFn: fetchLiveData,
     intervalMs: 60_000,
-    immediate: mode === "live",
+    immediate: true,
+    enabled: mode === "live",
   });
-
-  // Fetch live data when switching to live mode
-  useEffect(() => {
-    if (mode === "live" && !liveData) fetchLiveData();
-  }, [mode, liveData, fetchLiveData]);
 
   // Live scan fetch
   const fetchScanData = useCallback(async () => {
@@ -331,28 +349,38 @@ export default function DailyAnalysisPage() {
     }
   }, []);
 
-  // Auto-refresh scan every 60s
+  // Auto-refresh scan every 60s — only when scan mode is active
   const { secondsToRefresh: scanSecondsToRefresh, refresh: refreshScan } = useAutoRefresh({
     fetchFn: fetchScanData,
     intervalMs: 60_000,
-    immediate: mode === "scan",
+    immediate: true,
+    enabled: mode === "scan",
   });
 
-  // Fetch scan data when switching to scan mode
-  useEffect(() => {
-    if (mode === "scan" && !scanData) fetchScanData();
-  }, [mode, scanData, fetchScanData]);
-
-  // Handle scan trigger
+  // Handle scan trigger with polling instead of hardcoded timeout
   const handleTriggerScan = async () => {
     setScanTriggering(true);
+    const oldTimestamp = scanData?.timestamp;
     try {
       await triggerLiveScan();
-      // Poll until new results appear
-      setTimeout(async () => {
-        await fetchScanData();
-        setScanTriggering(false);
-      }, 30000); // Scan takes ~26s
+      let attempts = 0;
+      const checkScan = async () => {
+        attempts++;
+        if (attempts > 24) { // 2 min max (24 * 5s)
+          setScanTriggering(false);
+          return;
+        }
+        try {
+          const r = await fetchLiveScan();
+          if (r.timestamp && r.timestamp !== oldTimestamp) {
+            setScanData(r);
+            setScanTriggering(false);
+            return;
+          }
+        } catch { /* retry */ }
+        scanTimeoutRef.current = setTimeout(checkScan, 5000);
+      };
+      scanTimeoutRef.current = setTimeout(checkScan, 5000);
     } catch {
       setScanTriggering(false);
     }
@@ -935,8 +963,6 @@ export default function DailyAnalysisPage() {
 
 /* ── stock analysis card ───────────────────────────────────── */
 
-import { forwardRef } from "react";
-
 const AnalysisCard = forwardRef<HTMLDivElement, { stock: DailyAnalysis; highlight?: boolean; date?: string }>(
   function AnalysisCard({ stock, highlight, date }, ref) {
     const [expanded, setExpanded] = useState(false);
@@ -1229,7 +1255,7 @@ function LiveTrackerRow({ stock }: { stock: LiveTrackerStock }) {
 
         {/* Distance */}
         <span className={clsx("text-[11px] font-medium tabular-nums w-14 text-right", colorBySign(-stock.distance_pct))}>
-          {stock.distance_pct > 0 ? "+" : ""}{stock.distance_pct}%
+          {stock.distance_pct > 0 ? "+" : ""}{stock.distance_pct.toFixed(1)}%
         </span>
 
         <button
@@ -1413,7 +1439,7 @@ function LiveScanRow({ result }: { result: LiveScanResult }) {
             <span className="text-[var(--text-dim)]">RSI <span className={clsx("font-medium", result.rsi < 30 ? "text-green-400" : result.rsi > 70 ? "text-red-400" : "text-[var(--text)]")}>{result.rsi?.toFixed(1)}</span></span>
             <span className="text-[var(--text-dim)]">MACD <span className={clsx("font-medium", result.macd_status?.toLowerCase().includes("bullish") ? "text-green-400" : result.macd_status?.toLowerCase().includes("bearish") ? "text-red-400" : "text-amber-400")}>{result.macd_status}</span></span>
             <span className="text-[var(--text-dim)]">Status <span className="font-medium text-[var(--text)]">{result.status}</span></span>
-            <span className="text-[var(--text-dim)]">Dist <span className={clsx("font-medium", colorBySign(-result.distance_pct))}>{result.distance_pct > 0 ? "+" : ""}{result.distance_pct}%</span></span>
+            <span className="text-[var(--text-dim)]">Dist <span className={clsx("font-medium", colorBySign(-result.distance_pct))}>{result.distance_pct > 0 ? "+" : ""}{result.distance_pct.toFixed(1)}%</span></span>
             <span className="text-[var(--text-dim)]">Score <span className={clsx("font-medium", result.score > 30 ? "text-green-400" : result.score > 0 ? "text-blue-400" : "text-red-400")}>{result.score > 0 ? "+" : ""}{result.score?.toFixed(0)}</span></span>
             <span className="text-[var(--text-dim)]">Vol <span className="font-medium text-[var(--text)]">{formatNumber(result.live_volume)}</span></span>
           </div>

@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { clsx } from "clsx";
 import {
   Brain,
@@ -32,10 +32,6 @@ function actionColor(a?: string): string {
   return "text-[var(--text-muted)]";
 }
 
-/* ── per-stock cache ── */
-
-const cache: Record<string, LLMDailyAnalysis | null> = {};
-
 interface Props {
   symbol: string;
   date: string;
@@ -46,22 +42,32 @@ export default function LLMJudgePanel({ symbol, date }: Props) {
   const [entry, setEntry] = useState<LLMDailyAnalysis | null | undefined>(undefined);
   const [loading, setLoading] = useState(false);
 
+  // Date-scoped cache: invalidates when date changes
+  const cacheRef = useRef<{ date: string; data: Record<string, LLMDailyAnalysis | null> }>({ date: "", data: {} });
+
   useEffect(() => {
     if (!open) return;
-    const key = `${date}:${symbol}`;
-    if (key in cache) {
-      setEntry(cache[key]);
+
+    // Invalidate cache when date changes
+    if (cacheRef.current.date !== date) {
+      cacheRef.current = { date, data: {} };
+    }
+
+    const cache = cacheRef.current.data;
+    if (symbol in cache) {
+      setEntry(cache[symbol]);
       return;
     }
+
     setLoading(true);
     fetchLLMDailyAnalysis(date, undefined, symbol)
       .then((r) => {
         const found = r.analysis.find((a) => a.symbol === symbol) ?? null;
-        cache[key] = found;
+        cache[symbol] = found;
         setEntry(found);
       })
       .catch(() => {
-        cache[key] = null;
+        cache[symbol] = null;
         setEntry(null);
       })
       .finally(() => setLoading(false));
@@ -190,21 +196,21 @@ export default function LLMJudgePanel({ symbol, date }: Props) {
               )}
 
               {/* Risk factors and catalysts */}
-              {(entry.risk_factors?.length > 0 || entry.catalysts?.length > 0) && (
+              {((entry.risk_factors?.length ?? 0) > 0 || (entry.catalysts?.length ?? 0) > 0) && (
                 <div className="flex gap-3 flex-wrap">
-                  {entry.risk_factors?.length > 0 && (
+                  {(entry.risk_factors?.length ?? 0) > 0 && (
                     <div>
                       <span className="text-[10px] text-red-400 font-medium">Risks: </span>
-                      {entry.risk_factors.map((r, i) => (
-                        <span key={i} className="text-[10px] text-[var(--text-dim)] mr-1.5">{r}{i < entry.risk_factors.length - 1 ? "," : ""}</span>
+                      {entry.risk_factors?.map((r, i) => (
+                        <span key={i} className="text-[10px] text-[var(--text-dim)] mr-1.5">{r}{i < (entry.risk_factors?.length ?? 0) - 1 ? "," : ""}</span>
                       ))}
                     </div>
                   )}
-                  {entry.catalysts?.length > 0 && (
+                  {(entry.catalysts?.length ?? 0) > 0 && (
                     <div>
                       <span className="text-[10px] text-green-400 font-medium">Catalysts: </span>
-                      {entry.catalysts.map((c, i) => (
-                        <span key={i} className="text-[10px] text-[var(--text-dim)] mr-1.5">{c}{i < entry.catalysts.length - 1 ? "," : ""}</span>
+                      {entry.catalysts?.map((c, i) => (
+                        <span key={i} className="text-[10px] text-[var(--text-dim)] mr-1.5">{c}{i < (entry.catalysts?.length ?? 0) - 1 ? "," : ""}</span>
                       ))}
                     </div>
                   )}
