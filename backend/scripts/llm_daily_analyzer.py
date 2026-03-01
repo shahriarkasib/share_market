@@ -181,9 +181,11 @@ def load_market_context() -> dict:
 
 
 def load_accuracy_feedback() -> str:
-    """Load past accuracy from accuracy_summary for self-improvement."""
+    """Load past accuracy + specific mistakes for self-improvement."""
     conn = get_conn()
     cur = conn.cursor()
+
+    # 1. Summary stats
     cur.execute("""
         SELECT source, accuracy_pct, avg_return_pct, buy_accuracy_pct,
                hold_transition_accuracy_pct, t1_hit_rate, sl_hit_rate
@@ -193,18 +195,62 @@ def load_accuracy_feedback() -> str:
         LIMIT 3
     """)
     rows = cur.fetchall()
+
+    # 2. Recent wrong predictions (learn from mistakes)
+    cur.execute("""
+        SELECT symbol, source, action, outcome_reason, final_return_pct, max_loss_pct
+        FROM prediction_tracker
+        WHERE outcome = 'WRONG' AND source = 'llm'
+        ORDER BY date DESC
+        LIMIT 10
+    """)
+    mistakes = cur.fetchall()
+
+    # 3. Best correct calls (reinforce what works)
+    cur.execute("""
+        SELECT symbol, source, action, outcome_reason, final_return_pct
+        FROM prediction_tracker
+        WHERE outcome = 'CORRECT' AND source = 'llm' AND final_return_pct IS NOT NULL
+        ORDER BY final_return_pct DESC
+        LIMIT 5
+    """)
+    wins = cur.fetchall()
+
     conn.close()
-    if not rows:
+
+    lines = []
+    if rows:
+        lines.append("## LEARN FROM PAST PERFORMANCE (critical for improvement)")
+        lines.append("### 30-day Accuracy Summary")
+        for r in rows:
+            lines.append(
+                f"- {r['source']}: accuracy {r['accuracy_pct'] or 0:.1f}%, "
+                f"avg return {r['avg_return_pct'] or 0:+.2f}%, "
+                f"BUY accuracy {r['buy_accuracy_pct'] or 0:.1f}%, "
+                f"T1 hit rate {r['t1_hit_rate'] or 0:.1f}%, "
+                f"SL hit rate {r['sl_hit_rate'] or 0:.1f}%"
+            )
+
+    if mistakes:
+        lines.append("\n### YOUR RECENT MISTAKES (avoid repeating these)")
+        for m in mistakes:
+            ret = f"{m['final_return_pct']:+.1f}%" if m['final_return_pct'] else "N/A"
+            loss = f"{m['max_loss_pct']:.1f}%" if m['max_loss_pct'] else "N/A"
+            lines.append(
+                f"- {m['symbol']}: you said {m['action']} but was WRONG. "
+                f"Return: {ret}, max loss: {loss}. "
+                f"Reason: {m['outcome_reason'] or 'unknown'}"
+            )
+        lines.append("Reflect on these mistakes. What pattern do you see? Adjust your analysis accordingly.")
+
+    if wins:
+        lines.append("\n### YOUR BEST CALLS (reinforce this pattern)")
+        for w in wins:
+            ret = f"{w['final_return_pct']:+.1f}%" if w['final_return_pct'] else "N/A"
+            lines.append(f"- {w['symbol']}: {w['action']} was CORRECT, return {ret}. {w['outcome_reason'] or ''}")
+
+    if not lines:
         return ""
-    lines = ["## Past 30-day Accuracy (learn from this)"]
-    for r in rows:
-        lines.append(
-            f"- {r['source']}: accuracy {r['accuracy_pct'] or 0:.1f}%, "
-            f"avg return {r['avg_return_pct'] or 0:+.2f}%, "
-            f"BUY accuracy {r['buy_accuracy_pct'] or 0:.1f}%, "
-            f"T1 hit rate {r['t1_hit_rate'] or 0:.1f}%, "
-            f"SL hit rate {r['sl_hit_rate'] or 0:.1f}%"
-        )
     return "\n".join(lines) + "\n"
 
 
@@ -341,7 +387,21 @@ def build_llm_prompt(
             f"Algo wait: {s.get('wait_days', '')}"
         )
 
-    return f"""You are a senior DSE (Dhaka Stock Exchange) trading analyst. Analyze these {len(stocks)} stocks independently.
+    return f"""You are a senior DSE (Dhaka Stock Exchange) trading analyst writing for BEGINNERS who are new to the stock market. Your readers do NOT know what RSI, MACD, Bollinger Bands, or ATR mean. You MUST explain every indicator you reference in plain language.
+
+## INDICATOR GLOSSARY (use these explanations in your reasoning)
+- **RSI** (Relative Strength Index, 0-100): Measures if a stock is oversold (<30 = sellers exhausted, price likely to bounce UP) or overbought (>70 = buyers exhausted, price likely to drop). 40-60 is neutral.
+- **StochRSI** (0-100): A faster version of RSI. <20 = deeply oversold (strong bounce signal). >80 = deeply overbought (pullback coming).
+- **MACD**: Shows momentum direction. "Bullish cross" = momentum shifting UP (buy signal). "Bearish cross" = momentum shifting DOWN (sell signal). "Converging" = about to cross (get ready). Histogram > 0 = upward momentum.
+- **BB%** (Bollinger Band %): Where price sits within its 20-day range. 0-15% = near bottom (cheap vs average, bounce zone). 85-100% = near top (expensive vs average, may drop). 40-60% = fair value.
+- **ATR%** (Average True Range %): How much the stock typically moves per day as % of price. High ATR% = volatile stock (bigger moves, bigger risk). Used to set stop loss distance.
+- **Vol Ratio**: Today's volume vs 20-day average. >2x = unusual interest (big move likely). <0.5x = nobody cares (avoid).
+- **Trend50d**: Price change over 50 days. Positive = uptrend. Negative = downtrend.
+- **SMA50**: 50-day average price. Price above = uptrend. Below = downtrend.
+- **Support**: Price level where stock historically stops falling (floor). **Resistance**: Price level where stock historically stops rising (ceiling).
+- **T+2**: After buying, you CANNOT sell for 2 trading days. If stock peaks today, buying is BAD.
+- **Pullback**: Stock in uptrend that dipped temporarily — buy at a discount before it resumes rising.
+- **Dip**: Price dropped to lower part of normal range — buy before it bounces back to average.
 
 ## Market Context
 - DSEX: {dsex:.1f} ({dsex_chg:+.2f}%)
@@ -356,35 +416,39 @@ def build_llm_prompt(
 ## Your Task
 For EACH stock, provide your INDEPENDENT analysis. You may agree or disagree with the algo.
 
+**CRITICAL: Write your reasoning as if teaching a beginner.** Don't just say "RSI is 28" — say "RSI is at 28, which is below 30 (oversold territory) — this means sellers are running out of steam and the price is likely to bounce upward soon."
+
 Return a JSON array (NO markdown fences, ONLY valid JSON):
 [
   {{
     "symbol": "SYMBOL",
     "action": "BUY|BUY on dip|BUY on pullback|BUY (wait for MACD cross)|HOLD/WAIT|SELL/AVOID|AVOID",
     "confidence": "HIGH|MEDIUM|LOW",
-    "reasoning": "2-4 sentence deep analysis: WHY this action? What technicals support it?",
-    "wait_for": "Specific trigger to watch: e.g., 'MACD bullish crossover + RSI below 40 bounce'",
+    "reasoning": "3-5 sentence EDUCATIONAL analysis. For EACH indicator you mention, explain what it means and WHY it matters for this stock. Example: 'RSI is at 28 (below 30 = oversold, sellers exhausted). MACD just crossed bullish (momentum shifting up — this is a buy signal). Price is near the lower Bollinger Band (cheap compared to its 20-day average). Together these signals say: the stock has been beaten down enough and is ready to bounce.'",
+    "wait_for": "Specific trigger in PLAIN LANGUAGE: e.g., 'Wait for MACD to cross its signal line from below (this means buying momentum is starting). Also watch for RSI to bounce above 30 (confirms sellers are done).'",
     "wait_days": "e.g., 'NOW', '1-3 days', '5-10 days', '15-30 days'",
     "entry_low": 0.0,
     "entry_high": 0.0,
     "sl": 0.0,
     "t1": 0.0,
     "t2": 0.0,
-    "risk_factors": ["risk1", "risk2"],
-    "catalysts": ["catalyst1"],
+    "risk_factors": ["Plain language risk: e.g., 'If overall market drops below 5400, this stock will likely fall too regardless of technicals'"],
+    "catalysts": ["Plain language catalyst: e.g., 'Dividend announcement expected next week which could push price up'"],
     "score": 50
   }}
 ]
 
 Rules:
 1. Analyze ALL {len(stocks)} stocks, not just BUY candidates
-2. T+2 settlement: buyer CANNOT sell for 2 trading days. If stock peaks today, BAD BUY.
+2. T+2 settlement: buyer CANNOT sell for 2 trading days. If stock peaks today, BAD BUY. Flag this risk.
 3. DSE tick size: 0.10 BDT. All prices must be multiples of 0.10.
-4. Be specific with entry prices and triggers — no vague advice
+4. EVERY indicator mentioned in reasoning MUST include what it means (use the glossary above)
 5. Score 0-100: 0=strong avoid, 50=neutral, 100=strong buy
-6. HOLD/WAIT must explain EXACTLY what trigger converts it to BUY
-7. For AVOID stocks, explain what would change your mind
-8. Return ONLY valid JSON array, no extra text"""
+6. HOLD/WAIT must explain EXACTLY what to watch for and how a beginner would recognize the trigger
+7. For AVOID stocks, explain what would need to change (in plain language) for it to become buyable
+8. Risk factors and catalysts must be understandable by someone who has never traded before
+9. If you made mistakes in past predictions (shown in feedback above), EXPLICITLY adjust your approach. Be more conservative where you were wrong.
+10. Return ONLY valid JSON array, no extra text"""
 
 
 def store_llm_results(date_str: str, results: list[dict], batch_id: int, raw: str):
@@ -508,7 +572,7 @@ def build_judge_prompt(
             f"SL: {llm.get('sl', 0)} | T1: {llm.get('t1', 0)}"
         )
 
-    return f"""You are a senior trading judge for DSE (Dhaka Stock Exchange). Compare the ALGORITHMIC and LLM analyses for each stock and produce a FINAL verdict.
+    return f"""You are a senior trading judge for DSE (Dhaka Stock Exchange). Your audience is BEGINNERS. Compare the ALGORITHMIC and LLM analyses for each stock and produce a FINAL verdict that a new trader can understand and act on.
 
 ## Market: DSEX {dsex:.1f}
 
@@ -518,6 +582,7 @@ def build_judge_prompt(
 
 ## Your Task
 For EACH stock, decide which analysis is better and produce a FINAL recommendation.
+Write your reasoning in PLAIN LANGUAGE that someone new to trading can understand.
 
 Return a JSON array (NO markdown fences, ONLY valid JSON):
 [
@@ -526,10 +591,10 @@ Return a JSON array (NO markdown fences, ONLY valid JSON):
     "final_action": "BUY|BUY on dip|BUY on pullback|BUY (wait for MACD cross)|HOLD/WAIT|SELL/AVOID|AVOID",
     "final_confidence": "HIGH|MEDIUM|LOW",
     "agreement": true,
-    "reasoning": "1-2 sentences: why you chose this side or blended both",
-    "algo_strengths": "What the algo got right (brief)",
-    "llm_strengths": "What the LLM added or got right (brief)",
-    "key_risk": "Primary risk to watch",
+    "reasoning": "2-3 sentences in plain language: why you chose this action, what the beginner should DO, and what to WATCH for. Example: 'Both algo and LLM agree this stock is oversold and due for a bounce. Place a limit order at 32.5 and wait. If it drops below 31.0 (stop loss), sell immediately to limit losses.'",
+    "algo_strengths": "What the algorithm's math got right (in plain language)",
+    "llm_strengths": "What the LLM's narrative/context analysis added (in plain language)",
+    "key_risk": "Primary risk in plain language: e.g., 'If the overall market drops, this stock will fall too regardless of how good its indicators look'",
     "wait_days": "e.g., '5-10 days'",
     "entry_low": 0.0,
     "entry_high": 0.0,
@@ -541,12 +606,13 @@ Return a JSON array (NO markdown fences, ONLY valid JSON):
 ]
 
 Rules:
-1. If both agree, say agreement=true and blend their reasoning
-2. If they disagree, pick the better analysis and explain WHY
-3. Weight algo higher for pure technical signals (RSI, MACD levels)
-4. Weight LLM higher for context/narrative (catalysts, sector rotation, volume interpretation)
-5. T+2 settlement applies — flag risky buys
-6. Return ONLY valid JSON array"""
+1. If both agree, say agreement=true and blend their reasoning into a clear action plan for beginners
+2. If they disagree, pick the better analysis and explain WHY in plain language
+3. Weight algo higher for pure technical signals (RSI, MACD levels) — numbers don't lie
+4. Weight LLM higher for context/narrative (catalysts, sector rotation, volume interpretation) — understanding WHY matters
+5. T+2 settlement applies — if a stock might peak today, warn the beginner: "You can't sell for 2 days, so buying now is risky"
+6. Your key_risk should be something a beginner can actually monitor (not jargon)
+7. Return ONLY valid JSON array"""
 
 
 def store_judge_results(date_str: str, results: list[dict], batch_id: int, raw: str):

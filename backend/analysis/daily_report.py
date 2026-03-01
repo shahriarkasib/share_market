@@ -801,58 +801,160 @@ def _classify_stock_v2(
     )
     score = round(composite * 100, 1)
 
-    # ════ BUILD REASONING ════
+    # ════ BUILD EDUCATIONAL REASONING ════
+    # Each description explains what the metric means for beginners
+
+    # RSI (Relative Strength Index): 0-100 momentum. <30 oversold, >70 overbought
+    if rsi < 30:
+        rsi_desc = f"RSI {rsi:.1f} (below 30 = oversold — sellers exhausted, price likely to bounce up)"
+    elif rsi < 40:
+        rsi_desc = f"RSI {rsi:.1f} (approaching oversold — getting cheap, watch for reversal)"
+    elif rsi <= 60:
+        rsi_desc = f"RSI {rsi:.1f} (neutral zone — no strong momentum either way)"
+    elif rsi <= 70:
+        rsi_desc = f"RSI {rsi:.1f} (elevated — price has risen a lot, getting expensive)"
+    else:
+        rsi_desc = f"RSI {rsi:.1f} (above 70 = overbought — price stretched too high, pullback risk)"
+
+    # StochRSI: faster version of RSI, 0-100. <20 deeply oversold, >80 overbought
+    if stoch_rsi < 20:
+        stoch_desc = f"StochRSI {stoch_rsi:.1f} (deeply oversold — strong bounce signal)"
+    elif stoch_rsi < 40:
+        stoch_desc = f"StochRSI {stoch_rsi:.1f} (oversold zone — reversal building)"
+    elif stoch_rsi <= 60:
+        stoch_desc = f"StochRSI {stoch_rsi:.1f} (neutral)"
+    elif stoch_rsi <= 80:
+        stoch_desc = f"StochRSI {stoch_rsi:.1f} (overbought zone — may pull back)"
+    else:
+        stoch_desc = f"StochRSI {stoch_rsi:.1f} (extreme overbought — pullback imminent)"
+
+    # MACD: trend momentum indicator. Bullish cross = buy signal, bearish cross = sell signal
+    if macd_cross_bull:
+        macd_desc = "MACD bullish cross (momentum shifting UP — this is a buy signal)"
+    elif macd_converging:
+        macd_desc = f"MACD converging (hist {macd_hist:+.3f} — lines coming together, crossover soon)"
+    elif macd_cross_bear:
+        macd_desc = "MACD bearish cross (momentum shifting DOWN — this is a sell signal)"
+    elif macd_hist > 0:
+        macd_desc = f"MACD positive (hist {macd_hist:+.3f} — upward momentum present)"
+    else:
+        macd_desc = f"MACD negative (hist {macd_hist:+.3f} — downward momentum, wait for reversal)"
+
+    # BB (Bollinger Bands): 0-100% position within bands. <20% = price cheap vs 20-day avg
+    bb_pct_val = bb_pct * 100
+    if bb_pct < 0.15:
+        bb_desc = f"BB {bb_pct_val:.0f}% (near lower band — price cheap vs 20-day average, bounce zone)"
+    elif bb_pct < 0.35:
+        bb_desc = f"BB {bb_pct_val:.0f}% (lower half — below average price, potential value)"
+    elif bb_pct <= 0.65:
+        bb_desc = f"BB {bb_pct_val:.0f}% (mid-range — price at fair value)"
+    elif bb_pct <= 0.85:
+        bb_desc = f"BB {bb_pct_val:.0f}% (upper half — above average, less upside room)"
+    else:
+        bb_desc = f"BB {bb_pct_val:.0f}% (near upper band — price expensive vs average, may drop back)"
+
+    # Trend: SMA50 = 50-day average. Above = uptrend, Below = downtrend
+    if above_sma50 and trend_50d > 5:
+        trend_desc = f"Above SMA50 — uptrend confirmed (price up {trend_50d:+.0f}% in 50 days)"
+    elif above_sma50:
+        trend_desc = f"Above SMA50 — mild uptrend ({trend_50d:+.0f}% in 50d)"
+    elif trend_50d < -5:
+        trend_desc = f"Below SMA50 — downtrend ({trend_50d:+.0f}% in 50d, avoid until price recovers above)"
+    else:
+        trend_desc = f"Below SMA50 — sideways ({trend_50d:+.0f}% in 50d, no clear direction)"
+
+    # Volume: ratio vs 20-day average. >2x = high interest, <0.5x = nobody cares
+    vol_sig = volume_pattern.get("signal", "")
+    if vol_ratio > 2.0:
+        vol_desc = f"Vol {vol_ratio:.1f}x avg (high activity — big move likely). {vol_sig}"
+    elif vol_ratio > 1.2:
+        vol_desc = f"Vol {vol_ratio:.1f}x avg (above normal — some interest). {vol_sig}"
+    elif vol_ratio > 0.8:
+        vol_desc = f"Vol {vol_ratio:.1f}x avg (normal trading). {vol_sig}"
+    elif vol_ratio > 0.5:
+        vol_desc = f"Vol {vol_ratio:.1f}x avg (below normal — low interest). {vol_sig}"
+    else:
+        vol_desc = f"Vol {vol_ratio:.1f}x avg (very quiet — no conviction in price move). {vol_sig}"
+
+    # Candlestick: price pattern from recent bars
+    candle_p = candle_patterns.get("pattern", "none")
+    if candle_p != "none":
+        candle_name = candle_p.replace("_", " ").title()
+        cs = candle_patterns.get("score", 0)
+        if cs > 0.3:
+            candle_desc = f"{candle_name} (bullish reversal pattern — price may bounce up)"
+        elif cs < -0.3:
+            candle_desc = f"{candle_name} (bearish reversal pattern — price may drop)"
+        else:
+            candle_desc = f"{candle_name} candle pattern"
+    else:
+        candle_desc = ""
+
+    # Pullback: uptrend stock that dipped temporarily — buy at discount
+    pullback_desc = "Pullback (uptrend stock dipped temporarily — buy at discount)" if pullback_score > 0.3 else ""
+
+    # History: how accurate past signals were for this stock
+    hist_reason = history_score.get("reason", "")
+    if hist_reason and hist_score > 0:
+        hist_desc = f"Past signals were profitable here ({hist_reason})"
+    elif hist_reason and hist_score < 0:
+        hist_desc = f"Past signals underperformed here ({hist_reason})"
+    else:
+        hist_desc = ""
+
     dimension_scores = [
-        ("RSI", rsi_score, f"RSI {rsi:.1f}"),
-        ("StochRSI", stoch_score, f"StochRSI {stoch_rsi:.1f}"),
-        ("MACD", macd_score,
-         f"MACD {'BULL cross' if macd_cross_bull else 'converging' if macd_converging else 'BEAR cross' if macd_cross_bear else 'bullish' if macd_hist > 0 else 'bearish'}"),
-        ("BB", bb_score, f"BB at {bb_pct * 100:.0f}%"),
-        ("Trend", trend_score,
-         f"{'Above' if above_sma50 else 'Below'} SMA50 ({sma50:.1f}), 50d {trend_50d}%"),
-        ("Volume", vol_score, f"Vol {vol_ratio:.1f}x, {volume_pattern.get('signal', '')}"),
-        ("Candle", candle_score, candle_patterns.get("pattern", "none").replace("_", " ").title()),
-        ("Pullback", pullback_score, "pullback setup" if pullback_score > 0.3 else ""),
-        ("History", hist_score, history_score.get("reason", "")),
+        ("RSI", rsi_score, rsi_desc),
+        ("StochRSI", stoch_score, stoch_desc),
+        ("MACD", macd_score, macd_desc),
+        ("BB", bb_score, bb_desc),
+        ("Trend", trend_score, trend_desc),
+        ("Volume", vol_score, vol_desc),
+        ("Candle", candle_score, candle_desc),
+        ("Pullback", pullback_score, pullback_desc),
+        ("History", hist_score, hist_desc),
     ]
     top = sorted(dimension_scores, key=lambda x: abs(x[1]), reverse=True)
 
     # ════ ACTION CLASSIFICATION ════
     if score > 55:
         action = "BUY (strong)"
-        bullish = [s[2] for s in top if s[1] > 0.3][:4]
-        reason_str = " + ".join(bullish) + ". Strong multi-signal confirmation."
+        bullish = [s[2] for s in top if s[1] > 0.3 and s[2]][:4]
+        reason_str = " | ".join(bullish) + ". Multiple strong signals align — high confidence entry."
         wait = "NOW (Sun/Mon)"
 
     elif score > 35:
         action = "BUY"
-        bullish = [s[2] for s in top if s[1] > 0.2][:3]
-        reason_str = " + ".join(bullish) + ". Good setup with confirmation signals."
+        bullish = [s[2] for s in top if s[1] > 0.2 and s[2]][:3]
+        reason_str = " | ".join(bullish) + ". Good setup with confirming signals."
         wait = "NOW (Sun/Mon)"
 
     elif score > 20 and pullback_score > 0.4:
         action = "BUY on pullback"
         reason_str = (
-            f"Uptrend pullback: Above SMA50 ({sma50:.1f}), RSI {rsi:.1f}, "
-            f"StochRSI {stoch_rsi:.1f}. "
-            f"MACD {'improving' if macd_converging or multi_day.get('macd_trend', 0) > 0 else 'flat'}. "
-            f"Entry on dip to BB lower ({bb_lower:.1f}) or support ({support})."
+            f"Pullback = stock is in an uptrend but dipped temporarily — buying at a discount. "
+            f"Above SMA50 ({sma50:.1f}) confirms uptrend. {rsi_desc}. "
+            f"MACD {'improving — crossover coming which will confirm the bounce' if macd_converging or multi_day.get('macd_trend', 0) > 0 else 'flat — wait for it to turn positive'}. "
+            f"Place limit order at {bb_lower:.1f} (Bollinger lower band) or {support} (support level where price bounced before)."
         )
         wait = "1-3 days"
 
     elif score > 15 and bb_pct < 0.35 and above_sma50:
         action = "BUY on dip"
         reason_str = (
-            f"BB at {bb_pct * 100:.0f}% in uptrend. RSI {rsi:.1f}, StochRSI {stoch_rsi:.1f}. "
-            f"Bounce rate {bounce_rate}%. Set limit buy at {bb_lower:.1f}-{support}."
+            f"Dip = price dropped to lower part of its normal range (BB {bb_pct_val:.0f}%) while still in uptrend. "
+            f"{rsi_desc}. {stoch_desc}. "
+            f"Bounce rate {bounce_rate}% (historically price bounces {bounce_rate}% of the time from this level). "
+            f"Set limit buy at {bb_lower:.1f}-{support} — this is the support zone where price tends to reverse upward."
         )
         wait = "1-5 days"
 
     elif score > 5 and macd_converging:
         action = "BUY (wait for MACD cross)"
         reason_str = (
-            f"MACD converging (hist={macd_hist:.3f}). RSI {rsi:.1f}, StochRSI {stoch_rsi:.1f}. "
-            f"{'Above' if above_sma50 else 'Below'} SMA50. Wait for MACD bull cross."
+            f"MACD lines are converging (hist={macd_hist:.3f}) — they're about to cross. "
+            f"When MACD crosses from below to above its signal line, it means buying momentum is starting. "
+            f"{rsi_desc}. {'Above' if above_sma50 else 'Below'} SMA50. "
+            f"Don't buy yet — wait for the actual crossover as confirmation."
         )
         wait = "3-7 days"
 
@@ -865,31 +967,41 @@ def _classify_stock_v2(
             parts.append("Positives: " + ", ".join(pos))
         if neg:
             parts.append("Negatives: " + ", ".join(neg))
-        reason_str = ". ".join(parts) + ". No clear entry trigger. Watch for StochRSI<20 + MACD cross."
+        reason_str = (
+            ". ".join(parts) +
+            ". Mixed signals — no clear entry trigger yet. "
+            "What to watch for: StochRSI dropping below 20 (oversold bounce signal) "
+            "or MACD bullish crossover (momentum shifting up). Either trigger means it's time to enter."
+        )
         wait = "5-15 days"
 
     elif score > -35:
         action = "SELL/AVOID"
         bearish = [s[2] for s in top if s[1] < -0.2 and s[2]][:3]
-        reason_str = " + ".join(bearish) + ". Bearish signals dominate. Wait for correction."
+        reason_str = (
+            " | ".join(bearish) +
+            ". Bearish signals dominate — price likely to drop further. "
+            "Wait for a correction (price stabilizing + indicators turning positive) before considering entry."
+        )
         wait = "10-20 days"
 
     else:
         action = "AVOID"
         bearish = [s[2] for s in top if s[1] < -0.3 and s[2]][:3]
-        reason_str = " + ".join(bearish) + ". Multiple bearish confirmations."
+        reason_str = (
+            " | ".join(bearish) +
+            ". Strong bearish across multiple indicators — stay away. "
+            "What would change: RSI dropping below 25 + MACD turning positive + price holding above support."
+        )
         wait = "15-30 days"
 
     # Append history insight
-    hist_reason = history_score.get("reason", "")
-    if hist_reason and hist_score != 0:
-        modifier = "boosted" if hist_score > 0 else "reduced"
-        reason_str += f" Signal {modifier} by {hist_reason}."
+    if hist_desc:
+        reason_str += f" {hist_desc}."
 
     # Append candlestick pattern
-    if candle_patterns.get("pattern", "none") != "none":
-        pattern_name = candle_patterns["pattern"].replace("_", " ").title()
-        reason_str += f" Candle: {pattern_name}."
+    if candle_desc:
+        reason_str += f" {candle_desc}."
 
     return action, reason_str, wait, score
 
