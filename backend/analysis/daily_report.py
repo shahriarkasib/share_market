@@ -1235,10 +1235,11 @@ def save_daily_analysis(analysis: list[dict], date_str: str | None = None):
 
 def load_daily_analysis(date_str: str | None = None, action_filter: str | None = None) -> list[dict]:
     """Load daily analysis from DB, enriched with sector/category from fundamentals."""
-    if not date_str:
-        date_str = datetime.now(DSE_TZ).strftime("%Y-%m-%d")
-
     conn = get_connection()
+    if not date_str:
+        latest = conn.execute("SELECT MAX(date) FROM daily_analysis").fetchone()
+        date_str = str(latest[0]) if latest and latest[0] else datetime.now(DSE_TZ).strftime("%Y-%m-%d")
+
     sql = """SELECT da.*, f.sector, f.category AS fund_category
              FROM daily_analysis da
              LEFT JOIN fundamentals f ON da.symbol = f.symbol
@@ -1286,10 +1287,14 @@ def load_daily_analysis_slim(date_str: str | None = None) -> list[dict]:
 
     Skips scenarios_json, last_5_json, and reasoning to reduce transfer size.
     """
-    if not date_str:
-        date_str = datetime.now(DSE_TZ).strftime("%Y-%m-%d")
-
     conn = get_connection()
+    if not date_str:
+        # Use the most recent analysis date (not today, which may have no data yet)
+        latest = conn.execute(
+            "SELECT MAX(date) FROM daily_analysis"
+        ).fetchone()
+        date_str = str(latest[0]) if latest and latest[0] else datetime.now(DSE_TZ).strftime("%Y-%m-%d")
+
     rows = conn.execute(
         """SELECT da.symbol, da.action, da.score, da.date,
                   da.entry_low, da.entry_high, da.sl, da.t1, da.t2,
