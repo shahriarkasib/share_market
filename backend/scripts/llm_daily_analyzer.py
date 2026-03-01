@@ -291,7 +291,8 @@ def call_claude(prompt: str, timeout: int = CLAUDE_TIMEOUT) -> str:
     # Fallback: Claude CLI (requires `claude login` or `claude setup-token`)
     try:
         result = subprocess.run(
-            ["claude", "-p", "--model", "sonnet", prompt],
+            ["claude", "-p", "--model", "sonnet"],
+            input=prompt,
             capture_output=True,
             text=True,
             timeout=timeout,
