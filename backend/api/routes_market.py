@@ -89,6 +89,31 @@ async def get_market_summary():
         else:
             summary["market_status"] = "CLOSED"
 
+    # Always enrich from live_prices aggregates (bdshare summary can be stale)
+    live_agg = conn.execute(
+        "SELECT COALESCE(SUM(volume),0) as vol, COALESCE(SUM(value),0) as val, "
+        "COALESCE(SUM(trade_count),0) as trades, "
+        "SUM(CASE WHEN change_pct > 0 THEN 1 ELSE 0 END) as adv, "
+        "SUM(CASE WHEN change_pct < 0 THEN 1 ELSE 0 END) as dec, "
+        "SUM(CASE WHEN change_pct = 0 AND trade_count > 0 THEN 1 ELSE 0 END) as unch "
+        "FROM live_prices WHERE ltp > 0"
+    ).fetchone()
+    if live_agg:
+        live_vol = int(live_agg["vol"])
+        live_val = float(live_agg["val"])
+        live_trades = int(live_agg["trades"])
+        # Prefer live totals when DB value is zero or live is larger
+        if live_vol > 0 and (not summary.get("total_volume") or live_vol > summary["total_volume"]):
+            summary["total_volume"] = live_vol
+        if live_val > 0 and (not summary.get("total_value") or summary["total_value"] == 0):
+            summary["total_value"] = live_val
+        if live_trades > 0 and (not summary.get("total_trade") or live_trades > summary["total_trade"]):
+            summary["total_trade"] = live_trades
+        # Always use live adv/dec/unch
+        summary["advances"] = int(live_agg["adv"])
+        summary["declines"] = int(live_agg["dec"])
+        summary["unchanged"] = int(live_agg["unch"])
+
     conn.close()
 
     updated = summary.get("updated_at") or datetime.now()

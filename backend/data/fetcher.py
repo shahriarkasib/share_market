@@ -91,9 +91,17 @@ class DSEDataFetcher:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors="coerce")
 
-        # Calculate change_pct if not present
-        if "change_pct" not in df.columns and "ltp" in df.columns and "close_prev" in df.columns:
-            df["change_pct"] = ((df["ltp"] - df["close_prev"]) / df["close_prev"] * 100).round(2)
+        # Compute signed change and change_pct from LTP vs close_prev
+        # (bdshare 'change' column is unsigned / unreliable)
+        if "ltp" in df.columns and "close_prev" in df.columns:
+            df["change"] = (df["ltp"] - df["close_prev"]).round(2)
+            mask = df["close_prev"] > 0
+            df.loc[mask, "change_pct"] = ((df.loc[mask, "ltp"] - df.loc[mask, "close_prev"]) / df.loc[mask, "close_prev"] * 100).round(2)
+            df.loc[~mask, "change_pct"] = 0.0
+
+        # bdshare doesn't return 'open' — use close_prev (YCP) as proxy
+        if "open" not in df.columns or df["open"].isna().all() or (df["open"] == 0).all():
+            df["open"] = df.get("close_prev", 0)
 
         return df
 
@@ -266,7 +274,9 @@ class DSEDataFetcher:
             summary["dsex_index"] = round(dsex_index, 2)
             summary["total_trade"] = int(latest.get("Total Trade", 0) or 0)
             summary["total_volume"] = int(latest.get("Total Volume", 0) or 0)
-            summary["total_value"] = float(latest.get("Total Value", 0) or 0)
+            # bdshare uses "Total Value (mn)" column name
+            total_val = latest.get("Total Value (mn)") or latest.get("Total Value") or 0
+            summary["total_value"] = float(total_val or 0)
 
             # Calculate change from previous day
             if len(data) > 1:
@@ -276,16 +286,32 @@ class DSEDataFetcher:
                     summary["dsex_change"] = round(change, 2)
                     summary["dsex_change_pct"] = round((change / prev_dsex) * 100, 2)
 
-            # Calculate advances/declines from DB (avoid redundant HTTP call)
+            # Enrich advances/declines and live totals from DB
             from database import get_connection
             conn = get_connection()
             adv = conn.execute("SELECT COUNT(*) FROM live_prices WHERE change_pct > 0").fetchone()[0]
             dec = conn.execute("SELECT COUNT(*) FROM live_prices WHERE change_pct < 0").fetchone()[0]
             unch = conn.execute("SELECT COUNT(*) FROM live_prices WHERE change_pct = 0").fetchone()[0]
-            conn.close()
             summary["advances"] = adv
             summary["declines"] = dec
             summary["unchanged"] = unch
+
+            # Use live DB totals if bdshare summary is stale (e.g. from previous day)
+            live_agg = conn.execute(
+                "SELECT COALESCE(SUM(volume),0) as vol, COALESCE(SUM(value),0) as val, COALESCE(SUM(trade_count),0) as trades FROM live_prices WHERE ltp > 0"
+            ).fetchone()
+            conn.close()
+            if live_agg:
+                live_vol = int(live_agg["vol"])
+                live_val = float(live_agg["val"])
+                live_trades = int(live_agg["trades"])
+                # Prefer live totals when they're larger (bdshare summary may be from prev day)
+                if live_vol > summary["total_volume"]:
+                    summary["total_volume"] = live_vol
+                if live_val > summary["total_value"]:
+                    summary["total_value"] = live_val
+                if live_trades > summary["total_trade"]:
+                    summary["total_trade"] = live_trades
 
             # Determine market status based on time
             dse_tz = pytz.timezone("Asia/Dhaka")
