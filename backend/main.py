@@ -226,13 +226,18 @@ def _run_background_init():
                 logger.info("Background: seeding sectors from static JSON...")
                 _seed_sectors_from_json()
 
-            # 3b. Seed DSEX history if empty
+            # 3b. Seed DSEX history if empty, then backfill any gaps
             conn_dsex = get_connection()
             dsex_count = conn_dsex.execute("SELECT COUNT(*) FROM dsex_history").fetchone()[0]
             conn_dsex.close()
             if dsex_count == 0:
                 logger.info("Background: seeding DSEX history from bdshare...")
                 _seed_dsex_history()
+
+            # Always backfill gaps + upsert latest market_summary DSEX
+            from jobs.scheduler import backfill_dsex_history
+            logger.info("Background: backfilling DSEX history gaps...")
+            backfill_dsex_history()
 
             # 3c. Scrape DSE categories if mostly missing
             from data.repository import get_category_count, save_stock_categories

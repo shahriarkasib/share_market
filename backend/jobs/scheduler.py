@@ -198,6 +198,93 @@ async def sync_dsex_history():
         logger.error(f"DSEX history sync failed: {e}")
 
 
+def backfill_dsex_history():
+    """Fill gaps in dsex_history using bdshare market_summary.
+
+    Runs once at startup so the chart never has missing days.
+    Also upserts the latest market_summary DSEX for the current/most-recent day.
+    """
+    try:
+        conn = get_connection()
+        last_row = conn.execute(
+            "SELECT MAX(date) AS last_date FROM dsex_history"
+        ).fetchone()
+        last_date = str(last_row["last_date"]) if last_row and last_row["last_date"] else None
+        conn.close()
+
+        if not last_date:
+            return
+
+        # 1. Try bdshare for historical gap fill
+        filled = 0
+        try:
+            from bdshare import market_summary as bdshare_summary
+            import warnings
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                data = bdshare_summary()
+
+            if data is not None and not data.empty:
+                conn = get_connection()
+                for _, row in data.iterrows():
+                    date_str = str(row.get("date", ""))[:10]
+                    if date_str <= last_date:
+                        continue
+                    dsex = row.get("dsex_index") or row.get("DSEX")
+                    if not dsex or float(dsex) <= 0:
+                        continue
+                    conn.execute(
+                        """INSERT INTO dsex_history (date, dsex_index, total_volume, total_value, total_trade)
+                           VALUES (?, ?, ?, ?, ?)
+                           ON CONFLICT (date) DO UPDATE SET
+                             dsex_index = EXCLUDED.dsex_index,
+                             total_volume = EXCLUDED.total_volume,
+                             total_value = EXCLUDED.total_value,
+                             total_trade = EXCLUDED.total_trade""",
+                        (
+                            date_str,
+                            float(dsex),
+                            int(row.get("total_volume", 0) or 0),
+                            float(row.get("total_value", 0) or 0),
+                            int(row.get("total_trade", 0) or 0),
+                        ),
+                    )
+                    filled += 1
+                conn.commit()
+                conn.close()
+        except Exception as e:
+            logger.warning(f"bdshare backfill failed (non-fatal): {e}")
+
+        # 2. Always upsert current market_summary DSEX for the latest trading day
+        try:
+            conn = get_connection()
+            ms = conn.execute("SELECT * FROM market_summary WHERE id = 1").fetchone()
+            if ms and ms["dsex_index"] and ms["dsex_index"] > 0:
+                # market_summary reflects the latest trading session
+                today_str = datetime.now(DSE_TZ).strftime("%Y-%m-%d")
+                conn.execute(
+                    """INSERT INTO dsex_history (date, dsex_index, total_volume, total_value, total_trade)
+                       VALUES (?, ?, ?, ?, ?)
+                       ON CONFLICT (date) DO UPDATE SET
+                         dsex_index = EXCLUDED.dsex_index,
+                         total_volume = EXCLUDED.total_volume,
+                         total_value = EXCLUDED.total_value,
+                         total_trade = EXCLUDED.total_trade""",
+                    (today_str, ms["dsex_index"], ms["total_volume"], ms["total_value"], ms["total_trade"]),
+                )
+                conn.commit()
+                filled += 1
+            conn.close()
+        except Exception as e:
+            logger.warning(f"market_summary upsert to dsex_history failed: {e}")
+
+        if filled:
+            cache.delete("dsex_history")
+            logger.info(f"Backfilled {filled} days into dsex_history")
+    except Exception as e:
+        logger.error(f"DSEX backfill failed: {e}")
+
+
 async def market_data_pipeline():
     """Full pipeline: fetch live → sync to daily → sync summary → sync DSEX chart → warm caches."""
     await fetch_live_prices()
