@@ -69,9 +69,9 @@ ACTION_NORMALIZE = {
     "SELL/AVOID": "SELL/AVOID",
 }
 
-LLM_BATCH_SIZE = 30
-JUDGE_BATCH_SIZE = 50
-CLAUDE_TIMEOUT = 180
+LLM_BATCH_SIZE = 15
+JUDGE_BATCH_SIZE = 30
+CLAUDE_TIMEOUT = 600
 CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-5-20250514")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 
@@ -291,7 +291,7 @@ def call_claude(prompt: str, timeout: int = CLAUDE_TIMEOUT) -> str:
     # Fallback: Claude CLI (requires `claude login` or `claude setup-token`)
     try:
         result = subprocess.run(
-            ["claude", "-p", prompt],
+            ["claude", "-p", "--model", "sonnet", prompt],
             capture_output=True,
             text=True,
             timeout=timeout,
