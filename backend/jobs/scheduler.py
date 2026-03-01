@@ -164,11 +164,46 @@ async def sync_market_summary():
         logger.error(f"Market summary sync failed: {e}")
 
 
+async def sync_dsex_history():
+    """Upsert today's DSEX into dsex_history so the chart stays live."""
+    try:
+        conn = get_connection()
+        row = conn.execute("SELECT * FROM market_summary WHERE id = 1").fetchone()
+        if not row or not row["dsex_index"] or row["dsex_index"] <= 0:
+            conn.close()
+            return
+
+        today_str = datetime.now(DSE_TZ).strftime("%Y-%m-%d")
+        conn.execute(
+            """INSERT INTO dsex_history (date, dsex_index, total_volume, total_value, total_trade)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT (date) DO UPDATE SET
+                 dsex_index = EXCLUDED.dsex_index,
+                 total_volume = EXCLUDED.total_volume,
+                 total_value = EXCLUDED.total_value,
+                 total_trade = EXCLUDED.total_trade""",
+            (
+                today_str,
+                row["dsex_index"],
+                row["total_volume"],
+                row["total_value"],
+                row["total_trade"],
+            ),
+        )
+        conn.commit()
+        conn.close()
+        cache.delete("dsex_history")
+        logger.info(f"Synced DSEX {row['dsex_index']} into dsex_history for {today_str}")
+    except Exception as e:
+        logger.error(f"DSEX history sync failed: {e}")
+
+
 async def market_data_pipeline():
-    """Full pipeline: fetch live → sync to daily → sync summary → warm caches."""
+    """Full pipeline: fetch live → sync to daily → sync summary → sync DSEX chart → warm caches."""
     await fetch_live_prices()
     await sync_daily_prices_from_live()
     await sync_market_summary()
+    await sync_dsex_history()
     await refresh_all_caches()
 
 

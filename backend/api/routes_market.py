@@ -177,7 +177,7 @@ async def get_index_history():
         for r in rows
     ]
 
-    cache.set("dsex_history", result, 3600)
+    cache.set("dsex_history", result, 600)
     return result
 
 
