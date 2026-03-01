@@ -41,6 +41,11 @@ else
     echo "Algo analysis completed successfully" | tee -a "${LOG_FILE}"
 fi
 
+# Source bashrc for Claude CLI auth token (CLAUDE_CODE_OAUTH_TOKEN)
+if [ -f "${HOME}/.bashrc" ]; then
+    source "${HOME}/.bashrc" 2>/dev/null || true
+fi
+
 # Run LLM analysis (3-stage: LLM → Judge → Snapshot predictions)
 echo "" | tee -a "${LOG_FILE}"
 echo "=== LLM Analysis Pipeline ===" | tee -a "${LOG_FILE}"
