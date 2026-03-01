@@ -192,29 +192,16 @@ def _run_background_init():
             except Exception as e:
                 logger.warning(f"Background live price fetch failed: {e}")
 
-            # 1. Warm analysis cache FIRST (most user-visible bottleneck)
+            # 1. Warm ALL caches (analysis, signals, heatmap, sectors, etc.)
             try:
-                from analysis.daily_report import load_daily_analysis
-                from data.cache import cache
-                today = datetime.now(pytz.timezone("Asia/Dhaka")).strftime("%Y-%m-%d")
-                logger.info("Background: warming analysis cache...")
-                analysis = load_daily_analysis(date_str=today)
-                if analysis:
-                    # Build grouped summary for the cached response
-                    grouped = {}
-                    for a in analysis:
-                        act = a.get("action", "UNKNOWN")
-                        grouped[act] = grouped.get(act, 0) + 1
-                    cache_key = f"analysis_daily_{today}_all"
-                    cache.set(cache_key, {
-                        "date": today,
-                        "count": len(analysis),
-                        "summary": grouped,
-                        "analysis": analysis,
-                    }, 1800)
-                    logger.info(f"Background: warmed analysis cache with {len(analysis)} rows")
+                from jobs.scheduler import refresh_all_caches
+                import asyncio as _asyncio
+                logger.info("Background: warming all caches...")
+                _loop = _asyncio.new_event_loop()
+                _loop.run_until_complete(refresh_all_caches())
+                _loop.close()
             except Exception as e:
-                logger.error(f"Analysis cache warming failed: {e}")
+                logger.error(f"Cache warming failed: {e}")
 
             from data.repository import get_daily_prices_count
             count = get_daily_prices_count()

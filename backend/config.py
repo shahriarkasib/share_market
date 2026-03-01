@@ -45,9 +45,11 @@ CORS_ORIGINS = (
 )
 
 # Cache TTLs (seconds)
-CACHE_TTL_LIVE_PRICES = 60
-CACHE_TTL_SIGNALS = 1800
-CACHE_TTL_INDICATORS = 300
+# Backend refreshes ALL caches every 5 min, so TTLs are just safety nets.
+# Set to 600s (10 min) = 2x refresh interval, so caches never go cold.
+CACHE_TTL_LIVE_PRICES = 600
+CACHE_TTL_SIGNALS = 600
+CACHE_TTL_INDICATORS = 600
 CACHE_TTL_FUNDAMENTALS = 3600
 CACHE_TTL_HISTORICAL = 86400
 

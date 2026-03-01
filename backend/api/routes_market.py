@@ -38,21 +38,21 @@ async def get_market_summary():
     if cached:
         return cached
 
-    # Try live scrape first (real-time DSEX from dsebd.org)
+    # DB first (fast, synced every 5 min by scheduler)
     summary = None
-    try:
-        summary = fetcher.get_market_summary()
-    except Exception as e:
-        import logging
-        logging.getLogger(__name__).warning(f"Fetcher market summary failed: {e}")
+    conn = get_connection()
+    row = conn.execute("SELECT * FROM market_summary WHERE id = 1").fetchone()
+    conn.close()
+    if row:
+        summary = dict(row)
 
-    # Fallback to DB table if fetcher failed
+    # Fallback to live scrape if DB empty
     if not summary or not summary.get("dsex_index"):
-        conn = get_connection()
-        row = conn.execute("SELECT * FROM market_summary WHERE id = 1").fetchone()
-        if row:
-            summary = dict(row)
-        conn.close()
+        try:
+            summary = fetcher.get_market_summary()
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(f"Fetcher market summary failed: {e}")
 
     # Last resort: empty defaults
     if not summary or not summary.get("dsex_index"):

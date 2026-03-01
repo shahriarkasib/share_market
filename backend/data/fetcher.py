@@ -429,7 +429,7 @@ class DSEDataFetcher:
     def _get_market_summary_scrape(self) -> dict:
         """Scrape market summary from DSE homepage."""
         try:
-            resp = self._session.get(DSE_MARKET_SUMMARY_URL, timeout=30)
+            resp = self._session.get(DSE_MARKET_SUMMARY_URL, timeout=10)
             resp.raise_for_status()
             soup = BeautifulSoup(resp.text, "lxml")
 
