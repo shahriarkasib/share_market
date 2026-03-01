@@ -91,7 +91,11 @@ async def get_market_summary():
 
     conn.close()
 
-    summary["last_updated"] = summary.get("updated_at", datetime.now().isoformat())
+    updated = summary.get("updated_at") or datetime.now()
+    summary["last_updated"] = str(updated) if not isinstance(updated, str) else updated
+    # Strip keys not in response model
+    summary.pop("id", None)
+    summary.pop("updated_at", None)
     cache.set("market_summary", summary, CACHE_TTL_LIVE_PRICES)
     return summary
 
