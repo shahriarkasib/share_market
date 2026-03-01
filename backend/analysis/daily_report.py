@@ -1169,6 +1169,49 @@ def load_daily_analysis(date_str: str | None = None, action_filter: str | None =
     return results
 
 
+def load_daily_analysis_slim(date_str: str | None = None) -> list[dict]:
+    """Load daily analysis with only columns needed for signal generation (fast).
+
+    Skips scenarios_json, last_5_json, and reasoning to reduce transfer size.
+    """
+    if not date_str:
+        date_str = datetime.now(DSE_TZ).strftime("%Y-%m-%d")
+
+    conn = get_connection()
+    rows = conn.execute(
+        """SELECT da.symbol, da.action, da.score, da.date,
+                  da.entry_low, da.entry_high, da.sl, da.t1, da.t2,
+                  da.risk_pct, da.reward_pct, da.rsi, da.stoch_rsi,
+                  da.macd_line, da.macd_signal, da.macd_hist, da.macd_status,
+                  da.bb_pct, da.atr, da.atr_pct, da.volatility, da.vol_ratio,
+                  da.avg_vol, da.trend_50d, da.support, da.resistance,
+                  da.ltp, da.category, da.hold_days_t1, da.hold_days_t2,
+                  da.wait_days, da.vol_entry,
+                  f.sector, f.category AS fund_category
+           FROM daily_analysis da
+           LEFT JOIN fundamentals f ON da.symbol = f.symbol
+           WHERE da.date = ?
+           ORDER BY da.score DESC""",
+        [date_str],
+    ).fetchall()
+    conn.close()
+
+    results = []
+    for r in rows:
+        d = dict(r)
+        if not d.get("category") and d.get("fund_category"):
+            d["category"] = d.pop("fund_category")
+        else:
+            d.pop("fund_category", None)
+        if hasattr(d.get("date"), "isoformat"):
+            d["date"] = str(d["date"])
+        for k, v in d.items():
+            if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
+                d[k] = None
+        results.append(d)
+    return results
+
+
 def get_available_dates() -> list[str]:
     """Get list of dates that have analysis."""
     conn = get_connection()

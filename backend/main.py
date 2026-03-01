@@ -243,12 +243,6 @@ def _run_background_init():
                 except Exception as e:
                     logger.error(f"Category scraping failed: {e}")
 
-            # 3. Warm signal cache from daily analysis
-            from data.cache import cache
-            from api.routes_signals import _get_signals
-            signals = _get_signals()
-            logger.info(f"Background: warmed signal cache with {len(signals)} signals from daily analysis")
-
             logger.info("Background initialization complete")
         except Exception as e:
             logger.error(f"Background init error: {e}", exc_info=True)
@@ -265,15 +259,10 @@ async def lifespan(app: FastAPI):
     init_database()
     logger.info("Database initialized")
 
-    # Warm signal cache from daily analysis (instant)
-    from analysis.daily_report import load_daily_analysis
-    from data.cache import cache
-    from config import CACHE_TTL_SIGNALS
-
-    analysis = load_daily_analysis()
-    if analysis:
-        # Import will trigger cache warming on first _get_signals() call
-        logger.info(f"Found {len(analysis)} daily analysis rows for cache warming")
+    # Warm the critical signal cache BEFORE accepting requests
+    from api.routes_signals import _get_signals
+    signals = _get_signals()
+    logger.info(f"Warmed signal cache: {len(signals)} signals from daily analysis")
 
     # Start scheduler
     scheduler = setup_scheduler()

@@ -19,7 +19,8 @@ from analysis.daily_report import (
     run_daily_analysis,
     save_daily_analysis,
 )
-from config import MARKET_DAYS
+from config import MARKET_DAYS, CACHE_TTL_LIVE_PRICES
+from data.cache import cache
 from database import get_connection
 
 logger = logging.getLogger(__name__)
@@ -78,6 +79,11 @@ async def get_daily_analysis_api(
     if not date:
         date = datetime.now(DSE_TZ).strftime("%Y-%m-%d")
 
+    cache_key = f"analysis_daily_{date}_{action or 'all'}"
+    cached = cache.get(cache_key)
+    if cached:
+        return cached
+
     results = load_daily_analysis(date_str=date, action_filter=action)
     if not results:
         return {"date": date, "count": 0, "analysis": [], "message": "No analysis for this date"}
@@ -88,12 +94,14 @@ async def get_daily_analysis_api(
         act = r.get("action", "UNKNOWN")
         grouped.setdefault(act, []).append(r)
 
-    return {
+    result = {
         "date": date,
         "count": len(results),
         "summary": {k: len(v) for k, v in grouped.items()},
         "analysis": results,
     }
+    cache.set(cache_key, result, 300)
+    return result
 
 
 @router.get("/dates")
@@ -185,15 +193,15 @@ async def live_tracker(
     date: str = Query(default=None, description="Analysis date (default: latest)"),
 ):
     """Compare daily analysis levels against live prices in real-time."""
-    conn = get_connection()
-
-    # Use provided date or latest available
     if not date:
-        row = conn.execute(
-            "SELECT MAX(date) FROM daily_analysis"
-        ).fetchone()
-        date = str(row[0]) if row and row[0] else datetime.now(DSE_TZ).strftime("%Y-%m-%d")
+        date = datetime.now(DSE_TZ).strftime("%Y-%m-%d")
 
+    cache_key = f"live_tracker_{date}"
+    cached = cache.get(cache_key)
+    if cached:
+        return cached
+
+    conn = get_connection()
     rows = conn.execute(
         """SELECT da.symbol, da.action, da.entry_low, da.entry_high, da.sl, da.t1, da.t2,
                   da.score, da.category, da.entry_start, da.entry_end,
@@ -282,13 +290,15 @@ async def live_tracker(
         if ts_row and ts_row[0]:
             updated_at = str(ts_row[0])
 
-    return {
+    result = {
         "date": date,
         "market_status": _is_market_open(),
         "updated_at": updated_at,
         "count": len(stocks),
         "stocks": stocks,
     }
+    cache.set(cache_key, result, CACHE_TTL_LIVE_PRICES)
+    return result
 
 
 @router.get("/live-scan")

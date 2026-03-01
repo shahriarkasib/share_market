@@ -3,10 +3,11 @@
 import json
 import math
 import logging
+import threading
 from datetime import datetime, date
 from fastapi import APIRouter
 
-from analysis.daily_report import load_daily_analysis
+from analysis.daily_report import load_daily_analysis_slim
 from data.cache import cache
 from data.repository import (
     get_active_holdings,
@@ -230,28 +231,40 @@ def _analysis_to_signal(a: dict, live_map: dict) -> dict:
 
 # ── Data loading ──
 
+_signals_lock = threading.Lock()
+
 
 def _get_signals() -> list:
-    """Get signals from cache, falling back to daily_analysis."""
+    """Get signals from cache, falling back to daily_analysis.
+
+    Uses a lock to prevent thundering herd — only one caller runs
+    the expensive DB query on cache miss; others wait for the cache.
+    """
     cached = cache.get("all_signals")
     if cached is not None:
         return cached
 
-    analysis = load_daily_analysis()  # Latest date, all actions
-    if not analysis:
-        return []
+    with _signals_lock:
+        # Double-check after acquiring lock
+        cached = cache.get("all_signals")
+        if cached is not None:
+            return cached
 
-    # Enrich with live prices
-    conn = get_connection()
-    live_rows = conn.execute(
-        "SELECT symbol, ltp, change_pct, company_name FROM live_prices"
-    ).fetchall()
-    conn.close()
-    live_map = {r["symbol"]: dict(r) for r in live_rows}
+        analysis = load_daily_analysis_slim()  # Fast: column projection, no JSON blobs
+        if not analysis:
+            return []
 
-    signals = [_analysis_to_signal(a, live_map) for a in analysis]
-    cache.set("all_signals", signals, CACHE_TTL_SIGNALS * 2)
-    return signals
+        # Enrich with live prices
+        conn = get_connection()
+        live_rows = conn.execute(
+            "SELECT symbol, ltp, change_pct, company_name FROM live_prices"
+        ).fetchall()
+        conn.close()
+        live_map = {r["symbol"]: dict(r) for r in live_rows}
+
+        signals = [_analysis_to_signal(a, live_map) for a in analysis]
+        cache.set("all_signals", signals, CACHE_TTL_SIGNALS * 2)
+        return signals
 
 
 # ── Endpoints ──
