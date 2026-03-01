@@ -36,12 +36,33 @@ run_daily_analysis()
 EXIT_CODE=$?
 
 if [ ${EXIT_CODE} -ne 0 ]; then
-    echo "ERROR: Analysis exited with code ${EXIT_CODE}" | tee -a "${LOG_FILE}"
+    echo "ERROR: Algo analysis exited with code ${EXIT_CODE}" | tee -a "${LOG_FILE}"
 else
-    echo "Analysis completed successfully" | tee -a "${LOG_FILE}"
+    echo "Algo analysis completed successfully" | tee -a "${LOG_FILE}"
 fi
 
-echo "=== Done: $(date -u) ===" | tee -a "${LOG_FILE}"
+# Run LLM analysis (3-stage: LLM → Judge → Snapshot predictions)
+echo "" | tee -a "${LOG_FILE}"
+echo "=== LLM Analysis Pipeline ===" | tee -a "${LOG_FILE}"
+"${VENV}" -c "
+import sys
+sys.path.insert(0, '.')
+from scripts.llm_daily_analyzer import run
+run()
+" 2>&1 | tee -a "${LOG_FILE}" || echo "WARNING: LLM analysis failed (non-fatal)" | tee -a "${LOG_FILE}"
+
+# Verify past predictions
+echo "" | tee -a "${LOG_FILE}"
+echo "=== Prediction Verification ===" | tee -a "${LOG_FILE}"
+"${VENV}" -c "
+import sys
+sys.path.insert(0, '.')
+from scripts.verify_predictions import run
+run()
+" 2>&1 | tee -a "${LOG_FILE}" || echo "WARNING: Prediction verification failed (non-fatal)" | tee -a "${LOG_FILE}"
+
+echo "" | tee -a "${LOG_FILE}"
+echo "=== All Done: $(date -u) ===" | tee -a "${LOG_FILE}"
 
 # Cleanup logs older than 30 days
 find "${LOG_DIR}" -name "analysis_*.log" -mtime +30 -delete 2>/dev/null || true

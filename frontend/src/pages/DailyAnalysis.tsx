@@ -46,6 +46,8 @@ import {
   fetchLLMScan,
 } from "../api/client.ts";
 import type { DailyAnalysis, DailyAnalysisResponse, LiveTrackerStock, LiveTrackerResponse, LiveScanResult, LiveScanResponse, LLMScanResponse } from "../types/index.ts";
+import PredictionTracker from "../components/PredictionTracker.tsx";
+import LLMJudgePanel from "../components/LLMJudgePanel.tsx";
 import { formatNumber, formatPct, colorBySign } from "../lib/format.ts";
 import { useAutoRefresh } from "../hooks/useAutoRefresh.ts";
 
@@ -104,7 +106,7 @@ const REC_CONFIG: Record<string, { color: string; bg: string; border: string; ic
 /* ── main page ─────────────────────────────────────────────── */
 
 export default function DailyAnalysisPage() {
-  const [mode, setMode] = useState<"analysis" | "live" | "scan">("analysis");
+  const [mode, setMode] = useState<"analysis" | "live" | "scan" | "tracker">("analysis");
   const [data, setData] = useState<DailyAnalysisResponse | null>(null);
   const [dates, setDates] = useState<string[]>([]);
   const [selectedDate, setSelectedDate] = useState<string>("");
@@ -456,6 +458,16 @@ export default function DailyAnalysisPage() {
               <Activity className="h-3 w-3" />
               Depth
             </button>
+            <button
+              onClick={() => setMode("tracker")}
+              className={clsx(
+                "px-2.5 py-1 rounded-md text-xs font-medium transition-colors flex items-center gap-1",
+                mode === "tracker" ? "bg-amber-500/15 text-amber-400" : "text-[var(--text-dim)] hover:text-[var(--text)]",
+              )}
+            >
+              <Target className="h-3 w-3" />
+              Tracker
+            </button>
           </div>
         </div>
 
@@ -646,6 +658,7 @@ export default function DailyAnalysisPage() {
                   key={stock.symbol}
                   stock={stock}
                   highlight={highlightSymbol === stock.symbol}
+                  date={selectedDate}
                   ref={(el) => { cardRefs.current[stock.symbol] = el; }}
                 />
               ))}
@@ -913,6 +926,9 @@ export default function DailyAnalysisPage() {
           )}
         </>
       )}
+
+      {/* ════ TRACKER MODE ════ */}
+      {mode === "tracker" && <PredictionTracker />}
     </div>
   );
 }
@@ -921,8 +937,8 @@ export default function DailyAnalysisPage() {
 
 import { forwardRef } from "react";
 
-const AnalysisCard = forwardRef<HTMLDivElement, { stock: DailyAnalysis; highlight?: boolean }>(
-  function AnalysisCard({ stock, highlight }, ref) {
+const AnalysisCard = forwardRef<HTMLDivElement, { stock: DailyAnalysis; highlight?: boolean; date?: string }>(
+  function AnalysisCard({ stock, highlight, date }, ref) {
     const [expanded, setExpanded] = useState(false);
     const cfg = getActionCfg(stock.action);
 
@@ -1156,6 +1172,9 @@ const AnalysisCard = forwardRef<HTMLDivElement, { stock: DailyAnalysis; highligh
             )}
           </div>
         )}
+
+        {/* LLM + Judge panel */}
+        {date && <LLMJudgePanel symbol={stock.symbol} date={date} />}
       </div>
     );
   },

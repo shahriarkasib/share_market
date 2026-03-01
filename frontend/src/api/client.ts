@@ -403,4 +403,78 @@ export async function fetchLLMScan(date?: string): Promise<LLMScanResponse> {
   return data;
 }
 
+/* ========================== Predictions & LLM Analysis ========================== */
+
+export async function fetchLLMDailyAnalysis(
+  date?: string,
+  action?: string,
+  symbol?: string,
+): Promise<{ date: string; count: number; analysis: import("../types").LLMDailyAnalysis[]; message?: string }> {
+  const params: Record<string, string> = {};
+  if (date) params.date = date;
+  if (action) params.action = action;
+  if (symbol) params.symbol = symbol;
+  const { data } = await api.get("/predictions/llm-analysis", { params });
+  return data;
+}
+
+export async function fetchJudgeAnalysis(
+  date?: string,
+  disagreementOnly = false,
+): Promise<{
+  date: string;
+  count: number;
+  agreements: number;
+  disagreements: number;
+  agreement_pct: number;
+  verdicts: import("../types").JudgeAnalysis[];
+}> {
+  const params: Record<string, string | boolean> = {};
+  if (date) params.date = date;
+  if (disagreementOnly) params.disagreement_only = true;
+  const { data } = await api.get("/predictions/judge-analysis", { params });
+  return data;
+}
+
+export async function fetchPredictionTracker(params?: {
+  date?: string;
+  symbol?: string;
+  source?: string;
+  outcome?: string;
+  limit?: number;
+}): Promise<{ count: number; predictions: import("../types").PredictionEntry[] }> {
+  const { data } = await api.get("/predictions/tracker", { params });
+  return data;
+}
+
+export async function fetchAccuracyComparison(
+  period = "30d",
+): Promise<{ period: string; date: string | null; data: import("../types").AccuracyData[]; message?: string }> {
+  const { data } = await api.get("/predictions/accuracy", { params: { period } });
+  return data;
+}
+
+export async function fetchAccuracyHistory(
+  days = 30,
+  source?: string,
+): Promise<{ days: number; history: import("../types").AccuracyData[] }> {
+  const params: Record<string, string | number> = { days };
+  if (source) params.source = source;
+  const { data } = await api.get("/predictions/accuracy/history", { params });
+  return data;
+}
+
+export async function fetchStockPredictionHistory(
+  symbol: string,
+  limit = 30,
+): Promise<{
+  symbol: string;
+  count: number;
+  by_date: Record<string, Record<string, import("../types").PredictionEntry>>;
+  raw: import("../types").PredictionEntry[];
+}> {
+  const { data } = await api.get(`/predictions/stock/${symbol}`, { params: { limit } });
+  return data;
+}
+
 export default api;

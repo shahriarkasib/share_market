@@ -344,3 +344,100 @@ export interface LiveScanResponse {
   excel_path?: string;
   message?: string;
 }
+
+/* ========================== LLM Daily Analysis ========================== */
+
+export interface LLMDailyAnalysis {
+  symbol: string;
+  sector?: string;
+  action: string;
+  confidence: string;
+  reasoning: string;
+  wait_for: string;
+  wait_days: string;
+  entry_low: number;
+  entry_high: number;
+  sl: number;
+  t1: number;
+  t2: number;
+  risk_factors: string[];
+  catalysts: string[];
+  score: number;
+  // Judge fields (joined)
+  algo_action?: string;
+  llm_action?: string;
+  final_action?: string;
+  final_confidence?: string;
+  agreement?: boolean;
+  judge_reasoning?: string;
+  algo_strengths?: string;
+  llm_strengths?: string;
+  key_risk?: string;
+}
+
+export interface JudgeAnalysis {
+  symbol: string;
+  sector?: string;
+  algo_action: string;
+  llm_action: string;
+  final_action: string;
+  final_confidence: string;
+  agreement: boolean;
+  reasoning: string;
+  algo_strengths: string;
+  llm_strengths: string;
+  key_risk: string;
+  wait_days: string;
+  score: number;
+}
+
+/* ========================== Prediction Tracker ========================== */
+
+export interface PredictionEntry {
+  date: string;
+  symbol: string;
+  sector?: string;
+  source: "algo" | "llm" | "judge";
+  action: string;
+  score: number;
+  wait_days: string;
+  wait_days_min: number;
+  wait_days_max: number;
+  ltp_at_prediction: number;
+  entry_low: number;
+  entry_high: number;
+  sl: number;
+  t1: number;
+  t2: number;
+  transitioned_to: string | null;
+  transition_date: string | null;
+  transition_days: number | null;
+  transition_within_window: boolean | null;
+  t1_hit_date: string | null;
+  t1_hit_days: number | null;
+  t2_hit_date: string | null;
+  t2_hit_days: number | null;
+  sl_hit_date: string | null;
+  sl_hit_days: number | null;
+  max_gain_pct: number | null;
+  max_loss_pct: number | null;
+  final_return_pct: number | null;
+  outcome: "CORRECT" | "WRONG" | "PARTIAL" | "PENDING";
+  outcome_reason: string | null;
+}
+
+export interface AccuracyData {
+  date: string;
+  source: string;
+  period: string;
+  total_predictions: number;
+  correct: number;
+  wrong: number;
+  pending: number;
+  accuracy_pct: number | null;
+  avg_return_pct: number | null;
+  buy_accuracy_pct: number | null;
+  hold_transition_accuracy_pct: number | null;
+  t1_hit_rate: number | null;
+  sl_hit_rate: number | null;
+}
