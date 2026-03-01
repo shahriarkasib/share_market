@@ -25,6 +25,12 @@ import psycopg2
 import psycopg2.extras
 import pytz
 
+try:
+    import anthropic
+    HAS_ANTHROPIC_SDK = True
+except ImportError:
+    HAS_ANTHROPIC_SDK = False
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -66,6 +72,8 @@ ACTION_NORMALIZE = {
 LLM_BATCH_SIZE = 30
 JUDGE_BATCH_SIZE = 50
 CLAUDE_TIMEOUT = 180
+CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-5-20250514")
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 
 
 # ─── Database helpers ───
@@ -258,8 +266,29 @@ def load_accuracy_feedback() -> str:
 
 
 def call_claude(prompt: str, timeout: int = CLAUDE_TIMEOUT) -> str:
-    """Call Claude via CLI and return response text."""
+    """Call Claude via Anthropic SDK (preferred) or CLI fallback."""
     logger.info(f"Calling Claude ({len(prompt)} chars, timeout {timeout}s)...")
+
+    # Prefer Anthropic SDK with API key (works headlessly)
+    if HAS_ANTHROPIC_SDK and ANTHROPIC_API_KEY:
+        try:
+            client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+            message = client.messages.create(
+                model=CLAUDE_MODEL,
+                max_tokens=8192,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            resp = message.content[0].text.strip()
+            logger.info(f"Claude SDK response: {len(resp)} chars (model={CLAUDE_MODEL})")
+            return resp
+        except anthropic.APIError as e:
+            logger.error(f"Anthropic API error: {e}")
+            return ""
+        except Exception as e:
+            logger.error(f"Anthropic SDK error: {e}")
+            return ""
+
+    # Fallback: Claude CLI (requires `claude login` or `claude setup-token`)
     try:
         result = subprocess.run(
             ["claude", "-p", prompt],
@@ -271,10 +300,13 @@ def call_claude(prompt: str, timeout: int = CLAUDE_TIMEOUT) -> str:
             logger.error(f"Claude CLI error: {result.stderr[:300]}")
             return ""
         resp = result.stdout.strip()
-        logger.info(f"Claude response: {len(resp)} chars")
+        if "Not logged in" in resp or "Please run /login" in resp:
+            logger.error("Claude CLI not authenticated. Set ANTHROPIC_API_KEY or run: claude setup-token")
+            return ""
+        logger.info(f"Claude CLI response: {len(resp)} chars")
         return resp
     except FileNotFoundError:
-        logger.error("Claude CLI not found. Install: npm install -g @anthropic-ai/claude-code")
+        logger.error("Claude CLI not found. Set ANTHROPIC_API_KEY or install: npm install -g @anthropic-ai/claude-code")
         return ""
     except subprocess.TimeoutExpired:
         logger.error(f"Claude CLI timed out ({timeout}s)")
@@ -832,6 +864,14 @@ def run():
     """Main entry point: Stage 1 → Stage 2 → Stage 3."""
     now = datetime.now(DSE_TZ)
     logger.info(f"=== LLM Daily Analyzer starting at {now.strftime('%Y-%m-%d %H:%M:%S')} BST ===")
+
+    if HAS_ANTHROPIC_SDK and ANTHROPIC_API_KEY:
+        logger.info(f"Using Anthropic SDK (model={CLAUDE_MODEL})")
+    else:
+        if not ANTHROPIC_API_KEY:
+            logger.warning("ANTHROPIC_API_KEY not set — falling back to Claude CLI")
+        if not HAS_ANTHROPIC_SDK:
+            logger.warning("anthropic package not installed — falling back to Claude CLI")
 
     ensure_tables()
 
