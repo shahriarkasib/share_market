@@ -233,7 +233,20 @@ class DSEDataFetcher:
             return pd.DataFrame()
 
     def get_market_summary(self) -> dict:
-        """Get DSEX index and market statistics."""
+        """Get DSEX index and market statistics.
+
+        Priority: scrape live DSEX from dsebd.org, enrich with live DB data.
+        Fallback: bdshare historical summary.
+        """
+        # Always try live scrape first — it has real-time DSEX
+        try:
+            summary = self._scrape_live_dsex()
+            if summary.get("dsex_index", 0) > 0:
+                return summary
+        except Exception as e:
+            logger.warning(f"Live DSEX scrape failed: {e}")
+
+        # Fallback to bdshare (historical, may be stale)
         if self._bdshare_available:
             try:
                 return self._get_market_summary_bdshare()
@@ -241,6 +254,90 @@ class DSEDataFetcher:
                 logger.error(f"bdshare market summary failed: {e}")
 
         return self._get_market_summary_scrape()
+
+    def _scrape_live_dsex(self) -> dict:
+        """Scrape real-time DSEX index from dsebd.org homepage."""
+        import re
+
+        resp = self._session.get(DSE_MARKET_SUMMARY_URL, timeout=15)
+        resp.raise_for_status()
+        soup = BeautifulSoup(resp.text, "lxml")
+        full_text = soup.get_text(" ", strip=True)
+
+        summary = {
+            "dsex_index": 0, "dsex_change": 0, "dsex_change_pct": 0,
+            "total_volume": 0, "total_value": 0, "total_trade": 0,
+            "advances": 0, "declines": 0, "unchanged": 0,
+            "market_status": "CLOSED",
+        }
+
+        # Pattern: "DSE X Index 5478.529 -121.738 -2.17%"
+        # The page has two matches: "last update" (live) and "Preceding Trade Date" (prev close)
+        # We want the "last update" one
+        match = re.search(
+            r"last update.*?DSE\s*X\s*Index\s+([\d.]+)\s+([-\d.]+)\s+([-\d.]+)%",
+            full_text, re.IGNORECASE,
+        )
+        if match:
+            summary["dsex_index"] = round(float(match.group(1)), 2)
+            summary["dsex_change"] = round(float(match.group(2)), 2)
+            summary["dsex_change_pct"] = round(float(match.group(3)), 2)
+        else:
+            # Broader fallback
+            match2 = re.search(
+                r"DSE\s*X\s*Index\s+([\d.]+)\s+([-\d.]+)\s+([-\d.]+)%",
+                full_text,
+            )
+            if match2:
+                summary["dsex_index"] = round(float(match2.group(1)), 2)
+                summary["dsex_change"] = round(float(match2.group(2)), 2)
+                summary["dsex_change_pct"] = round(float(match2.group(3)), 2)
+
+        if summary["dsex_index"] <= 0:
+            raise ValueError("Could not parse DSEX from DSE homepage")
+
+        # Extract today's trade/volume/value from page
+        # Pattern: "Issues ... <trades> <volume> <value> Issues"
+        tv_match = re.search(r"(\d+)\s+(\d+)\s+([\d.]+)\s+Issues\s+Advanced", full_text)
+        if tv_match:
+            summary["total_trade"] = int(tv_match.group(1))
+            summary["total_volume"] = int(tv_match.group(2))
+            summary["total_value"] = float(tv_match.group(3))
+
+        # Enrich advances/declines and live totals from DB
+        from database import get_connection
+        conn = get_connection()
+        live_agg = conn.execute(
+            "SELECT COALESCE(SUM(volume),0) as vol, COALESCE(SUM(value),0) as val, "
+            "COALESCE(SUM(trade_count),0) as trades, "
+            "SUM(CASE WHEN change_pct > 0 THEN 1 ELSE 0 END) as adv, "
+            "SUM(CASE WHEN change_pct < 0 THEN 1 ELSE 0 END) as dec, "
+            "SUM(CASE WHEN change_pct = 0 AND trade_count > 0 THEN 1 ELSE 0 END) as unch "
+            "FROM live_prices WHERE ltp > 0"
+        ).fetchone()
+        conn.close()
+
+        if live_agg:
+            summary["advances"] = int(live_agg["adv"])
+            summary["declines"] = int(live_agg["dec"])
+            summary["unchanged"] = int(live_agg["unch"])
+            # Use DB totals if scrape missed them
+            if summary["total_volume"] == 0:
+                summary["total_volume"] = int(live_agg["vol"])
+            if summary["total_value"] == 0:
+                summary["total_value"] = float(live_agg["val"])
+            if summary["total_trade"] == 0:
+                summary["total_trade"] = int(live_agg["trades"])
+
+        # Market status from time
+        dse_tz = pytz.timezone("Asia/Dhaka")
+        now = datetime.now(dse_tz)
+        market_days = [6, 0, 1, 2, 3]  # Sun-Thu
+        if now.weekday() in market_days and dtime(10, 0) <= now.time() <= dtime(14, 30):
+            summary["market_status"] = "OPEN"
+
+        logger.info(f"Live DSEX scraped: {summary['dsex_index']} ({summary['dsex_change']:+.2f})")
+        return summary
 
     def _get_market_summary_bdshare(self) -> dict:
         """Get market summary via bdshare."""
