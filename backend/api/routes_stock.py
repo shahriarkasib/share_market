@@ -88,11 +88,11 @@ async def get_stock_history(symbol: str, period: str = "3m"):
     }
     days = period_days.get(period, 90)
 
-    # Read from local DB first (fast)
-    df = read_historical_for_symbol(symbol, min_rows=days)
+    # Read from local DB first (fast) — fetch extra rows, then filter by date
+    df = read_historical_for_symbol(symbol, min_rows=int(days * 1.5))
 
     # If DB has fewer rows than requested, try fetching more from bdshare
-    if len(df) < days * 0.6:  # Allow 60% tolerance (weekends/holidays)
+    if len(df) < days * 0.5:  # Allow 50% tolerance (weekends/holidays)
         df_remote = _fetch_and_store_history(symbol, days)
         if not df_remote.empty and len(df_remote) > len(df):
             df = df_remote
@@ -100,13 +100,19 @@ async def get_stock_history(symbol: str, period: str = "3m"):
     if df.empty:
         return []
 
+    # Filter to the requested calendar period (not row count)
+    from datetime import datetime, timedelta
+    cutoff = datetime.now() - timedelta(days=days)
+    df["date"] = pd.to_datetime(df["date"])
+    df = df[df["date"] >= cutoff]
+
     # Ensure required columns exist
     required = ["date", "open", "high", "low", "close", "volume"]
     for col in required:
         if col not in df.columns:
             df[col] = 0
 
-    df["date"] = pd.to_datetime(df["date"]).dt.strftime("%Y-%m-%d")
+    df["date"] = df["date"].dt.strftime("%Y-%m-%d")
     result = df[required].to_dict("records")
 
     ttl = CACHE_TTL_LIVE_PRICES if days <= 30 else CACHE_TTL_HISTORICAL

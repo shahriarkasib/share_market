@@ -167,8 +167,8 @@ export default function PriceChart({ symbol, signal, height: baseHeight = 420 }:
     if (chartType === "candlestick") {
       const series = chart.addSeries(CandlestickSeries, {
         upColor: "#22c55e", downColor: "#ef4444",
-        borderUpColor: "#22c55e", borderDownColor: "#ef4444",
-        wickUpColor: "#22c55e80", wickDownColor: "#ef444480",
+        borderUpColor: "#16a34a", borderDownColor: "#dc2626",
+        wickUpColor: "#22c55e", wickDownColor: "#ef4444",
       });
       series.setData(bars.map((b) => ({ time: b.date as Time, open: b.open, high: b.high, low: b.low, close: b.close })));
       refs.set("main", series);

@@ -56,7 +56,10 @@ def bulk_insert_daily_prices(df: pd.DataFrame) -> int:
         cur = conn.cursor()
         sql = """INSERT INTO daily_prices
                  (symbol, date, open, high, low, close, volume, value, trade_count)
-                 VALUES %s ON CONFLICT (symbol, date) DO NOTHING"""
+                 VALUES %s ON CONFLICT (symbol, date) DO UPDATE SET
+                   open = EXCLUDED.open, high = EXCLUDED.high, low = EXCLUDED.low,
+                   close = EXCLUDED.close, volume = EXCLUDED.volume, value = EXCLUDED.value,
+                   trade_count = EXCLUDED.trade_count"""
         chunk_size = 5000
         for i in range(0, len(rows), chunk_size):
             psycopg2.extras.execute_values(cur, sql, rows[i:i + chunk_size], page_size=1000)
@@ -83,7 +86,8 @@ def upsert_today_prices(df: pd.DataFrame, today_str: str):
                    (symbol, date, open, high, low, close, volume, value, trade_count)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT (symbol, date) DO UPDATE SET
-                     open = EXCLUDED.open, high = EXCLUDED.high, low = EXCLUDED.low,
+                     high = GREATEST(daily_prices.high, EXCLUDED.high),
+                     low = LEAST(CASE WHEN daily_prices.low > 0 THEN daily_prices.low ELSE EXCLUDED.low END, EXCLUDED.low),
                      close = EXCLUDED.close, volume = EXCLUDED.volume, value = EXCLUDED.value,
                      trade_count = EXCLUDED.trade_count""",
                 (
