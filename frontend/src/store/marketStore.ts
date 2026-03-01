@@ -19,7 +19,7 @@ import {
 
 /* ---- localStorage cache helpers ---- */
 const CACHE_KEY = "dse_dashboard_cache";
-const CACHE_MAX_AGE = 30 * 60 * 1000; // 30 minutes — stale but better than empty
+const CACHE_MAX_AGE = 5 * 60 * 1000; // 5 minutes — keep fresh, DSEX updates often
 
 interface CachedData {
   marketSummary: MarketSummary | null;

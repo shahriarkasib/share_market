@@ -26,6 +26,7 @@ from database import get_connection
 logger = logging.getLogger(__name__)
 router = APIRouter()
 DSE_TZ = pytz.timezone("Asia/Dhaka")
+_analysis_lock = threading.Lock()
 
 
 def _is_market_open() -> str:
@@ -84,24 +85,30 @@ async def get_daily_analysis_api(
     if cached:
         return cached
 
-    results = load_daily_analysis(date_str=date, action_filter=action)
-    if not results:
-        return {"date": date, "count": 0, "analysis": [], "message": "No analysis for this date"}
+    # Thundering-herd lock: only one thread runs the expensive query
+    with _analysis_lock:
+        cached = cache.get(cache_key)
+        if cached:
+            return cached
 
-    # Group by action
-    grouped = {}
-    for r in results:
-        act = r.get("action", "UNKNOWN")
-        grouped.setdefault(act, []).append(r)
+        results = load_daily_analysis(date_str=date, action_filter=action)
+        if not results:
+            return {"date": date, "count": 0, "analysis": [], "message": "No analysis for this date"}
 
-    result = {
-        "date": date,
-        "count": len(results),
-        "summary": {k: len(v) for k, v in grouped.items()},
-        "analysis": results,
-    }
-    cache.set(cache_key, result, 300)
-    return result
+        # Group by action
+        grouped = {}
+        for r in results:
+            act = r.get("action", "UNKNOWN")
+            grouped.setdefault(act, []).append(r)
+
+        result = {
+            "date": date,
+            "count": len(results),
+            "summary": {k: len(v) for k, v in grouped.items()},
+            "analysis": results,
+        }
+        cache.set(cache_key, result, 1800)  # 30 min — data changes once/day
+        return result
 
 
 @router.get("/dates")

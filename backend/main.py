@@ -192,10 +192,34 @@ def _run_background_init():
             except Exception as e:
                 logger.warning(f"Background live price fetch failed: {e}")
 
+            # 1. Warm analysis cache FIRST (most user-visible bottleneck)
+            try:
+                from analysis.daily_report import load_daily_analysis
+                from data.cache import cache
+                today = datetime.now(pytz.timezone("Asia/Dhaka")).strftime("%Y-%m-%d")
+                logger.info("Background: warming analysis cache...")
+                analysis = load_daily_analysis(date_str=today)
+                if analysis:
+                    # Build grouped summary for the cached response
+                    grouped = {}
+                    for a in analysis:
+                        act = a.get("action", "UNKNOWN")
+                        grouped[act] = grouped.get(act, 0) + 1
+                    cache_key = f"analysis_daily_{today}_all"
+                    cache.set(cache_key, {
+                        "date": today,
+                        "count": len(analysis),
+                        "summary": grouped,
+                        "analysis": analysis,
+                    }, 1800)
+                    logger.info(f"Background: warmed analysis cache with {len(analysis)} rows")
+            except Exception as e:
+                logger.error(f"Analysis cache warming failed: {e}")
+
             from data.repository import get_daily_prices_count
             count = get_daily_prices_count()
 
-            # 1. Bulk historical load if needed
+            # 2. Bulk historical load if needed
             if count == 0:
                 logger.info("Background: bulk loading historical data...")
                 import asyncio
@@ -205,7 +229,7 @@ def _run_background_init():
             else:
                 logger.info(f"Background: found {count} rows in daily_prices")
 
-            # 2. Seed sector mapping if empty — use static JSON (DSE scraper unreliable)
+            # 3. Seed sector mapping if empty
             conn_check = get_connection()
             sector_count = conn_check.execute(
                 "SELECT COUNT(*) FROM fundamentals WHERE sector IS NOT NULL"
@@ -215,7 +239,7 @@ def _run_background_init():
                 logger.info("Background: seeding sectors from static JSON...")
                 _seed_sectors_from_json()
 
-            # 2b. Seed DSEX history if empty
+            # 3b. Seed DSEX history if empty
             conn_dsex = get_connection()
             dsex_count = conn_dsex.execute("SELECT COUNT(*) FROM dsex_history").fetchone()[0]
             conn_dsex.close()
@@ -223,7 +247,7 @@ def _run_background_init():
                 logger.info("Background: seeding DSEX history from bdshare...")
                 _seed_dsex_history()
 
-            # 2c. Scrape DSE categories if mostly missing
+            # 3c. Scrape DSE categories if mostly missing
             from data.repository import get_category_count, save_stock_categories
             cat_count = get_category_count()
             if cat_count < 50:
