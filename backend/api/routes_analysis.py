@@ -78,7 +78,14 @@ async def get_daily_analysis_api(
 ):
     """Get daily analysis for a specific date."""
     if not date:
-        date = datetime.now(DSE_TZ).strftime("%Y-%m-%d")
+        # Use latest analysis date, not today (today's analysis may not exist yet)
+        try:
+            conn = get_connection()
+            latest = conn.execute("SELECT MAX(date) FROM daily_analysis").fetchone()
+            conn.close()
+            date = str(latest[0]) if latest and latest[0] else datetime.now(DSE_TZ).strftime("%Y-%m-%d")
+        except Exception:
+            date = datetime.now(DSE_TZ).strftime("%Y-%m-%d")
 
     cache_key = f"analysis_daily_{date}_{action or 'all'}"
     cached = cache.get(cache_key)
@@ -201,7 +208,13 @@ async def live_tracker(
 ):
     """Compare daily analysis levels against live prices in real-time."""
     if not date:
-        date = datetime.now(DSE_TZ).strftime("%Y-%m-%d")
+        try:
+            conn = get_connection()
+            latest = conn.execute("SELECT MAX(date) FROM daily_analysis").fetchone()
+            conn.close()
+            date = str(latest[0]) if latest and latest[0] else datetime.now(DSE_TZ).strftime("%Y-%m-%d")
+        except Exception:
+            date = datetime.now(DSE_TZ).strftime("%Y-%m-%d")
 
     cache_key = f"live_tracker_{date}"
     cached = cache.get(cache_key)

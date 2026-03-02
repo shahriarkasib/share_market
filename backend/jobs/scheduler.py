@@ -310,6 +310,15 @@ async def refresh_all_caches():
         now_dhaka = datetime.now(DSE_TZ)
         today = now_dhaka.strftime("%Y-%m-%d")
 
+        # Find latest analysis date (may be yesterday if today's analysis hasn't run)
+        try:
+            conn_dt = get_connection()
+            latest_row = conn_dt.execute("SELECT MAX(date) FROM daily_analysis").fetchone()
+            conn_dt.close()
+            analysis_date = str(latest_row[0]) if latest_row and latest_row[0] else today
+        except Exception:
+            analysis_date = today
+
         # 1. All prices
         conn = get_connection()
         rows = conn.execute("SELECT * FROM live_prices").fetchall()
@@ -478,14 +487,14 @@ async def refresh_all_caches():
         # 7. Analysis daily (the slowest one — full SELECT *)
         try:
             from analysis.daily_report import load_daily_analysis
-            analysis = load_daily_analysis(date_str=today)
+            analysis = load_daily_analysis(date_str=analysis_date)
             if analysis:
                 grouped = {}
                 for a in analysis:
                     act = a.get("action", "UNKNOWN")
                     grouped[act] = grouped.get(act, 0) + 1
-                cache.set(f"analysis_daily_{today}_all", {
-                    "date": today, "count": len(analysis),
+                cache.set(f"analysis_daily_{analysis_date}_all", {
+                    "date": analysis_date, "count": len(analysis),
                     "summary": grouped, "analysis": analysis,
                 }, CACHE_TTL)
         except Exception as e:
@@ -510,7 +519,7 @@ async def refresh_all_caches():
                 JOIN live_prices lp ON da.symbol = lp.symbol
                 LEFT JOIN fundamentals f ON da.symbol = f.symbol
                 WHERE da.date = %s AND da.action LIKE 'BUY%%'
-            """, (today,)).fetchall()
+            """, (analysis_date,)).fetchall()
 
             def _safe(v):
                 if v is None: return None
@@ -551,8 +560,8 @@ async def refresh_all_caches():
                 if ts_row and ts_row[0]:
                     updated_at = str(ts_row[0])
             conn.close()
-            cache.set(f"live_tracker_{today}", {
-                "date": today, "market_status": _is_market_open(),
+            cache.set(f"live_tracker_{analysis_date}", {
+                "date": analysis_date, "market_status": _is_market_open(),
                 "updated_at": updated_at, "count": len(stocks), "stocks": stocks,
             }, CACHE_TTL)
         except Exception as e:
