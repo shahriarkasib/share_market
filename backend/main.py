@@ -11,7 +11,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from database import init_database, get_connection
-from jobs.scheduler import setup_scheduler, fetch_live_prices
+from jobs.scheduler import setup_scheduler, _fetch_live_prices as fetch_live_prices
 from config import CORS_ORIGINS, API_PREFIX
 
 # Configure logging

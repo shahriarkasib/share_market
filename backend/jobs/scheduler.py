@@ -1,7 +1,9 @@
-"""Background job scheduler for periodic data fetching and signal computation."""
+"""Background job scheduler — lightweight pipeline that never blocks requests."""
 
 import logging
 import threading
+import math
+from collections import defaultdict
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
@@ -17,18 +19,37 @@ fetcher = DSEDataFetcher()
 
 DSE_TZ = pytz.timezone("Asia/Dhaka")
 
+# Lock to prevent overlapping heavy refreshes
+_heavy_refresh_lock = threading.Lock()
 
-async def fetch_live_prices():
-    """Fetch and cache live prices from DSE."""
+
+# ─── FAST JOBS (run every 5 min, <10s total) ─────────────────────────
+
+async def fast_pipeline():
+    """Fast pipeline: fetch prices + summary, update lightweight caches.
+
+    Target: <10 seconds. Never blocks user requests.
+    """
     try:
-        logger.info("Fetching live prices...")
+        await _fetch_live_prices()
+        await _sync_market_summary()
+        await _sync_dsex_history()
+        _refresh_fast_caches()
+        logger.info("Fast pipeline done")
+    except Exception as e:
+        logger.error(f"Fast pipeline failed: {e}")
+
+
+async def _fetch_live_prices():
+    """Fetch and store live prices from DSE."""
+    try:
         df = fetcher.get_live_prices()
         if df.empty:
-            logger.warning("No live prices returned")
             return
 
-        # Update live_prices table
         conn = get_connection()
+        now_ts = datetime.now(DSE_TZ)
+
         for _, row in df.iterrows():
             try:
                 conn.execute(
@@ -43,27 +64,21 @@ async def fetch_live_prices():
                          volume = EXCLUDED.volume, value = EXCLUDED.value,
                          trade_count = EXCLUDED.trade_count, updated_at = EXCLUDED.updated_at""",
                     (
-                        row.get("symbol", ""),
-                        row.get("ltp", 0),
-                        row.get("high", 0),
-                        row.get("low", 0),
-                        row.get("open", 0),
-                        row.get("close_prev", 0),
-                        row.get("change", 0),
-                        row.get("change_pct", 0),
-                        int(row.get("volume", 0)),
-                        row.get("value", 0),
-                        int(row.get("trade_count", 0)),
-                        datetime.now(DSE_TZ).isoformat(),
+                        row.get("symbol", ""), row.get("ltp", 0),
+                        row.get("high", 0), row.get("low", 0),
+                        row.get("open", 0), row.get("close_prev", 0),
+                        row.get("change", 0), row.get("change_pct", 0),
+                        int(row.get("volume", 0)), row.get("value", 0),
+                        int(row.get("trade_count", 0)), now_ts.isoformat(),
                     ),
                 )
             except Exception as e:
-                logger.error(f"Error saving price for {row.get('symbol')}: {e}")
+                logger.error(f"Price save {row.get('symbol')}: {e}")
 
         conn.commit()
 
-        # Append intraday snapshots (5-min history for buy/sell pressure analysis)
-        now_ts = datetime.now(DSE_TZ).replace(second=0, microsecond=0).isoformat()
+        # Intraday snapshots
+        snap_ts = now_ts.replace(second=0, microsecond=0).isoformat()
         for _, row in df.iterrows():
             try:
                 conn.execute(
@@ -72,61 +87,28 @@ async def fetch_live_prices():
                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                        ON CONFLICT (symbol, ts) DO NOTHING""",
                     (
-                        row.get("symbol", ""),
-                        now_ts,
-                        row.get("ltp", 0),
-                        row.get("open", 0),
-                        row.get("high", 0),
-                        row.get("low", 0),
-                        int(row.get("volume", 0)),
-                        row.get("value", 0),
+                        row.get("symbol", ""), snap_ts,
+                        row.get("ltp", 0), row.get("open", 0),
+                        row.get("high", 0), row.get("low", 0),
+                        int(row.get("volume", 0)), row.get("value", 0),
                         int(row.get("trade_count", 0)),
                     ),
                 )
-            except Exception as e:
-                logger.error(f"Intraday snapshot error for {row.get('symbol')}: {e}")
+            except Exception:
+                pass
 
         conn.commit()
         conn.close()
-
-        # Don't delete caches — refresh_all_caches() will rebuild them
-        # with fresh data right after this pipeline completes
         logger.info(f"Updated prices for {len(df)} stocks")
-
     except Exception as e:
-        logger.error(f"Price fetch job failed: {e}")
+        logger.error(f"Price fetch failed: {e}")
 
 
-async def sync_daily_prices_from_live():
-    """Copy today's live prices into daily_prices table for historical record."""
-    try:
-        from data.repository import upsert_today_prices
-
-        today_str = datetime.now(DSE_TZ).strftime("%Y-%m-%d")
-
-        conn = get_connection()
-        rows = conn.execute("SELECT * FROM live_prices").fetchall()
-        conn.close()
-
-        if not rows:
-            return
-
-        df = pd.DataFrame([dict(r) for r in rows])
-        upsert_today_prices(df, today_str)
-        logger.info(f"Synced {len(df)} live prices to daily_prices for {today_str}")
-    except Exception as e:
-        logger.error(f"Daily price sync failed: {e}")
-
-
-async def sync_market_summary():
-    """Sync market summary data. Never overwrite good data with zeroes."""
+async def _sync_market_summary():
+    """Sync market summary. Skip if DSEX is zero."""
     try:
         summary = fetcher.get_market_summary()
-
-        # Don't overwrite with zeroes — keep the last known good data
         if summary.get("dsex_index", 0) == 0:
-            logger.info("Market summary returned zero DSEX, skipping DB write")
-            cache.delete("market_summary")
             return
 
         conn = get_connection()
@@ -144,16 +126,11 @@ async def sync_market_summary():
                  unchanged = EXCLUDED.unchanged, market_status = EXCLUDED.market_status,
                  updated_at = EXCLUDED.updated_at""",
             (
-                summary.get("dsex_index", 0),
-                summary.get("dsex_change", 0),
-                summary.get("dsex_change_pct", 0),
-                summary.get("total_volume", 0),
-                summary.get("total_value", 0),
-                summary.get("total_trade", 0),
-                summary.get("advances", 0),
-                summary.get("declines", 0),
-                summary.get("unchanged", 0),
-                summary.get("market_status", "UNKNOWN"),
+                summary.get("dsex_index", 0), summary.get("dsex_change", 0),
+                summary.get("dsex_change_pct", 0), summary.get("total_volume", 0),
+                summary.get("total_value", 0), summary.get("total_trade", 0),
+                summary.get("advances", 0), summary.get("declines", 0),
+                summary.get("unchanged", 0), summary.get("market_status", "UNKNOWN"),
                 datetime.now(DSE_TZ).isoformat(),
             ),
         )
@@ -164,8 +141,8 @@ async def sync_market_summary():
         logger.error(f"Market summary sync failed: {e}")
 
 
-async def sync_dsex_history():
-    """Upsert today's DSEX into dsex_history so the chart stays live."""
+async def _sync_dsex_history():
+    """Upsert today's DSEX into dsex_history for the chart."""
     try:
         conn = get_connection()
         row = conn.execute("SELECT * FROM market_summary WHERE id = 1").fetchone()
@@ -178,148 +155,30 @@ async def sync_dsex_history():
             """INSERT INTO dsex_history (date, dsex_index, total_volume, total_value, total_trade)
                VALUES (?, ?, ?, ?, ?)
                ON CONFLICT (date) DO UPDATE SET
-                 dsex_index = EXCLUDED.dsex_index,
-                 total_volume = EXCLUDED.total_volume,
-                 total_value = EXCLUDED.total_value,
-                 total_trade = EXCLUDED.total_trade""",
-            (
-                today_str,
-                row["dsex_index"],
-                row["total_volume"],
-                row["total_value"],
-                row["total_trade"],
-            ),
+                 dsex_index = EXCLUDED.dsex_index, total_volume = EXCLUDED.total_volume,
+                 total_value = EXCLUDED.total_value, total_trade = EXCLUDED.total_trade""",
+            (today_str, row["dsex_index"], row["total_volume"], row["total_value"], row["total_trade"]),
         )
         conn.commit()
         conn.close()
         cache.delete("dsex_history")
-        logger.info(f"Synced DSEX {row['dsex_index']} into dsex_history for {today_str}")
     except Exception as e:
         logger.error(f"DSEX history sync failed: {e}")
 
 
-def backfill_dsex_history():
-    """Fill gaps in dsex_history using bdshare market_summary.
+def _refresh_fast_caches():
+    """Refresh only lightweight caches from DB (already written by pipeline)."""
+    CACHE_TTL = 600
+    now_dhaka = datetime.now(DSE_TZ)
 
-    Runs once at startup so the chart never has missing days.
-    Also upserts the latest market_summary DSEX for the current/most-recent day.
-    """
+    def _safe_float(v):
+        if v is None:
+            return None
+        f = float(v)
+        return None if (math.isnan(f) or math.isinf(f)) else f
+
+    # 1. All prices (already in DB from _fetch_live_prices)
     try:
-        conn = get_connection()
-        last_row = conn.execute(
-            "SELECT MAX(date) AS last_date FROM dsex_history"
-        ).fetchone()
-        last_date = str(last_row["last_date"]) if last_row and last_row["last_date"] else None
-        conn.close()
-
-        if not last_date:
-            return
-
-        # 1. Try bdshare for historical gap fill
-        filled = 0
-        try:
-            from bdshare import market_summary as bdshare_summary
-            import warnings
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore")
-                data = bdshare_summary()
-
-            if data is not None and not data.empty:
-                conn = get_connection()
-                for _, row in data.iterrows():
-                    date_str = str(row.get("date", ""))[:10]
-                    if date_str <= last_date:
-                        continue
-                    dsex = row.get("dsex_index") or row.get("DSEX")
-                    if not dsex or float(dsex) <= 0:
-                        continue
-                    conn.execute(
-                        """INSERT INTO dsex_history (date, dsex_index, total_volume, total_value, total_trade)
-                           VALUES (?, ?, ?, ?, ?)
-                           ON CONFLICT (date) DO UPDATE SET
-                             dsex_index = EXCLUDED.dsex_index,
-                             total_volume = EXCLUDED.total_volume,
-                             total_value = EXCLUDED.total_value,
-                             total_trade = EXCLUDED.total_trade""",
-                        (
-                            date_str,
-                            float(dsex),
-                            int(row.get("total_volume", 0) or 0),
-                            float(row.get("total_value", 0) or 0),
-                            int(row.get("total_trade", 0) or 0),
-                        ),
-                    )
-                    filled += 1
-                conn.commit()
-                conn.close()
-        except Exception as e:
-            logger.warning(f"bdshare backfill failed (non-fatal): {e}")
-
-        # 2. Always upsert current market_summary DSEX for the latest trading day
-        try:
-            conn = get_connection()
-            ms = conn.execute("SELECT * FROM market_summary WHERE id = 1").fetchone()
-            if ms and ms["dsex_index"] and ms["dsex_index"] > 0:
-                # market_summary reflects the latest trading session
-                today_str = datetime.now(DSE_TZ).strftime("%Y-%m-%d")
-                conn.execute(
-                    """INSERT INTO dsex_history (date, dsex_index, total_volume, total_value, total_trade)
-                       VALUES (?, ?, ?, ?, ?)
-                       ON CONFLICT (date) DO UPDATE SET
-                         dsex_index = EXCLUDED.dsex_index,
-                         total_volume = EXCLUDED.total_volume,
-                         total_value = EXCLUDED.total_value,
-                         total_trade = EXCLUDED.total_trade""",
-                    (today_str, ms["dsex_index"], ms["total_volume"], ms["total_value"], ms["total_trade"]),
-                )
-                conn.commit()
-                filled += 1
-            conn.close()
-        except Exception as e:
-            logger.warning(f"market_summary upsert to dsex_history failed: {e}")
-
-        if filled:
-            cache.delete("dsex_history")
-            logger.info(f"Backfilled {filled} days into dsex_history")
-    except Exception as e:
-        logger.error(f"DSEX backfill failed: {e}")
-
-
-async def market_data_pipeline():
-    """Full pipeline: fetch live → sync to daily → sync summary → sync DSEX chart → warm caches."""
-    await fetch_live_prices()
-    await sync_daily_prices_from_live()
-    await sync_market_summary()
-    await sync_dsex_history()
-    await refresh_all_caches()
-
-
-async def refresh_all_caches():
-    """Proactively rebuild ALL frontend-facing caches so user requests are instant.
-
-    Runs every 5 min. The idea: users never hit a cold cache — the backend
-    always has fresh data ready. Each cache is set with 600s TTL (10 min),
-    which is 2x the refresh interval as a safety margin.
-    """
-    import math
-    from collections import defaultdict
-
-    CACHE_TTL = 600  # 10 min — refresh runs every 5, so always warm
-
-    try:
-        now_dhaka = datetime.now(DSE_TZ)
-        today = now_dhaka.strftime("%Y-%m-%d")
-
-        # Find latest analysis date (may be yesterday if today's analysis hasn't run)
-        try:
-            conn_dt = get_connection()
-            latest_row = conn_dt.execute("SELECT MAX(date) FROM daily_analysis").fetchone()
-            conn_dt.close()
-            analysis_date = str(latest_row[0]) if latest_row and latest_row[0] else today
-        except Exception:
-            analysis_date = today
-
-        # 1. All prices
         conn = get_connection()
         rows = conn.execute("SELECT * FROM live_prices").fetchall()
         conn.close()
@@ -332,28 +191,82 @@ async def refresh_all_caches():
                         d[k] = None
                 all_prices.append(d)
             cache.set("all_prices", all_prices, CACHE_TTL)
+    except Exception as e:
+        logger.error(f"Fast cache prices failed: {e}")
 
-        # 2. Market summary — use DB (already synced by market_data_pipeline)
-        #    Avoids 15-45s scrape timeouts during cache refresh.
+    # 2. Market summary from DB
+    try:
+        conn = get_connection()
+        ms_row = conn.execute("SELECT * FROM market_summary WHERE id = 1").fetchone()
+        conn.close()
+        if ms_row:
+            summary = dict(ms_row)
+            summary["last_updated"] = str(summary.pop("updated_at", None) or now_dhaka.isoformat())
+            summary.pop("id", None)
+            if summary.get("dsex_index", 0) > 0:
+                cache.set("market_summary", summary, CACHE_TTL)
+    except Exception:
+        pass
+
+    # 3. Most active tabs (lightweight — 4 small queries)
+    try:
+        conn = get_connection()
+        for tab, order in [("gainers", "lp.change_pct DESC"), ("losers", "lp.change_pct ASC"),
+                           ("volume", "lp.volume DESC"), ("turnover", "lp.value DESC")]:
+            tab_rows = conn.execute(f"""
+                SELECT lp.*, f.sector, f.company_name as fname
+                FROM live_prices lp LEFT JOIN fundamentals f ON lp.symbol = f.symbol
+                WHERE lp.ltp > 0 AND lp.trade_count > 0
+                ORDER BY {order} LIMIT 20
+            """).fetchall()
+            tab_data = []
+            for r in tab_rows:
+                d = dict(r)
+                for k, v in d.items():
+                    if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
+                        d[k] = None
+                tab_data.append(d)
+            cache.set(f"most_active_{tab}_20", tab_data, CACHE_TTL)
+        conn.close()
+    except Exception as e:
+        logger.error(f"Fast cache most-active failed: {e}")
+
+
+# ─── HEAVY JOBS (run every 10 min, in background thread) ─────────────
+
+async def heavy_refresh():
+    """Rebuild expensive caches in a background thread so we never block requests."""
+    if not _heavy_refresh_lock.acquire(blocking=False):
+        logger.info("Heavy refresh already running, skipping")
+        return
+    try:
+        thread = threading.Thread(target=_heavy_refresh_sync, daemon=True)
+        thread.start()
+    except Exception as e:
+        _heavy_refresh_lock.release()
+        logger.error(f"Heavy refresh launch failed: {e}")
+
+
+def _heavy_refresh_sync():
+    """Run all expensive cache rebuilds (signals, heatmap, sectors, analysis, tracker)."""
+    CACHE_TTL = 900  # 15 min — heavy refresh runs every 10
+    try:
+        now_dhaka = datetime.now(DSE_TZ)
+        today = now_dhaka.strftime("%Y-%m-%d")
+
+        # Find latest analysis date
         try:
-            conn = get_connection()
-            ms_row = conn.execute("SELECT * FROM market_summary WHERE id = 1").fetchone()
-            conn.close()
-            if ms_row:
-                summary = dict(ms_row)
-                summary["last_updated"] = str(summary.pop("updated_at", None) or now_dhaka.isoformat())
-                summary.pop("id", None)
-                if summary.get("dsex_index", 0) > 0:
-                    cache.set("market_summary", summary, CACHE_TTL)
+            conn_dt = get_connection()
+            latest_row = conn_dt.execute("SELECT MAX(date) FROM daily_analysis").fetchone()
+            conn_dt.close()
+            analysis_date = str(latest_row[0]) if latest_row and latest_row[0] else today
         except Exception:
-            pass  # Keep existing cached value
+            analysis_date = today
 
-        # 3. Signals (uses slim query — fast)
+        # 1. Signals + summary (the biggest one)
         try:
             from api.routes_signals import _get_signals
-            signals = _get_signals()  # Populates all_signals cache internally
-
-            # 3b. Signals summary
+            signals = _get_signals()
             if signals:
                 strong_buy = sum(1 for s in signals if s["signal_type"] == "STRONG_BUY")
                 buy = sum(1 for s in signals if s["signal_type"] == "BUY")
@@ -363,10 +276,8 @@ async def refresh_all_caches():
                 total = len(signals)
                 bullish = strong_buy + buy
                 bearish = sell + strong_sell
-                if total > 0:
-                    sentiment = "BULLISH" if bullish / total > 0.5 else ("BEARISH" if bearish / total > 0.5 else "NEUTRAL")
-                else:
-                    sentiment = "NEUTRAL"
+                sentiment = "BULLISH" if total > 0 and bullish / total > 0.5 else (
+                    "BEARISH" if total > 0 and bearish / total > 0.5 else "NEUTRAL")
                 cache.set("signals_summary", {
                     "total_stocks": total,
                     "strong_buy_count": strong_buy, "buy_count": buy,
@@ -377,9 +288,9 @@ async def refresh_all_caches():
                     "is_computing": False,
                 }, CACHE_TTL)
         except Exception as e:
-            logger.error(f"Cache refresh signals failed: {e}")
+            logger.error(f"Heavy: signals failed: {e}")
 
-        # 4. Heatmap
+        # 2. Heatmap
         try:
             conn = get_connection()
             heatmap_rows = conn.execute("""
@@ -412,9 +323,9 @@ async def refresh_all_caches():
             heatmap.sort(key=lambda x: x["total_size"], reverse=True)
             cache.set("heatmap_turnover", heatmap, CACHE_TTL)
         except Exception as e:
-            logger.error(f"Cache refresh heatmap failed: {e}")
+            logger.error(f"Heavy: heatmap failed: {e}")
 
-        # 5. Sector performance
+        # 3. Sector performance
         try:
             conn = get_connection()
             sec_rows = conn.execute("""
@@ -459,32 +370,9 @@ async def refresh_all_caches():
             sec_result.sort(key=lambda x: x["total_turnover"], reverse=True)
             cache.set("sector_performance", sec_result, CACHE_TTL)
         except Exception as e:
-            logger.error(f"Cache refresh sectors failed: {e}")
+            logger.error(f"Heavy: sectors failed: {e}")
 
-        # 6. Most active tabs (gainers, losers, volume, turnover)
-        try:
-            conn = get_connection()
-            for tab, order in [("gainers", "lp.change_pct DESC"), ("losers", "lp.change_pct ASC"),
-                               ("volume", "lp.volume DESC"), ("turnover", "lp.value DESC")]:
-                tab_rows = conn.execute(f"""
-                    SELECT lp.*, f.sector, f.company_name as fname
-                    FROM live_prices lp LEFT JOIN fundamentals f ON lp.symbol = f.symbol
-                    WHERE lp.ltp > 0 AND lp.trade_count > 0
-                    ORDER BY {order} LIMIT 20
-                """).fetchall()
-                tab_data = []
-                for r in tab_rows:
-                    d = dict(r)
-                    for k, v in d.items():
-                        if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
-                            d[k] = None
-                    tab_data.append(d)
-                cache.set(f"most_active_{tab}_20", tab_data, CACHE_TTL)
-            conn.close()
-        except Exception as e:
-            logger.error(f"Cache refresh most-active failed: {e}")
-
-        # 7. Analysis daily (the slowest one — full SELECT *)
+        # 4. Analysis daily
         try:
             from analysis.daily_report import load_daily_analysis
             analysis = load_daily_analysis(date_str=analysis_date)
@@ -498,12 +386,17 @@ async def refresh_all_caches():
                     "summary": grouped, "analysis": analysis,
                 }, CACHE_TTL)
         except Exception as e:
-            logger.error(f"Cache refresh analysis failed: {e}")
+            logger.error(f"Heavy: analysis failed: {e}")
 
-        # 8. Live tracker
+        # 5. Live tracker
         try:
             from api.routes_analysis import _compute_status, _STATUS_PRIORITY, _is_market_open
-            from config import CACHE_TTL_LIVE_PRICES as _lp_ttl
+
+            def _safe(v):
+                if v is None: return None
+                f = float(v)
+                return None if (math.isnan(f) or math.isinf(f)) else f
+
             conn = get_connection()
             tracker_rows = conn.execute("""
                 SELECT da.symbol, da.action, da.entry_low, da.entry_high, da.sl, da.t1, da.t2,
@@ -520,11 +413,6 @@ async def refresh_all_caches():
                 LEFT JOIN fundamentals f ON da.symbol = f.symbol
                 WHERE da.date = %s AND da.action LIKE 'BUY%%'
             """, (analysis_date,)).fetchall()
-
-            def _safe(v):
-                if v is None: return None
-                f = float(v)
-                return None if (math.isnan(f) or math.isinf(f)) else f
 
             stocks = []
             for r in tracker_rows:
@@ -565,103 +453,115 @@ async def refresh_all_caches():
                 "updated_at": updated_at, "count": len(stocks), "stocks": stocks,
             }, CACHE_TTL)
         except Exception as e:
-            logger.error(f"Cache refresh live-tracker failed: {e}")
+            logger.error(f"Heavy: live-tracker failed: {e}")
 
-        logger.info("Cache refresh complete — all endpoints warm")
+        logger.info("Heavy cache refresh complete")
     except Exception as e:
-        logger.error(f"Cache refresh failed: {e}")
+        logger.error(f"Heavy refresh failed: {e}")
+    finally:
+        _heavy_refresh_lock.release()
 
 
-def setup_scheduler() -> AsyncIOScheduler:
-    """Configure and return the background scheduler."""
-    scheduler = AsyncIOScheduler(timezone="Asia/Dhaka")
+# ─── DAILY PRICE SYNC (every 15 min, lightweight) ────────────────────
 
-    # Full pipeline every 5 minutes during market hours (Sun-Thu 10:00-14:30)
-    scheduler.add_job(
-        market_data_pipeline,
-        trigger=CronTrigger(
-            day_of_week="sun,mon,tue,wed,thu",
-            hour="10-14",
-            minute="*/5",
-            timezone="Asia/Dhaka",
-        ),
-        id="market_pipeline",
-        name="Market data pipeline",
-        replace_existing=True,
-    )
+async def sync_daily_prices_from_live():
+    """Copy today's live prices into daily_prices table for historical record."""
+    try:
+        from data.repository import upsert_today_prices
+        today_str = datetime.now(DSE_TZ).strftime("%Y-%m-%d")
+        conn = get_connection()
+        rows = conn.execute("SELECT * FROM live_prices").fetchall()
+        conn.close()
+        if not rows:
+            return
+        df = pd.DataFrame([dict(r) for r in rows])
+        upsert_today_prices(df, today_str)
+        logger.info(f"Synced {len(df)} live prices to daily_prices for {today_str}")
+    except Exception as e:
+        logger.error(f"Daily price sync failed: {e}")
 
-    # Off-hours: refresh caches every 5 min so pages load instantly after deploy/restart
-    scheduler.add_job(
-        refresh_all_caches,
-        trigger=IntervalTrigger(minutes=5),
-        id="cache_refresh",
-        name="Proactive cache refresh",
-        replace_existing=True,
-    )
 
-    # Cleanup old intraday snapshots (keep 7 days)
-    scheduler.add_job(
-        cleanup_intraday_snapshots,
-        trigger=CronTrigger(hour=0, minute=30, timezone="Asia/Dhaka"),
-        id="cleanup_intraday",
-        name="Cleanup old intraday snapshots",
-        replace_existing=True,
-    )
+# ─── DSEX BACKFILL (startup only) ────────────────────────────────────
 
-    # Post-market daily analysis (15:00 BST, after market close)
-    scheduler.add_job(
-        run_post_market_analysis,
-        trigger=CronTrigger(
-            day_of_week="sun,mon,tue,wed,thu",
-            hour=15, minute=0,
-            timezone="Asia/Dhaka",
-        ),
-        id="daily_analysis",
-        name="Post-market daily analysis",
-        replace_existing=True,
-    )
+def backfill_dsex_history():
+    """Fill gaps in dsex_history using bdshare + market_summary. Runs at startup."""
+    try:
+        conn = get_connection()
+        last_row = conn.execute("SELECT MAX(date) AS last_date FROM dsex_history").fetchone()
+        last_date = str(last_row["last_date"]) if last_row and last_row["last_date"] else None
+        conn.close()
 
-    # Live intraday scanner — market depth + buy signal tracking every 5 min
-    scheduler.add_job(
-        run_live_scanner,
-        trigger=CronTrigger(
-            day_of_week="sun,mon,tue,wed,thu",
-            hour="9-14",
-            minute="*/5",
-            timezone="Asia/Dhaka",
-        ),
-        id="live_scanner",
-        name="Live intraday scanner",
-        replace_existing=True,
-    )
+        if not last_date:
+            return
 
-    # Verify past scan decisions — check actual outcomes at T+1..T+7
-    scheduler.add_job(
-        verify_scan_decisions,
-        trigger=CronTrigger(
-            day_of_week="sun,mon,tue,wed,thu",
-            hour=15, minute=30,
-            timezone="Asia/Dhaka",
-        ),
-        id="verify_decisions",
-        name="Verify past scan decisions",
-        replace_existing=True,
-    )
+        filled = 0
+        # bdshare backfill
+        try:
+            from bdshare import market_summary as bdshare_summary
+            import warnings
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                data = bdshare_summary()
+            if data is not None and not data.empty:
+                conn = get_connection()
+                for _, row in data.iterrows():
+                    date_str = str(row.get("date", ""))[:10]
+                    if date_str <= last_date:
+                        continue
+                    dsex = row.get("dsex_index") or row.get("DSEX")
+                    if not dsex or float(dsex) <= 0:
+                        continue
+                    conn.execute(
+                        """INSERT INTO dsex_history (date, dsex_index, total_volume, total_value, total_trade)
+                           VALUES (?, ?, ?, ?, ?)
+                           ON CONFLICT (date) DO UPDATE SET
+                             dsex_index = EXCLUDED.dsex_index, total_volume = EXCLUDED.total_volume,
+                             total_value = EXCLUDED.total_value, total_trade = EXCLUDED.total_trade""",
+                        (date_str, float(dsex), int(row.get("total_volume", 0) or 0),
+                         float(row.get("total_value", 0) or 0), int(row.get("total_trade", 0) or 0)),
+                    )
+                    filled += 1
+                conn.commit()
+                conn.close()
+        except Exception as e:
+            logger.warning(f"bdshare backfill failed (non-fatal): {e}")
 
-    return scheduler
+        # Upsert latest market_summary
+        try:
+            conn = get_connection()
+            ms = conn.execute("SELECT * FROM market_summary WHERE id = 1").fetchone()
+            if ms and ms["dsex_index"] and ms["dsex_index"] > 0:
+                today_str = datetime.now(DSE_TZ).strftime("%Y-%m-%d")
+                conn.execute(
+                    """INSERT INTO dsex_history (date, dsex_index, total_volume, total_value, total_trade)
+                       VALUES (?, ?, ?, ?, ?)
+                       ON CONFLICT (date) DO UPDATE SET
+                         dsex_index = EXCLUDED.dsex_index, total_volume = EXCLUDED.total_volume,
+                         total_value = EXCLUDED.total_value, total_trade = EXCLUDED.total_trade""",
+                    (today_str, ms["dsex_index"], ms["total_volume"], ms["total_value"], ms["total_trade"]),
+                )
+                conn.commit()
+                filled += 1
+            conn.close()
+        except Exception as e:
+            logger.warning(f"market_summary upsert to dsex_history failed: {e}")
 
+        if filled:
+            cache.delete("dsex_history")
+            logger.info(f"Backfilled {filled} days into dsex_history")
+    except Exception as e:
+        logger.error(f"DSEX backfill failed: {e}")
+
+
+# ─── OTHER JOBS ───────────────────────────────────────────────────────
 
 async def run_post_market_analysis():
     """Run daily analysis after market close."""
     try:
         logger.info("Triggering post-market daily analysis...")
         from analysis.daily_report import run_daily_analysis
-        import threading
         thread = threading.Thread(target=run_daily_analysis, daemon=True)
         thread.start()
-
-        # Invalidate signal cache so next request rebuilds from fresh analysis
-        from data.cache import cache
         cache.delete("all_signals")
         cache.delete("signals_summary")
         cache.delete("suggestions")
@@ -670,10 +570,9 @@ async def run_post_market_analysis():
 
 
 async def run_live_scanner():
-    """Run intraday live scanner (market depth + buy signal analysis)."""
+    """Run intraday live scanner."""
     try:
         from analysis.live_scanner import run_live_scan
-        import threading
         thread = threading.Thread(target=run_live_scan, daemon=True)
         thread.start()
     except Exception as e:
@@ -684,7 +583,6 @@ async def verify_scan_decisions():
     """Verify past scan decisions against actual outcomes."""
     try:
         from analysis.live_scanner import verify_past_decisions
-        import threading
         thread = threading.Thread(target=verify_past_decisions, daemon=True)
         thread.start()
     except Exception as e:
@@ -695,11 +593,125 @@ async def cleanup_intraday_snapshots():
     """Delete intraday snapshots older than 7 days."""
     try:
         conn = get_connection()
-        conn.execute(
-            "DELETE FROM intraday_snapshots WHERE ts < NOW() - INTERVAL '7 days'"
-        )
+        conn.execute("DELETE FROM intraday_snapshots WHERE ts < NOW() - INTERVAL '7 days'")
         conn.commit()
         conn.close()
         logger.info("Cleaned up old intraday snapshots")
     except Exception as e:
         logger.error(f"Intraday cleanup failed: {e}")
+
+
+# ─── BACKWARD COMPAT (used by main.py startup) ───────────────────────
+
+async def refresh_all_caches():
+    """Startup cache warm — runs fast caches then kicks off heavy in background."""
+    _refresh_fast_caches()
+    await heavy_refresh()
+
+
+# ─── SCHEDULER SETUP ─────────────────────────────────────────────────
+
+def setup_scheduler() -> AsyncIOScheduler:
+    """Configure background scheduler with staggered jobs."""
+    scheduler = AsyncIOScheduler(timezone="Asia/Dhaka")
+
+    # FAST pipeline: prices + summary + lightweight caches (every 5 min, market hours)
+    scheduler.add_job(
+        fast_pipeline,
+        trigger=CronTrigger(
+            day_of_week="sun,mon,tue,wed,thu",
+            hour="10-14", minute="*/5",
+            timezone="Asia/Dhaka",
+        ),
+        id="fast_pipeline",
+        name="Fast: prices + summary",
+        replace_existing=True,
+    )
+
+    # HEAVY refresh: signals, heatmap, sectors, analysis (every 10 min, in bg thread)
+    scheduler.add_job(
+        heavy_refresh,
+        trigger=CronTrigger(
+            day_of_week="sun,mon,tue,wed,thu",
+            hour="10-14", minute="2,12,22,32,42,52",
+            timezone="Asia/Dhaka",
+        ),
+        id="heavy_refresh",
+        name="Heavy: signals + analysis (bg thread)",
+        replace_existing=True,
+    )
+
+    # Daily price sync (every 15 min during market hours)
+    scheduler.add_job(
+        sync_daily_prices_from_live,
+        trigger=CronTrigger(
+            day_of_week="sun,mon,tue,wed,thu",
+            hour="10-14", minute="5,20,35,50",
+            timezone="Asia/Dhaka",
+        ),
+        id="daily_price_sync",
+        name="Sync live to daily_prices",
+        replace_existing=True,
+    )
+
+    # Off-hours: just fast caches every 10 min (for deploy warmup)
+    scheduler.add_job(
+        _refresh_fast_caches_async,
+        trigger=IntervalTrigger(minutes=10),
+        id="offhours_cache",
+        name="Off-hours cache refresh",
+        replace_existing=True,
+    )
+
+    # Cleanup old intraday snapshots
+    scheduler.add_job(
+        cleanup_intraday_snapshots,
+        trigger=CronTrigger(hour=0, minute=30, timezone="Asia/Dhaka"),
+        id="cleanup_intraday",
+        name="Cleanup old intraday snapshots",
+        replace_existing=True,
+    )
+
+    # Post-market daily analysis (15:00 BST)
+    scheduler.add_job(
+        run_post_market_analysis,
+        trigger=CronTrigger(
+            day_of_week="sun,mon,tue,wed,thu",
+            hour=15, minute=0, timezone="Asia/Dhaka",
+        ),
+        id="daily_analysis",
+        name="Post-market daily analysis",
+        replace_existing=True,
+    )
+
+    # Live intraday scanner (every 5 min during market)
+    scheduler.add_job(
+        run_live_scanner,
+        trigger=CronTrigger(
+            day_of_week="sun,mon,tue,wed,thu",
+            hour="9-14", minute="*/5",
+            timezone="Asia/Dhaka",
+        ),
+        id="live_scanner",
+        name="Live intraday scanner",
+        replace_existing=True,
+    )
+
+    # Verify past scan decisions
+    scheduler.add_job(
+        verify_scan_decisions,
+        trigger=CronTrigger(
+            day_of_week="sun,mon,tue,wed,thu",
+            hour=15, minute=30, timezone="Asia/Dhaka",
+        ),
+        id="verify_decisions",
+        name="Verify past scan decisions",
+        replace_existing=True,
+    )
+
+    return scheduler
+
+
+async def _refresh_fast_caches_async():
+    """Async wrapper for off-hours fast cache refresh."""
+    _refresh_fast_caches()
