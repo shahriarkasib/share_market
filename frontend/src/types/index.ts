@@ -363,6 +363,11 @@ export interface LLMDailyAnalysis {
   risk_factors: string[];
   catalysts: string[];
   score: number;
+  // LLM plan fields
+  how_to_buy?: string;
+  volume_rule?: string;
+  next_day_plan?: string;
+  sell_plan?: string;
   // Judge fields (joined)
   algo_action?: string;
   llm_action?: string;

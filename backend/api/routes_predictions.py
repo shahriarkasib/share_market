@@ -198,6 +198,7 @@ async def get_llm_daily_analysis(
         SELECT la.symbol, la.action, la.confidence, la.reasoning, la.wait_for,
                la.wait_days, la.entry_low, la.entry_high, la.sl, la.t1, la.t2,
                la.risk_factors, la.catalysts, la.score,
+               la.how_to_buy, la.volume_rule, la.next_day_plan, la.sell_plan,
                ja.algo_action, ja.llm_action, ja.final_action, ja.final_confidence,
                ja.agreement, ja.reasoning AS judge_reasoning,
                ja.algo_strengths, ja.llm_strengths, ja.key_risk,

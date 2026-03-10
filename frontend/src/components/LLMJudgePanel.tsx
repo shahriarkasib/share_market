@@ -9,6 +9,10 @@ import {
   AlertTriangle,
   Clock,
   Loader2,
+  Target,
+  BarChart3,
+  Calendar,
+  DollarSign,
 } from "lucide-react";
 import { fetchLLMDailyAnalysis } from "../api/client.ts";
 import type { LLMDailyAnalysis } from "../types/index.ts";
@@ -214,6 +218,46 @@ export default function LLMJudgePanel({ symbol, date }: Props) {
                       ))}
                     </div>
                   )}
+                </div>
+              )}
+
+              {/* How to Buy */}
+              {entry.how_to_buy && (
+                <div className="bg-[var(--surface)] rounded-md p-2 border border-[var(--border)]">
+                  <p className="text-[10px] text-green-300 font-semibold mb-0.5 flex items-center gap-1">
+                    <Target className="h-3 w-3" /> How to Buy
+                  </p>
+                  <p className="text-[10px] text-[var(--text-muted)] leading-relaxed whitespace-pre-line">{entry.how_to_buy}</p>
+                </div>
+              )}
+
+              {/* Volume Rule */}
+              {entry.volume_rule && (
+                <div className="bg-[var(--surface)] rounded-md p-2 border border-[var(--border)]">
+                  <p className="text-[10px] text-blue-300 font-semibold mb-0.5 flex items-center gap-1">
+                    <BarChart3 className="h-3 w-3" /> Volume Rule
+                  </p>
+                  <p className="text-[10px] text-[var(--text-muted)] leading-relaxed whitespace-pre-line">{entry.volume_rule}</p>
+                </div>
+              )}
+
+              {/* Next Day Plan */}
+              {entry.next_day_plan && (
+                <div className="bg-[var(--surface)] rounded-md p-2 border border-[var(--border)]">
+                  <p className="text-[10px] text-amber-300 font-semibold mb-0.5 flex items-center gap-1">
+                    <Calendar className="h-3 w-3" /> Next Day Plan
+                  </p>
+                  <p className="text-[10px] text-[var(--text-muted)] leading-relaxed whitespace-pre-line">{entry.next_day_plan}</p>
+                </div>
+              )}
+
+              {/* Sell Plan */}
+              {entry.sell_plan && (
+                <div className="bg-[var(--surface)] rounded-md p-2 border border-[var(--border)]">
+                  <p className="text-[10px] text-red-300 font-semibold mb-0.5 flex items-center gap-1">
+                    <DollarSign className="h-3 w-3" /> Sell Plan
+                  </p>
+                  <p className="text-[10px] text-[var(--text-muted)] leading-relaxed whitespace-pre-line">{entry.sell_plan}</p>
                 </div>
               )}
 

@@ -42,6 +42,7 @@ else
 fi
 
 # Source bashrc for Claude CLI auth token (CLAUDE_CODE_OAUTH_TOKEN)
+# Also provides email env vars: EMAIL_SENDER, EMAIL_PASSWORD, EMAIL_RECIPIENT
 if [ -f "${HOME}/.bashrc" ]; then
     source "${HOME}/.bashrc" 2>/dev/null || true
 fi

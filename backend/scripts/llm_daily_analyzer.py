@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""LLM Daily Analyzer — Three-stage analysis pipeline for GCP VM.
+"""LLM Daily Analyzer — Five-stage analysis pipeline for GCP VM.
 
-Stage 1: LLM analyzes ALL A-category stocks (batched, 30/call)
-Stage 2: Judge LLM compares algo vs LLM and picks best (batched, 50/call)
+Stage 1: LLM analyzes ALL A-category stocks (batched, 8/call)
+Stage 2: Judge LLM compares algo vs LLM and picks best (batched, 30/call)
 Stage 3: Snapshot all predictions into prediction_tracker
+Stage 4: Override algo entry/exit with AI-computed values
+Stage 5: Email notification summary (requires EMAIL_SENDER, EMAIL_PASSWORD, EMAIL_RECIPIENT)
 
 Usage:
     python3 scripts/llm_daily_analyzer.py
@@ -16,10 +18,13 @@ import json
 import logging
 import os
 import re
+import smtplib
 import subprocess
 import sys
 import time
 from datetime import datetime
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 
 import psycopg2
 import psycopg2.extras
@@ -69,9 +74,9 @@ ACTION_NORMALIZE = {
     "SELL/AVOID": "SELL/AVOID",
 }
 
-LLM_BATCH_SIZE = 15
+LLM_BATCH_SIZE = 8
 JUDGE_BATCH_SIZE = 30
-CLAUDE_TIMEOUT = 600
+CLAUDE_TIMEOUT = 900
 CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-5-20250514")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 
@@ -97,9 +102,15 @@ def ensure_tables():
             wait_days TEXT, entry_low DOUBLE PRECISION, entry_high DOUBLE PRECISION,
             sl DOUBLE PRECISION, t1 DOUBLE PRECISION, t2 DOUBLE PRECISION,
             risk_factors TEXT, catalysts TEXT, score DOUBLE PRECISION,
+            how_to_buy TEXT, volume_rule TEXT, next_day_plan TEXT, sell_plan TEXT,
             batch_id INTEGER, raw_response TEXT,
             created_at TIMESTAMP DEFAULT NOW(), UNIQUE(date, symbol)
         )""",
+        # Add new columns if table already exists
+        "ALTER TABLE llm_daily_analysis ADD COLUMN IF NOT EXISTS how_to_buy TEXT",
+        "ALTER TABLE llm_daily_analysis ADD COLUMN IF NOT EXISTS volume_rule TEXT",
+        "ALTER TABLE llm_daily_analysis ADD COLUMN IF NOT EXISTS next_day_plan TEXT",
+        "ALTER TABLE llm_daily_analysis ADD COLUMN IF NOT EXISTS sell_plan TEXT",
         "CREATE INDEX IF NOT EXISTS idx_llm_daily_date ON llm_daily_analysis(date)",
         """CREATE TABLE IF NOT EXISTS judge_daily_analysis (
             id SERIAL PRIMARY KEY, date DATE NOT NULL, symbol TEXT NOT NULL,
@@ -289,6 +300,8 @@ def call_claude(prompt: str, timeout: int = CLAUDE_TIMEOUT) -> str:
             return ""
 
     # Fallback: Claude CLI (requires `claude login` or `claude setup-token`)
+    # Strip CLAUDE* env vars to avoid "nested session" block
+    clean_env = {k: v for k, v in os.environ.items() if "CLAUDE" not in k.upper()}
     try:
         result = subprocess.run(
             ["claude", "-p", "--model", "sonnet"],
@@ -296,6 +309,7 @@ def call_claude(prompt: str, timeout: int = CLAUDE_TIMEOUT) -> str:
             capture_output=True,
             text=True,
             timeout=timeout,
+            env=clean_env,
         )
         if result.returncode != 0:
             logger.error(f"Claude CLI error: {result.stderr[:300]}")
@@ -457,16 +471,20 @@ Return a JSON array (NO markdown fences, ONLY valid JSON):
     "symbol": "SYMBOL",
     "action": "BUY|BUY on dip|BUY on pullback|BUY (wait for MACD cross)|HOLD/WAIT|SELL/AVOID|AVOID",
     "confidence": "HIGH|MEDIUM|LOW",
-    "reasoning": "3-5 sentence EDUCATIONAL analysis. For EACH indicator you mention, explain what it means and WHY it matters for this stock. Example: 'RSI is at 28 (below 30 = oversold, sellers exhausted). MACD just crossed bullish (momentum shifting up — this is a buy signal). Price is near the lower Bollinger Band (cheap compared to its 20-day average). Together these signals say: the stock has been beaten down enough and is ready to bounce.'",
-    "wait_for": "Specific trigger in PLAIN LANGUAGE: e.g., 'Wait for MACD to cross its signal line from below (this means buying momentum is starting). Also watch for RSI to bounce above 30 (confirms sellers are done).'",
+    "reasoning": "3-5 sentence EDUCATIONAL analysis. For EACH indicator you mention, explain what it means and WHY it matters. Example: 'RSI is at 28 (below 30 = oversold, sellers exhausted). MACD just crossed bullish (momentum shifting up). Price near lower Bollinger Band (cheap vs 20-day average). Together: stock beaten down enough, ready to bounce.'",
+    "wait_for": "Specific trigger in PLAIN LANGUAGE: e.g., 'Wait for MACD to cross bullish + volume above 50K in a single day.'",
     "wait_days": "e.g., 'NOW', '1-3 days', '5-10 days', '15-30 days'",
     "entry_low": 0.0,
     "entry_high": 0.0,
     "sl": 0.0,
     "t1": 0.0,
     "t2": 0.0,
-    "risk_factors": ["Plain language risk: e.g., 'If overall market drops below 5400, this stock will likely fall too regardless of technicals'"],
-    "catalysts": ["Plain language catalyst: e.g., 'Dividend announcement expected next week which could push price up'"],
+    "how_to_buy": "Step-by-step instructions for TOMORROW. Example: '1. Wait first 15 minutes after market opens. 2. Check if volume crosses 50,000 — if yes, buyers are real. 3. Place limit order at 22.0 (near support). 4. Set stop loss at 20.5 immediately after buying. 5. If price gaps up above 23.5 at open, DO NOT chase — wait for pullback.'",
+    "volume_rule": "Minimum volume needed to confirm the trade. Example: 'Only buy if today\\'s volume exceeds 100,000 (above the 20-day average of 80,000). Low volume = fake move.'",
+    "next_day_plan": "Exactly what to do tomorrow for this stock. Example: 'If opens GREEN above 22.5: hold, trail stop to 21.8. If opens FLAT 21.5-22.5: watch for breakout above 22.5 with volume. If opens RED below 21.0: do NOT buy, wait another day.'",
+    "sell_plan": "When and how to sell. Example: 'Sell half at T1 (24.0) to lock profit. Move stop loss to entry price for remaining. Sell rest at T2 (25.5) or if MACD turns bearish.'",
+    "risk_factors": ["Plain language risk: e.g., 'If DSEX drops below 5000, this stock falls too regardless of technicals'"],
+    "catalysts": ["Plain language catalyst: e.g., 'Dividend announcement expected next week could push price up'"],
     "score": 50
   }}
 ]
@@ -480,8 +498,11 @@ Rules:
 6. HOLD/WAIT must explain EXACTLY what to watch for and how a beginner would recognize the trigger
 7. For AVOID stocks, explain what would need to change (in plain language) for it to become buyable
 8. Risk factors and catalysts must be understandable by someone who has never traded before
-9. If you made mistakes in past predictions (shown in feedback above), EXPLICITLY adjust your approach. Be more conservative where you were wrong.
-10. Return ONLY valid JSON array, no extra text"""
+9. If you made mistakes in past predictions (shown in feedback above), EXPLICITLY adjust your approach
+10. how_to_buy MUST include: volume threshold, first-15-min rule, limit order price, stop loss placement, and what NOT to do
+11. next_day_plan MUST cover 3 scenarios: opens green, opens flat, opens red — with specific actions for each
+12. sell_plan MUST specify: sell half at T1, move SL to entry, sell rest at T2 or on bearish signal
+13. Return ONLY valid JSON array, no extra text"""
 
 
 def store_llm_results(date_str: str, results: list[dict], batch_id: int, raw: str):
@@ -499,8 +520,10 @@ def store_llm_results(date_str: str, results: list[dict], batch_id: int, raw: st
                 INSERT INTO llm_daily_analysis
                     (date, symbol, action, confidence, reasoning, wait_for, wait_days,
                      entry_low, entry_high, sl, t1, t2,
-                     risk_factors, catalysts, score, batch_id, raw_response)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                     risk_factors, catalysts, score,
+                     how_to_buy, volume_rule, next_day_plan, sell_plan,
+                     batch_id, raw_response)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (date, symbol) DO UPDATE SET
                     action = EXCLUDED.action, confidence = EXCLUDED.confidence,
                     reasoning = EXCLUDED.reasoning, wait_for = EXCLUDED.wait_for,
@@ -508,8 +531,10 @@ def store_llm_results(date_str: str, results: list[dict], batch_id: int, raw: st
                     entry_high = EXCLUDED.entry_high, sl = EXCLUDED.sl,
                     t1 = EXCLUDED.t1, t2 = EXCLUDED.t2,
                     risk_factors = EXCLUDED.risk_factors, catalysts = EXCLUDED.catalysts,
-                    score = EXCLUDED.score, batch_id = EXCLUDED.batch_id,
-                    raw_response = EXCLUDED.raw_response
+                    score = EXCLUDED.score,
+                    how_to_buy = EXCLUDED.how_to_buy, volume_rule = EXCLUDED.volume_rule,
+                    next_day_plan = EXCLUDED.next_day_plan, sell_plan = EXCLUDED.sell_plan,
+                    batch_id = EXCLUDED.batch_id, raw_response = EXCLUDED.raw_response
             """, (
                 date_str, symbol, action,
                 r.get("confidence", "MEDIUM"),
@@ -524,6 +549,10 @@ def store_llm_results(date_str: str, results: list[dict], batch_id: int, raw: st
                 json.dumps(r.get("risk_factors", [])),
                 json.dumps(r.get("catalysts", [])),
                 r.get("score"),
+                r.get("how_to_buy", ""),
+                r.get("volume_rule", ""),
+                r.get("next_day_plan", ""),
+                r.get("sell_plan", ""),
                 batch_id,
                 raw if saved == 0 else None,  # Store raw only for first stock in batch
             ))
@@ -703,8 +732,8 @@ def store_judge_results(date_str: str, results: list[dict], batch_id: int, raw: 
     logger.info(f"Stored {saved} judge results (batch {batch_id})")
 
 
-def run_judge_analysis(date_str: str, llm_results: list[dict]):
-    """Stage 2: Judge compares algo vs LLM for each stock."""
+def run_judge_analysis(date_str: str, llm_results: list[dict]) -> int:
+    """Stage 2: Judge compares algo vs LLM for each stock. Returns pair count."""
     algo_data = load_algo_analysis(date_str)
     algo_by_sym = {a["symbol"]: a for a in algo_data}
     llm_by_sym = {r["symbol"]: r for r in llm_results if r.get("symbol")}
@@ -717,7 +746,7 @@ def run_judge_analysis(date_str: str, llm_results: list[dict]):
 
     if not pairs:
         logger.warning("No algo+LLM pairs to judge")
-        return
+        return 0
 
     market = load_market_context()
     batches = [pairs[i:i + JUDGE_BATCH_SIZE] for i in range(0, len(pairs), JUDGE_BATCH_SIZE)]
@@ -752,6 +781,8 @@ def run_judge_analysis(date_str: str, llm_results: list[dict]):
 
         if i < total:
             time.sleep(5)
+
+    return len(pairs)
 
 
 # ─── Stage 3: Snapshot predictions ───
@@ -858,11 +889,190 @@ def snapshot_predictions(date_str: str):
     logger.info(f"Snapshotted {saved} predictions into tracker")
 
 
+# ─── Stage 4: Override algo entry/exit with AI values ───
+
+
+def override_algo_entry_exit(date_str: str):
+    """Stage 4: Replace algo's hardcoded entry/exit with Judge (or LLM) values.
+
+    The algo's _compute_entry_exit() uses ATR-based formulas that break when
+    indicators are NaN (dividend gaps, insufficient history). The LLM computes
+    sensible values by understanding the stock's actual price context.
+    """
+    conn = get_conn()
+    cur = conn.cursor()
+
+    # Get all judge + LLM results for today
+    cur.execute("""
+        SELECT j.symbol, j.entry_low AS j_el, j.entry_high AS j_eh,
+               j.sl AS j_sl, j.t1 AS j_t1, j.t2 AS j_t2,
+               l.entry_low AS l_el, l.entry_high AS l_eh,
+               l.sl AS l_sl, l.t1 AS l_t1, l.t2 AS l_t2,
+               da.ltp
+        FROM daily_analysis da
+        LEFT JOIN judge_daily_analysis j ON j.date = da.date AND j.symbol = da.symbol
+        LEFT JOIN llm_daily_analysis l ON l.date = da.date AND l.symbol = da.symbol
+        WHERE da.date = %s
+          AND (j.entry_low IS NOT NULL OR l.entry_low IS NOT NULL)
+    """, (date_str,))
+    rows = cur.fetchall()
+
+    updated = 0
+    for r in rows:
+        ltp = float(r["ltp"] or 0)
+        if ltp <= 0:
+            continue
+
+        # Prefer judge values, fall back to LLM
+        el = r["j_el"] or r["l_el"]
+        eh = r["j_eh"] or r["l_eh"]
+        sl = r["j_sl"] or r["l_sl"]
+        t1 = r["j_t1"] or r["l_t1"]
+        t2 = r["j_t2"] or r["l_t2"]
+
+        # Sanity check: AI values must be within reasonable range of LTP
+        if el and (el < ltp * 0.5 or el > ltp * 1.5):
+            continue
+        if eh and (eh < ltp * 0.5 or eh > ltp * 1.5):
+            continue
+
+        # Build SET clause only for non-null values
+        sets = []
+        vals = []
+        for col, val in [("entry_low", el), ("entry_high", eh),
+                         ("sl", sl), ("t1", t1), ("t2", t2)]:
+            if val is not None:
+                sets.append(f"{col} = %s")
+                vals.append(round(float(val), 1))
+
+        if not sets:
+            continue
+
+        vals.extend([date_str, r["symbol"]])
+        try:
+            cur.execute(
+                f"UPDATE daily_analysis SET {', '.join(sets)} "
+                f"WHERE date = %s AND symbol = %s",
+                vals,
+            )
+            updated += 1
+        except Exception as e:
+            logger.error(f"Override {r['symbol']}: {e}")
+
+    conn.commit()
+    conn.close()
+    logger.info(f"Stage 4: Overrode entry/exit for {updated} stocks with AI values")
+    return updated
+
+
+# ─── Email notification ───
+
+
+def send_completion_email(date_str: str, llm_count: int, judge_count: int, override_count: int):
+    """Send email summary after LLM pipeline completes.
+
+    Requires EMAIL_SENDER, EMAIL_PASSWORD, EMAIL_RECIPIENT env vars.
+    Skips gracefully if any is missing or on any error.
+    """
+    sender = os.getenv("EMAIL_SENDER", "")
+    password = os.getenv("EMAIL_PASSWORD", "")
+    recipient = os.getenv("EMAIL_RECIPIENT", "")
+
+    if not all([sender, password, recipient]):
+        logger.info("Email not configured (set EMAIL_SENDER, EMAIL_PASSWORD, EMAIL_RECIPIENT)")
+        return
+
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+
+        # Top 10 buy signals
+        cur.execute("""
+            SELECT da.symbol, da.action, da.score, da.ltp, da.entry_low, da.entry_high,
+                   da.sl, da.t1, da.t2, da.macd_status, da.rsi
+            FROM daily_analysis da
+            WHERE da.date = %s AND da.action LIKE '%%BUY%%' AND da.action NOT LIKE '%%AVOID%%'
+            ORDER BY da.score DESC LIMIT 10
+        """, (date_str,))
+        top_buys = cur.fetchall()
+
+        # Portfolio stocks — query all stocks user holds (A-cat with LLM data)
+        cur.execute("""
+            SELECT symbol, ltp, action, entry_low, entry_high, sl, t1, t2
+            FROM daily_analysis WHERE date = %s
+            AND symbol IN ('ORIONINFU', 'ROBI', 'GP', 'HWAWELLTEX')
+        """, (date_str,))
+        portfolio = cur.fetchall()
+
+        # DSEX
+        cur.execute("""
+            SELECT d1.dsex_index,
+                   ROUND(((d1.dsex_index - d2.dsex_index) / NULLIF(d2.dsex_index, 0) * 100)::numeric, 2) AS chg_pct
+            FROM dsex_history d1
+            LEFT JOIN LATERAL (
+                SELECT dsex_index FROM dsex_history WHERE date < d1.date ORDER BY date DESC LIMIT 1
+            ) d2 ON TRUE
+            ORDER BY d1.date DESC LIMIT 1
+        """)
+        dsex = cur.fetchone()
+
+        conn.close()
+
+        # Build email body
+        if dsex:
+            dsex_str = f"DSEX: {float(dsex['dsex_index']):.1f} ({float(dsex['chg_pct'] or 0):+.2f}%)"
+        else:
+            dsex_str = "DSEX: N/A"
+
+        body = f"""DSE AI Analysis Complete -- {date_str}
+{'='*50}
+
+{dsex_str}
+LLM: {llm_count} stocks | Judge: {judge_count} stocks | Overrides: {override_count}
+
+PORTFOLIO
+{'-'*40}
+"""
+        for p in portfolio:
+            body += (
+                f"{p['symbol']:12s} LTP:{p['ltp']:>8.1f} | "
+                f"{p['action']} | Entry:{p['entry_low']:.1f}-{p['entry_high']:.1f} "
+                f"SL:{p['sl']:.1f} T1:{p['t1']:.1f} T2:{p['t2']:.1f}\n"
+            )
+
+        body += f"\nTOP BUY SIGNALS\n{'-'*40}\n"
+        for i, b in enumerate(top_buys, 1):
+            body += (
+                f"{i:2d}. {b['symbol']:12s} Score:{b['score']:>3.0f} LTP:{b['ltp']:>8.1f} | "
+                f"Entry:{b['entry_low']:.1f}-{b['entry_high']:.1f} "
+                f"T1:{b['t1']:.1f} T2:{b['t2']:.1f} | "
+                f"MACD:{b['macd_status']} RSI:{b['rsi']:.0f}\n"
+            )
+
+        body += f"\n--\nGenerated by DSE AI Analyzer at {datetime.now(DSE_TZ).strftime('%H:%M:%S BST')}"
+
+        # Send via Gmail SMTP
+        msg = MIMEMultipart()
+        msg['From'] = sender
+        msg['To'] = recipient
+        msg['Subject'] = f"DSE AI Analysis -- {date_str} | {dsex_str}"
+        msg.attach(MIMEText(body, 'plain'))
+
+        with smtplib.SMTP('smtp.gmail.com', 587) as server:
+            server.starttls()
+            server.login(sender, password)
+            server.sendmail(sender, recipient, msg.as_string())
+        logger.info(f"Email sent to {recipient}")
+
+    except Exception as e:
+        logger.error(f"Email notification failed: {e}")
+
+
 # ─── Main ───
 
 
 def run():
-    """Main entry point: Stage 1 → Stage 2 → Stage 3."""
+    """Main entry point: Stage 1 → Stage 2 → Stage 3 → Stage 4 → Stage 5 (email)."""
     now = datetime.now(DSE_TZ)
     logger.info(f"=== LLM Daily Analyzer starting at {now.strftime('%Y-%m-%d %H:%M:%S')} BST ===")
 
@@ -899,10 +1109,16 @@ def run():
         return
 
     # Stage 2: Judge
-    run_judge_analysis(date_str, llm_results)
+    judge_count = run_judge_analysis(date_str, llm_results)
 
     # Stage 3: Snapshot predictions
     snapshot_predictions(date_str)
+
+    # Stage 4: Override algo's hardcoded entry/exit with AI-computed values
+    override_count = override_algo_entry_exit(date_str)
+
+    # Stage 5: Email notification
+    send_completion_email(date_str, len(llm_results), judge_count, override_count)
 
     logger.info("=== LLM Daily Analyzer complete ===")
 

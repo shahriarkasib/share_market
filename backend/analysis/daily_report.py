@@ -1014,6 +1014,17 @@ def _classify_stock_v2(
 def _compute_entry_exit(*, action, ltp, atr, bb_lower, ema21, low_5d, support):
     """Compute entry range, stop loss, and targets."""
     atr = atr or ltp * 0.02
+    # Guard: if any indicator is 0/NaN (dividend gap, insufficient history),
+    # use simple LTP-relative % as crude estimate (AI override replaces later)
+    bad = (ema21 < ltp * 0.1 or bb_lower < ltp * 0.1
+           or low_5d < ltp * 0.1 or support < ltp * 0.1)
+    if bad:
+        entry_low = round(ltp * 0.97, 1)
+        entry_high = round(ltp * 1.03, 1)
+        sl = round(ltp * 0.95, 1)
+        t1 = round(ltp * 1.05, 1)
+        t2 = round(ltp * 1.10, 1)
+        return entry_low, entry_high, sl, t1, t2
 
     if "BUY" in action and "AVOID" not in action:
         entry_low = round(max(bb_lower, low_5d - atr * 0.2), 1)
