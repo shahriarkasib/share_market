@@ -41,11 +41,14 @@ else
     echo "Algo analysis completed successfully" | tee -a "${LOG_FILE}"
 fi
 
-# Source bashrc for Claude CLI auth token (CLAUDE_CODE_OAUTH_TOKEN)
-# Also provides email env vars: EMAIL_SENDER, EMAIL_PASSWORD, EMAIL_RECIPIENT
-if [ -f "${HOME}/.bashrc" ]; then
-    source "${HOME}/.bashrc" 2>/dev/null || true
+# Ensure Claude CLI auth token is available (set in crontab env,
+# but may not be present in interactive SSH runs)
+if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && [ -f "${HOME}/.bashrc" ]; then
+    # Extract token from bashrc (works even if bashrc has interactive guard)
+    CLAUDE_CODE_OAUTH_TOKEN=$(grep -oP 'CLAUDE_CODE_OAUTH_TOKEN="\K[^"]+' "${HOME}/.bashrc" 2>/dev/null || true)
+    export CLAUDE_CODE_OAUTH_TOKEN
 fi
+echo "Claude auth: $([ -n \"${CLAUDE_CODE_OAUTH_TOKEN:-}\" ] && echo 'token set' || echo 'NO TOKEN')" | tee -a "${LOG_FILE}"
 
 # Run LLM analysis (3-stage: LLM → Judge → Snapshot predictions)
 echo "" | tee -a "${LOG_FILE}"
