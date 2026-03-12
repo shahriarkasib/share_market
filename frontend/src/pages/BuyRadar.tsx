@@ -40,7 +40,6 @@ const STAGE_STYLES: Record<string, { bg: string; border: string; badge: string; 
   WATCHING:    { bg: "bg-slate-500/5",     border: "border-[var(--border)]", badge: "bg-slate-500/15 text-slate-400",    text: "text-slate-400",   dot: "bg-slate-400" },
 };
 
-const STAGE_ORDER: Record<string, number> = { WATCHING: 0, BUILDING: 1, APPROACHING: 2, READY: 3, ENTRY_ZONE: 4 };
 
 /* ── Layer config ── */
 const LAYER_CONFIG = [
@@ -165,7 +164,6 @@ function MarketContextBanner({ ctx }: { ctx: MarketContext }) {
 function StockCard({ stock }: { stock: BuyRadarStock }) {
   const navigate = useNavigate();
   const style = STAGE_STYLES[stock.stage];
-  const ind = stock.indicators;
 
   // Price since entry: green if down (getting cheaper = good), red if up (moving away)
   const priceDir = stock.price_change_pct <= 0 ? "getting-cheaper" : "moving-away";
