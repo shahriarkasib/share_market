@@ -446,3 +446,89 @@ export interface AccuracyData {
   t1_hit_rate: number | null;
   sl_hit_rate: number | null;
 }
+
+export interface IndicatorReadiness {
+  value: number;
+  readiness: number;
+}
+
+export interface BuyRadarStock {
+  symbol: string;
+  price: number;
+  sector: string;
+  stage: "ENTRY_ZONE" | "READY" | "APPROACHING" | "BUILDING" | "WATCHING";
+  overall_readiness: number;
+  ready_count: number;
+  ret_5d: number;
+  volume: number;
+  vol_ratio: number;
+  indicators: {
+    rsi: IndicatorReadiness;
+    mfi: IndicatorReadiness;
+    cmf: IndicatorReadiness;
+    macd: IndicatorReadiness;
+    stoch_rsi: IndicatorReadiness;
+    bb_pct: IndicatorReadiness;
+  };
+  // Layer scores (0-100)
+  layers: {
+    leading: number;
+    confirming: number;
+    money_flow: number;
+    positioning: number;
+    ai_verdict: number;
+  };
+  signals: string[];
+  red_flags: string[];
+  entry_low: number | null;
+  entry_high: number | null;
+  sl: number | null;
+  t1: number | null;
+  t2: number | null;
+  action: string;
+  score: number | null;
+  // AI context
+  ai_action: string;
+  ai_confidence: string;
+  ai_reasoning: string;
+  ai_how_to_buy: string;
+  ai_key_risk: string;
+  ai_wait_for: string;
+  ai_catalysts: string[];
+  ai_risk_factors: string[];
+  ai_signals: string[];
+  // Tracking fields
+  days_on_radar: number;
+  first_seen: string;
+  entry_price: number;
+  price_change_pct: number;
+  stage_history: string[];
+  trend: "IMPROVING" | "STABLE" | "DETERIORATING";
+  is_new: boolean;
+}
+
+export interface RemovedRadarStock {
+  symbol: string;
+  last_stage: string;
+  last_price: number;
+  last_readiness: number;
+  reason: string;
+  removed_date: string;
+  days_tracked: number;
+}
+
+export interface MarketContext {
+  regime: "OVERSOLD" | "WEAK" | "NEUTRAL" | "HEATED" | "OVERBOUGHT";
+  dsex: number;
+  dsex_rsi: number;
+  adjustment: number;
+}
+
+export interface BuyRadarResponse {
+  date: string;
+  count: number;
+  stages: Record<string, number>;
+  market_ctx: MarketContext;
+  stocks: BuyRadarStock[];
+  removed: RemovedRadarStock[];
+}

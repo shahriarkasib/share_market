@@ -10,6 +10,7 @@ import SectorPerformancePage from "./pages/SectorPerformance.tsx";
 import DataMatrix from "./pages/DataMatrix.tsx";
 import AdvancedChart from "./pages/AdvancedChart.tsx";
 import DailyAnalysis from "./pages/DailyAnalysis.tsx";
+import BuyRadar from "./pages/BuyRadar.tsx";
 
 export default function App() {
   return (
@@ -25,6 +26,7 @@ export default function App() {
         <Route path="/matrix" element={<DataMatrix />} />
         <Route path="/chart" element={<AdvancedChart />} />
         <Route path="/analysis" element={<DailyAnalysis />} />
+        <Route path="/radar" element={<BuyRadar />} />
       </Route>
     </Routes>
   );

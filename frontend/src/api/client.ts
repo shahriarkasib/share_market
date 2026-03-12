@@ -17,6 +17,7 @@ import type {
   AnalysisSummaryResponse,
   LiveScanResponse,
   LLMScanResponse,
+  BuyRadarResponse,
 } from "../types/index.ts";
 
 const api = axios.create({
@@ -474,6 +475,11 @@ export async function fetchStockPredictionHistory(
   raw: import("../types").PredictionEntry[];
 }> {
   const { data } = await api.get(`/predictions/stock/${symbol}`, { params: { limit } });
+  return data;
+}
+
+export async function fetchBuyRadar(): Promise<BuyRadarResponse> {
+  const { data } = await api.get<BuyRadarResponse>("/analysis/buy-radar");
   return data;
 }
 

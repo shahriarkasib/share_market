@@ -1,6 +1,6 @@
 import { NavLink } from "react-router-dom";
 import { useState, useEffect } from "react";
-import { Activity, BarChart3, Search, Eye, Briefcase, Grid3X3, PieChart, Table2, Menu, X, LineChart, TrendingUp } from "lucide-react";
+import { Activity, BarChart3, Search, Eye, Briefcase, Grid3X3, PieChart, Table2, Menu, X, LineChart, TrendingUp, Target } from "lucide-react";
 import { clsx } from "clsx";
 import { useMarketStore } from "../../store/marketStore.ts";
 import SymbolSearch from "../search/SymbolSearch.tsx";
@@ -14,6 +14,7 @@ const links = [
   { to: "/portfolio", label: "Portfolio", icon: Briefcase },
   { to: "/watchlist", label: "Watchlist", icon: Eye },
   { to: "/chart", label: "Chart", icon: LineChart },
+  { to: "/radar", label: "Radar", icon: Target },
   { to: "/analysis", label: "Analysis", icon: TrendingUp },
 ] as const;
 

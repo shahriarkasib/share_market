@@ -550,6 +550,20 @@ def init_database():
             UNIQUE(date, source, period)
         )""",
         "CREATE INDEX IF NOT EXISTS idx_accuracy_summary_date ON accuracy_summary(date)",
+
+        """CREATE TABLE IF NOT EXISTS radar_snapshots (
+            id SERIAL PRIMARY KEY,
+            date DATE NOT NULL,
+            symbol TEXT NOT NULL,
+            stage TEXT NOT NULL,
+            readiness DOUBLE PRECISION,
+            ready_count INTEGER,
+            price DOUBLE PRECISION,
+            indicators_json TEXT,
+            UNIQUE(symbol, date)
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_radar_snapshots_date ON radar_snapshots(date)",
+        "CREATE INDEX IF NOT EXISTS idx_radar_snapshots_symbol ON radar_snapshots(symbol, date)",
     ]
 
     for stmt in statements:
