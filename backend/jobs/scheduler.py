@@ -1,6 +1,7 @@
 """Background job scheduler — lightweight pipeline that never blocks requests."""
 
 import logging
+import os
 import threading
 import math
 from collections import defaultdict
@@ -454,6 +455,17 @@ def _heavy_refresh_sync():
             }, CACHE_TTL)
         except Exception as e:
             logger.error(f"Heavy: live-tracker failed: {e}")
+
+        # 6. Buy Radar (pre-compute so it's always cached)
+        try:
+            import urllib.request, json as _json
+            port = os.environ.get("PORT", "10000")
+            req = urllib.request.Request(f"http://localhost:{port}/api/v1/analysis/buy-radar")
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                radar_data = _json.loads(resp.read())
+                logger.info(f"Heavy: buy-radar pre-computed ({radar_data.get('count', 0)} stocks)")
+        except Exception as e:
+            logger.error(f"Heavy: buy-radar pre-compute failed: {e}")
 
         logger.info("Heavy cache refresh complete")
     except Exception as e:
