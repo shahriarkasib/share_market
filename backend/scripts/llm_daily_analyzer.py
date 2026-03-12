@@ -299,13 +299,8 @@ def call_claude(prompt: str, timeout: int = CLAUDE_TIMEOUT) -> str:
             logger.error(f"Anthropic SDK error: {e}")
             return ""
 
-    # Fallback: Claude CLI (requires `claude login` or `claude setup-token`)
-    # Strip session-specific CLAUDE vars to avoid "nested session" block,
-    # but KEEP CLAUDE_CODE_OAUTH_TOKEN (needed for auth with Max subscription)
-    clean_env = {
-        k: v for k, v in os.environ.items()
-        if "CLAUDE" not in k.upper() or k == "CLAUDE_CODE_OAUTH_TOKEN"
-    }
+    # Fallback: Claude CLI with Max subscription (same as data audit pipeline)
+    # Pass env as-is — CLAUDE_CODE_OAUTH_TOKEN must be available for auth
     try:
         result = subprocess.run(
             ["claude", "-p", "--model", "sonnet"],
@@ -313,7 +308,6 @@ def call_claude(prompt: str, timeout: int = CLAUDE_TIMEOUT) -> str:
             capture_output=True,
             text=True,
             timeout=timeout,
-            env=clean_env,
         )
         if result.returncode != 0:
             logger.error(f"Claude CLI error: {result.stderr[:300]}")
