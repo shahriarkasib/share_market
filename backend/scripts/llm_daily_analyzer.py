@@ -277,7 +277,13 @@ def load_accuracy_feedback() -> str:
 
 
 def call_claude(prompt: str, timeout: int = CLAUDE_TIMEOUT) -> str:
-    """Call Claude via Anthropic SDK (preferred) or CLI fallback."""
+    """Call Claude via Anthropic SDK (preferred) or bash CLI (Max subscription).
+
+    SDK path: uses ANTHROPIC_API_KEY for direct API access.
+    CLI path: writes prompt to temp file, calls `claude -p` from bash
+              exactly like the data-audit pipeline does — inherits
+              CLAUDE_CODE_OAUTH_TOKEN from the shell environment.
+    """
     logger.info(f"Calling Claude ({len(prompt)} chars, timeout {timeout}s)...")
 
     # Prefer Anthropic SDK with API key (works headlessly)
@@ -299,31 +305,44 @@ def call_claude(prompt: str, timeout: int = CLAUDE_TIMEOUT) -> str:
             logger.error(f"Anthropic SDK error: {e}")
             return ""
 
-    # Fallback: Claude CLI with Max subscription (same as data audit pipeline)
-    # Pass env as-is — CLAUDE_CODE_OAUTH_TOKEN must be available for auth
+    # CLI path: call claude -p from bash (same pattern as data-audit pipeline)
+    # Write prompt to temp file to avoid shell escaping issues
+    import tempfile
+    prompt_file = None
     try:
+        prompt_file = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".txt", delete=False, prefix="claude_prompt_"
+        )
+        prompt_file.write(prompt)
+        prompt_file.close()
+
+        # Bash one-liner: cat prompt file | claude -p --model sonnet
+        # This inherits the full shell env including CLAUDE_CODE_OAUTH_TOKEN
+        bash_cmd = f'cat "{prompt_file.name}" | claude -p --model sonnet'
         result = subprocess.run(
-            ["claude", "-p", "--model", "sonnet"],
-            input=prompt,
+            ["bash", "-c", bash_cmd],
             capture_output=True,
             text=True,
             timeout=timeout,
         )
         if result.returncode != 0:
-            logger.error(f"Claude CLI error: {result.stderr[:300]}")
+            logger.error(f"Claude CLI error (exit {result.returncode}): {result.stderr[:300]}")
             return ""
         resp = result.stdout.strip()
         if "Not logged in" in resp or "Please run /login" in resp:
-            logger.error("Claude CLI not authenticated. Set ANTHROPIC_API_KEY or run: claude setup-token")
+            logger.error("Claude CLI not authenticated. Ensure CLAUDE_CODE_OAUTH_TOKEN is set.")
             return ""
         logger.info(f"Claude CLI response: {len(resp)} chars")
         return resp
     except FileNotFoundError:
-        logger.error("Claude CLI not found. Set ANTHROPIC_API_KEY or install: npm install -g @anthropic-ai/claude-code")
+        logger.error("Claude CLI not found. Install: npm install -g @anthropic-ai/claude-code")
         return ""
     except subprocess.TimeoutExpired:
         logger.error(f"Claude CLI timed out ({timeout}s)")
         return ""
+    finally:
+        if prompt_file and os.path.exists(prompt_file.name):
+            os.unlink(prompt_file.name)
 
 
 def parse_json_response(raw: str) -> list[dict] | dict | None:

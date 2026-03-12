@@ -590,11 +590,20 @@ async def get_buy_radar(categories: str = "A", exclude_sectors: str = ""):
     llm_map: dict[str, dict] = {}
     judge_map: dict[str, dict] = {}
     ai_date = latest_date
+    ai_stale_days = 0  # How many days old the AI analysis is
     if ai_date:
         # Try latest LLM date (may differ from algo date)
         llm_date_row = conn.execute("SELECT MAX(date) FROM llm_daily_analysis").fetchone()
         if llm_date_row and llm_date_row[0]:
             ai_date = str(llm_date_row[0])
+            from datetime import date as _date
+            try:
+                ai_d = _date.fromisoformat(ai_date)
+                algo_d = _date.fromisoformat(latest_date)
+                ai_stale_days = (algo_d - ai_d).days
+            except Exception:
+                pass
+        logger.info(f"Radar: AI date={ai_date}, algo date={latest_date}, stale={ai_stale_days}d")
 
         llm_rows = conn.execute(
             "SELECT symbol, action, confidence, reasoning, wait_for, wait_days, "
