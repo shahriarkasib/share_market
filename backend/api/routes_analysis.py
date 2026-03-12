@@ -1099,7 +1099,7 @@ async def get_buy_radar(categories: str = "A", exclude_sectors: str = ""):
         has_distribution = any("DISTRIBUTION" in f for f in money_signals)
 
         if has_blocker:
-            if overall >= 20:
+            if overall >= 10:
                 stage = "WATCHING"
             else:
                 continue
