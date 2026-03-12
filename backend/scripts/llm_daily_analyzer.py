@@ -300,8 +300,12 @@ def call_claude(prompt: str, timeout: int = CLAUDE_TIMEOUT) -> str:
             return ""
 
     # Fallback: Claude CLI (requires `claude login` or `claude setup-token`)
-    # Strip CLAUDE* env vars to avoid "nested session" block
-    clean_env = {k: v for k, v in os.environ.items() if "CLAUDE" not in k.upper()}
+    # Strip session-specific CLAUDE vars to avoid "nested session" block,
+    # but KEEP CLAUDE_CODE_OAUTH_TOKEN (needed for auth with Max subscription)
+    clean_env = {
+        k: v for k, v in os.environ.items()
+        if "CLAUDE" not in k.upper() or k == "CLAUDE_CODE_OAUTH_TOKEN"
+    }
     try:
         result = subprocess.run(
             ["claude", "-p", "--model", "sonnet"],
