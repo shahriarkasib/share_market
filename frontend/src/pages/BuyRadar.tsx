@@ -19,6 +19,7 @@ import {
   AlertTriangle,
   Lightbulb,
   ShieldAlert,
+  HelpCircle,
 } from "lucide-react";
 import { fetchBuyRadar } from "../api/client.ts";
 import type { BuyRadarStock, BuyRadarResponse, RemovedRadarStock, MarketContext } from "../types/index.ts";
@@ -134,28 +135,69 @@ function TrendBadge({ trend }: { trend: string }) {
 }
 
 /* ── Market context banner ── */
-const REGIME_STYLES: Record<string, { bg: string; border: string; text: string; label: string; advice: string }> = {
-  OVERSOLD:   { bg: "bg-emerald-500/10", border: "border-emerald-500/25", text: "text-emerald-400", label: "Oversold", advice: "Market cheap — easier buy signals, good accumulation window" },
-  WEAK:       { bg: "bg-blue-500/10",    border: "border-blue-500/25",    text: "text-blue-400",    label: "Weak",     advice: "Market soft — selective buying, focus on strong fundamentals" },
-  NEUTRAL:    { bg: "bg-slate-500/10",   border: "border-[var(--border)]", text: "text-[var(--text-muted)]", label: "Neutral", advice: "Market balanced — standard criteria apply" },
-  HEATED:     { bg: "bg-amber-500/10",   border: "border-amber-500/25",   text: "text-amber-400",   label: "Heated",   advice: "Market stretched — only high-conviction picks, tighter stops" },
-  OVERBOUGHT: { bg: "bg-red-500/10",    border: "border-red-500/25",     text: "text-red-400",     label: "Overbought", advice: "Market expensive — avoid new buys, take profits on winners" },
+const REGIME_STYLES: Record<string, { bg: string; border: string; text: string; label: string }> = {
+  OVERSOLD:   { bg: "bg-emerald-500/10", border: "border-emerald-500/25", text: "text-emerald-400", label: "Oversold" },
+  WEAK:       { bg: "bg-blue-500/10",    border: "border-blue-500/25",    text: "text-blue-400",    label: "Weak" },
+  NEUTRAL:    { bg: "bg-slate-500/10",   border: "border-[var(--border)]", text: "text-[var(--text-muted)]", label: "Neutral" },
+  HEATED:     { bg: "bg-amber-500/10",   border: "border-amber-500/25",   text: "text-amber-400",   label: "Heated" },
+  OVERBOUGHT: { bg: "bg-red-500/10",    border: "border-red-500/25",     text: "text-red-400",     label: "Overbought" },
+};
+
+const VOL_STYLES: Record<string, { text: string; label: string }> = {
+  VERY_LOW:  { text: "text-red-400",    label: "Very Low" },
+  LOW:       { text: "text-amber-400",  label: "Low" },
+  NORMAL:    { text: "text-[var(--text-muted)]", label: "Normal" },
+  HIGH:      { text: "text-green-400",  label: "High" },
+  VERY_HIGH: { text: "text-emerald-400", label: "Very High" },
 };
 
 function MarketContextBanner({ ctx }: { ctx: MarketContext }) {
   const rs = REGIME_STYLES[ctx.regime] || REGIME_STYLES.NEUTRAL;
+  const vs = VOL_STYLES[ctx.volume_verdict] || VOL_STYLES.NORMAL;
+  const breadthColor = (ctx.breadth_pct ?? 50) >= 60 ? "text-green-400" : (ctx.breadth_pct ?? 50) <= 40 ? "text-red-400" : "text-[var(--text-muted)]";
+
   return (
-    <div className={clsx("mb-4 rounded-lg border px-3 py-2 flex items-center gap-3 flex-wrap", rs.bg, rs.border)}>
-      <div className="flex items-center gap-2">
-        <AlertTriangle className={clsx("h-3.5 w-3.5 shrink-0", rs.text)} />
-        <span className={clsx("text-xs font-bold", rs.text)}>DSEX {rs.label}</span>
+    <div className={clsx("mb-4 rounded-lg border px-3 py-2.5 space-y-1.5", rs.bg, rs.border)}>
+      {/* Row 1: DSEX regime + index */}
+      <div className="flex items-center gap-3 flex-wrap">
+        <div className="flex items-center gap-1.5">
+          <AlertTriangle className={clsx("h-3.5 w-3.5 shrink-0", rs.text)} />
+          <span className={clsx("text-xs font-bold", rs.text)}>DSEX {rs.label}</span>
+        </div>
+        <span className="text-[10px] text-[var(--text-dim)]">
+          {ctx.dsex?.toFixed(0)} ({ctx.dsex_change > 0 ? "+" : ""}{ctx.dsex_change?.toFixed(1)})
+        </span>
         <span className="text-[10px] text-[var(--text-dim)]">RSI {ctx.dsex_rsi}</span>
-        <span className="text-[10px] text-[var(--text-dim)]">({ctx.dsex.toFixed(0)})</span>
+        <span className={clsx("text-[9px] font-mono px-1.5 py-0.5 rounded", rs.bg, rs.text)}>
+          {(ctx.adjustment ?? 1) > 1 ? "+" : ""}{(((ctx.adjustment ?? 1) - 1) * 100).toFixed(0)}% adj
+        </span>
       </div>
-      <span className="text-[9px] text-[var(--text-muted)]">{rs.advice}</span>
-      <span className={clsx("text-[9px] font-mono px-1.5 py-0.5 rounded", rs.bg, rs.text)}>
-        {ctx.adjustment > 1 ? "+" : ""}{((ctx.adjustment - 1) * 100).toFixed(0)}% adj
-      </span>
+
+      {/* Row 2: Volume + Breadth + Signal */}
+      <div className="flex items-center gap-3 flex-wrap text-[10px]">
+        <span className="flex items-center gap-1">
+          <span className="text-[var(--text-dim)]">Turnover:</span>
+          <span className={clsx("font-semibold", vs.text)}>{ctx.total_value_cr?.toFixed(0)} Cr ({vs.label})</span>
+        </span>
+        <span className="flex items-center gap-1">
+          <span className="text-[var(--text-dim)]">Breadth:</span>
+          <span className={clsx("font-semibold", breadthColor)}>
+            {ctx.advances}A / {ctx.declines}D ({ctx.breadth_pct}% adv)
+          </span>
+        </span>
+        <span className="flex items-center gap-1">
+          <span className="text-[var(--text-dim)]">Trades:</span>
+          <span className="text-[var(--text-muted)]">{(ctx.total_trades / 1000).toFixed(0)}K</span>
+        </span>
+      </div>
+
+      {/* Row 3: AI signal interpretation */}
+      {ctx.signal && (
+        <div className="text-[9px] text-[var(--text-muted)] italic flex items-center gap-1">
+          <Brain className="h-3 w-3 text-purple-400 shrink-0" />
+          {ctx.signal}
+        </div>
+      )}
     </div>
   );
 }
@@ -395,23 +437,87 @@ function RemovedSection({ removed }: { removed: RemovedRadarStock[] }) {
   );
 }
 
+/* ── Indicator explainer (collapsible) ── */
+const INDICATOR_HELP = [
+  { name: "StochRSI", what: "Shows if price momentum is oversold (<20) or overbought (>80)", buy: "Below 20 = oversold, K crosses above D = early buy signal" },
+  { name: "MFI", what: "Money Flow Index — like RSI but volume-weighted, more reliable", buy: "Below 25 = volume-confirmed oversold" },
+  { name: "Williams %R", what: "Fast oscillator showing where price sits in its range", buy: "Below -80 = oversold territory" },
+  { name: "MACD", what: "Trend direction and momentum. Histogram shows convergence/divergence", buy: "Histogram crossing from negative to positive = bullish crossover" },
+  { name: "ADX", what: "Trend strength (not direction). Above 25 = strong trend", buy: "+DI > -DI with ADX > 20 = uptrend forming" },
+  { name: "EMA 9/21", what: "Short vs medium trend. 9 crossing above 21 = golden cross", buy: "EMA9 > EMA21 or converging upward" },
+  { name: "CMF", what: "Chaikin Money Flow — are institutions accumulating or distributing?", buy: "Above 0 = accumulation. Above 0.15 = strong buying. Below -0.25 = red flag" },
+  { name: "OBV", what: "On-Balance Volume — cumulative volume direction", buy: "Rising OBV even on flat price = smart money accumulating" },
+  { name: "RSI", what: "Relative Strength Index — momentum oscillator (0-100)", buy: "Below 30 = oversold. Below 40 = approaching buy zone" },
+  { name: "BB%", what: "Bollinger Band position — where price sits in the band", buy: "Below 10% = at bottom of band, likely bounce" },
+  { name: "VWAP", what: "Volume Weighted Average Price — institutional fair value", buy: "Below VWAP = trading at discount to institutions" },
+  { name: "AI Verdict", what: "LLM + Judge analysis using news, fundamentals, sector context", buy: "BUY + HIGH confidence + algo agreement = strongest signal" },
+] as const;
+
+function IndicatorHelp() {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="mb-4">
+      <button
+        onClick={() => setOpen(!open)}
+        className="flex items-center gap-1.5 text-[10px] text-[var(--text-dim)] hover:text-[var(--text)] transition-colors"
+      >
+        <HelpCircle className="h-3.5 w-3.5" />
+        <span className="font-medium">What do these indicators mean?</span>
+        {open ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
+      </button>
+      {open && (
+        <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+          {INDICATOR_HELP.map(({ name, what, buy }) => (
+            <div key={name} className="rounded-md border border-[var(--border)] bg-[var(--surface)] px-2.5 py-2">
+              <div className="text-[10px] font-bold text-[var(--text)] mb-0.5">{name}</div>
+              <div className="text-[9px] text-[var(--text-muted)] mb-0.5">{what}</div>
+              <div className="text-[8px] text-emerald-400">Buy when: {buy}</div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ── Category filter pills ── */
+const CATEGORIES = [
+  { key: "A", label: "A (Blue Chip)", desc: "Most liquid, best fundamentals" },
+  { key: "B", label: "B (Mid Cap)", desc: "Moderate liquidity" },
+  { key: "Z", label: "Z (Small/Risky)", desc: "Low liquidity, higher risk" },
+] as const;
+
 /* ── Main BuyRadar page ── */
 export default function BuyRadar() {
   const [data, setData] = useState<BuyRadarResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [view, setView] = useState<"pipeline" | "list">("pipeline");
+  const [selectedCats, setSelectedCats] = useState<Set<string>>(new Set(["A"]));
+
+  const toggleCat = (cat: string) => {
+    setSelectedCats(prev => {
+      const next = new Set(prev);
+      if (next.has(cat)) {
+        if (next.size > 1) next.delete(cat); // Don't allow empty
+      } else {
+        next.add(cat);
+      }
+      return next;
+    });
+  };
 
   const load = () => {
     setLoading(true);
     setError("");
-    fetchBuyRadar()
+    const cats = Array.from(selectedCats).join(",");
+    fetchBuyRadar(cats)
       .then(setData)
       .catch((e) => setError(e.message || "Failed to load"))
       .finally(() => setLoading(false));
   };
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(); }, [selectedCats]);
 
   if (loading) {
     return (
@@ -471,6 +577,25 @@ export default function BuyRadar() {
         </div>
       </div>
 
+      {/* Category filter */}
+      <div className="flex items-center gap-2 mb-3">
+        <span className="text-[10px] text-[var(--text-dim)] font-medium">Category:</span>
+        {CATEGORIES.map(({ key, label }) => (
+          <button
+            key={key}
+            onClick={() => toggleCat(key)}
+            className={clsx(
+              "px-2.5 py-1 rounded-md text-[10px] font-medium transition-colors border",
+              selectedCats.has(key)
+                ? "bg-blue-500/15 text-blue-400 border-blue-500/30"
+                : "text-[var(--text-dim)] border-[var(--border)] hover:text-[var(--text)] hover:bg-[var(--hover)]"
+            )}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
       {/* Stage summary bar */}
       <div className="flex gap-2 mb-4 overflow-x-auto pb-1">
         {STAGES.map(({ key, label, desc }) => {
@@ -510,6 +635,9 @@ export default function BuyRadar() {
           <span><TrendingUp className="h-2.5 w-2.5 inline text-emerald-400" /> improving stages</span>
         </div>
       </div>
+
+      {/* Indicator explainer */}
+      <IndicatorHelp />
 
       {/* Pipeline view */}
       {view === "pipeline" && (

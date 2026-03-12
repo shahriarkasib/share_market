@@ -502,33 +502,68 @@ async def trigger_decision_verification():
 
 
 @router.get("/buy-radar")
-async def get_buy_radar():
-    """Buy Radar — shows stocks approaching buy zone with per-indicator readiness."""
+async def get_buy_radar(categories: str = "A", exclude_sectors: str = ""):
+    """Buy Radar — shows stocks approaching buy zone with per-indicator readiness.
+
+    Query params:
+      categories: comma-separated list of categories (default "A", options: A,B,Z,ALL)
+      exclude_sectors: comma-separated sector keywords to exclude (e.g. "bank,insurance")
+    """
     import pandas as pd
     from analysis.indicators import TechnicalIndicators
 
-    cache_key = "buy_radar_v1"
+    cache_key = f"buy_radar_{categories}_{exclude_sectors}"
     cached = cache.get(cache_key)
     if cached:
         return cached
 
     conn = get_connection()
 
-    # Get A-category symbols with sector info
-    rows = conn.execute(
-        "SELECT symbol, sector, category FROM fundamentals WHERE category = 'A'"
-    ).fetchall()
-    a_cat = {r["symbol"]: r["sector"] or "" for r in rows}
+    # Get symbols with sector info based on category filter
+    cat_list = [c.strip().upper() for c in categories.split(",") if c.strip()]
+    if "ALL" in cat_list:
+        rows = conn.execute(
+            "SELECT symbol, sector, category FROM fundamentals"
+        ).fetchall()
+    else:
+        placeholders = ",".join(["?"] * len(cat_list))
+        rows = conn.execute(
+            f"SELECT symbol, sector, category FROM fundamentals WHERE category IN ({placeholders})",
+            cat_list,
+        ).fetchall()
+    a_cat = {r["symbol"]: {"sector": r["sector"] or "", "category": r["category"] or "A"} for r in rows}
 
-    # Filter out bank/insurance/tobacco
-    skip_sectors = {"bank", "insurance", "nbfi", "life insurance",
-                    "general insurance", "tobacco"}
+    # Filter out bank/insurance/tobacco/mutual funds
+    # Default excluded sectors (halal filter)
+    default_skip = {"bank", "insurance", "nbfi", "life insurance",
+                    "general insurance", "tobacco", "mutual funds"}
+    # Add user's extra excludes
+    if exclude_sectors:
+        for es in exclude_sectors.split(","):
+            if es.strip():
+                default_skip.add(es.strip().lower())
     skip_symbols = {"BATBC"}
+    # Also filter by symbol name patterns (sector data is often empty)
+    skip_name_patterns = ("INS", "LIFE", "BANK", "MF", "1MF")
+
+    def _should_skip(sym: str, sec: str) -> bool:
+        if sym in skip_symbols:
+            return True
+        if sec and any(k in sec.lower() for k in default_skip):
+            return True
+        # Symbol-name heuristic when sector is empty
+        if not sec:
+            s_up = sym.upper()
+            if any(s_up.endswith(p) for p in skip_name_patterns):
+                return True
+        return False
+
     filtered = {
-        s: sec for s, sec in a_cat.items()
-        if s not in skip_symbols
-        and not any(k in sec.lower() for k in skip_sectors)
+        s: info["sector"] for s, info in a_cat.items()
+        if not _should_skip(s, info["sector"])
     }
+    # Keep category info for response
+    cat_map = {s: info["category"] for s, info in a_cat.items()}
 
     # Get latest analysis data for entry/exit levels
     latest_row = conn.execute("SELECT MAX(date) FROM daily_analysis").fetchone()
@@ -603,6 +638,57 @@ async def get_buy_radar():
         else:
             market_ctx["regime"] = "NEUTRAL"
             market_ctx["adjustment"] = 1.0
+
+    # Market volume analysis
+    try:
+        ms_row = conn.execute(
+            "SELECT total_volume, total_value, total_trade, advances, declines "
+            "FROM market_summary ORDER BY last_updated DESC LIMIT 1"
+        ).fetchone()
+        if ms_row:
+            market_ctx["total_value_cr"] = round(float(ms_row["total_value"] or 0), 1)
+            market_ctx["total_volume"] = int(ms_row["total_volume"] or 0)
+            market_ctx["total_trades"] = int(ms_row["total_trade"] or 0)
+            market_ctx["advances"] = int(ms_row["advances"] or 0)
+            market_ctx["declines"] = int(ms_row["declines"] or 0)
+
+            # Volume verdict
+            val_cr = market_ctx["total_value_cr"]
+            if val_cr < 400:
+                market_ctx["volume_verdict"] = "VERY_LOW"
+            elif val_cr < 700:
+                market_ctx["volume_verdict"] = "LOW"
+            elif val_cr < 1200:
+                market_ctx["volume_verdict"] = "NORMAL"
+            elif val_cr < 2000:
+                market_ctx["volume_verdict"] = "HIGH"
+            else:
+                market_ctx["volume_verdict"] = "VERY_HIGH"
+
+            # Breadth ratio (advances vs declines)
+            adv = market_ctx["advances"]
+            dec = market_ctx["declines"]
+            total_ad = adv + dec
+            if total_ad > 0:
+                market_ctx["breadth_pct"] = round(adv / total_ad * 100, 0)
+            else:
+                market_ctx["breadth_pct"] = 50
+
+            # Interpret: positive index + low volume = weak rally (sellers absent, not buyers strong)
+            dsex_chg = dsex_prices[-1] - dsex_prices[-2] if len(dsex_prices) >= 2 else 0
+            market_ctx["dsex_change"] = round(dsex_chg, 1)
+            if dsex_chg > 0 and val_cr < 500:
+                market_ctx["signal"] = "Weak rally — low conviction, wait for volume confirmation"
+            elif dsex_chg > 0 and val_cr > 1000:
+                market_ctx["signal"] = "Strong rally — high volume confirms buying"
+            elif dsex_chg < 0 and val_cr > 1000:
+                market_ctx["signal"] = "Heavy selling — avoid new entries"
+            elif dsex_chg < 0 and val_cr < 500:
+                market_ctx["signal"] = "Quiet pullback — possible accumulation opportunity"
+            else:
+                market_ctx["signal"] = "Normal activity — follow individual stock signals"
+    except Exception as e:
+        logger.warning(f"Market volume ctx error: {e}")
 
     logger.info(f"Radar market context: DSEX RSI={market_ctx['dsex_rsi']}, "
                 f"regime={market_ctx['regime']}, adj={market_ctx['adjustment']}")
@@ -894,8 +980,10 @@ async def get_buy_radar():
         if mfi > 80 and rsi > 65:
             red_flags.append("MFI+RSI double overbought")
             has_blocker = True
-        if mom_5d > 12:
+        if mom_5d > 8:
             red_flags.append(f"Already up {mom_5d:.0f}% in 5d — chasing")
+            if mom_5d > 12:
+                has_blocker = True
         if bb_pct > 90:
             red_flags.append("At top of BB — stretched")
         if adx < 12 and not (rsi < 35 or mfi < 25):
@@ -940,6 +1028,7 @@ async def get_buy_radar():
         elif "SELL" in action_upper or "AVOID" in action_upper:
             ai_score -= 5; ai_signals.append(f"AI: {ai_action}")
             red_flags.append(f"AI says {ai_action}")
+            has_blocker = True  # AI SELL is a hard blocker
 
         # Confidence boost
         conf_upper = ai_confidence.upper()
@@ -1039,6 +1128,7 @@ async def get_buy_radar():
             "symbol": sym,
             "price": round(close, 1),
             "sector": filtered[sym][:25],
+            "category": cat_map.get(sym, "A"),
             "stage": stage,
             "overall_readiness": round(overall, 0),
             "ready_count": ready_count,

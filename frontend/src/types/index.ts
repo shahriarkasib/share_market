@@ -456,6 +456,7 @@ export interface BuyRadarStock {
   symbol: string;
   price: number;
   sector: string;
+  category: string;
   stage: "ENTRY_ZONE" | "READY" | "APPROACHING" | "BUILDING" | "WATCHING";
   overall_readiness: number;
   ready_count: number;
@@ -521,7 +522,17 @@ export interface MarketContext {
   regime: "OVERSOLD" | "WEAK" | "NEUTRAL" | "HEATED" | "OVERBOUGHT";
   dsex: number;
   dsex_rsi: number;
+  dsex_change: number;
   adjustment: number;
+  // Volume analysis
+  total_value_cr: number;
+  total_volume: number;
+  total_trades: number;
+  advances: number;
+  declines: number;
+  volume_verdict: "VERY_LOW" | "LOW" | "NORMAL" | "HIGH" | "VERY_HIGH";
+  breadth_pct: number;
+  signal: string;
 }
 
 export interface BuyRadarResponse {
