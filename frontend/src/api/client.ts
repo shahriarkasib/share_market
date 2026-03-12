@@ -478,14 +478,10 @@ export async function fetchStockPredictionHistory(
   return data;
 }
 
-// Heavy endpoints call Render directly to bypass Vercel's 30s proxy timeout
-const RENDER_BASE = "https://share-market-kk7e.onrender.com/api/v1";
-
 export async function fetchBuyRadar(categories = "A"): Promise<BuyRadarResponse> {
-  const { data } = await axios.get<BuyRadarResponse>(`${RENDER_BASE}/analysis/buy-radar`, {
+  const { data } = await api.get<BuyRadarResponse>("/analysis/buy-radar", {
     params: { categories },
     timeout: 90_000,
-    headers: { "Content-Type": "application/json" },
   });
   return data;
 }
