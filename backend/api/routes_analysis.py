@@ -542,7 +542,13 @@ async def get_buy_radar(categories: str = "A", exclude_sectors: str = ""):
         for es in exclude_sectors.split(","):
             if es.strip():
                 default_skip.add(es.strip().lower())
-    skip_symbols = {"BATBC"}
+    skip_symbols = {
+        "BATBC",
+        # Banks with non-obvious names
+        "UCB", "CITYBANK", "BRACBANK", "EBL", "DUTCHBANGL",
+        # Insurance with non-obvious names
+        "BGIC", "CONTININS", "KABORINS",
+    }
     # Also filter by symbol name patterns (sector data is often empty)
     skip_name_patterns = ("INS", "LIFE", "BANK", "MF", "1MF")
 
@@ -551,11 +557,13 @@ async def get_buy_radar(categories: str = "A", exclude_sectors: str = ""):
             return True
         if sec and any(k in sec.lower() for k in default_skip):
             return True
-        # Symbol-name heuristic when sector is empty
-        if not sec:
-            s_up = sym.upper()
-            if any(s_up.endswith(p) for p in skip_name_patterns):
-                return True
+        # Symbol-name heuristic (always check — sector data is unreliable)
+        s_up = sym.upper()
+        if any(s_up.endswith(p) for p in skip_name_patterns):
+            return True
+        # Also check for MF/INS anywhere in symbol (e.g. ICBEPMF1S1, PHPMF1)
+        if "MF" in s_up and any(c.isdigit() for c in s_up):
+            return True  # Likely a mutual fund with scheme number
         return False
 
     filtered = {
@@ -643,10 +651,11 @@ async def get_buy_radar(categories: str = "A", exclude_sectors: str = ""):
     try:
         ms_row = conn.execute(
             "SELECT total_volume, total_value, total_trade, advances, declines "
-            "FROM market_summary ORDER BY last_updated DESC LIMIT 1"
+            "FROM market_summary ORDER BY updated_at DESC LIMIT 1"
         ).fetchone()
         if ms_row:
-            market_ctx["total_value_cr"] = round(float(ms_row["total_value"] or 0), 1)
+            # total_value is in millions BDT, convert to crore (÷10)
+            market_ctx["total_value_cr"] = round(float(ms_row["total_value"] or 0) / 10, 1)
             market_ctx["total_volume"] = int(ms_row["total_volume"] or 0)
             market_ctx["total_trades"] = int(ms_row["total_trade"] or 0)
             market_ctx["advances"] = int(ms_row["advances"] or 0)
