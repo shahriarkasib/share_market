@@ -546,6 +546,14 @@ export interface MarketContext {
   signal: string;
 }
 
+export interface DsexDailyPrediction {
+  day: number;
+  direction: string;
+  range_low: number;
+  range_high: number;
+  reasoning: string;
+}
+
 export interface DsexForecast {
   forecast: string;
   sentiment: string;
@@ -557,6 +565,7 @@ export interface DsexForecast {
   scenario_bull: string;
   scenario_bear: string;
   scenario_base: string;
+  daily_predictions?: DsexDailyPrediction[];
 }
 
 export interface BuyRadarResponse {
