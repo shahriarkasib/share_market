@@ -1290,10 +1290,13 @@ def override_algo_entry_exit(date_str: str):
 
     # Get all judge + LLM results for today
     cur.execute("""
-        SELECT j.symbol, j.entry_low AS j_el, j.entry_high AS j_eh,
+        SELECT j.symbol,
+               j.entry_low AS j_el, j.entry_high AS j_eh,
                j.sl AS j_sl, j.t1 AS j_t1, j.t2 AS j_t2,
+               j.final_action AS j_action,
                l.entry_low AS l_el, l.entry_high AS l_eh,
                l.sl AS l_sl, l.t1 AS l_t1, l.t2 AS l_t2,
+               l.action AS l_action,
                da.ltp
         FROM daily_analysis da
         LEFT JOIN judge_daily_analysis j ON j.date = da.date AND j.symbol = da.symbol
@@ -1315,6 +1318,7 @@ def override_algo_entry_exit(date_str: str):
         sl = r["j_sl"] or r["l_sl"]
         t1 = r["j_t1"] or r["l_t1"]
         t2 = r["j_t2"] or r["l_t2"]
+        resolved_action = r["j_action"] or r["l_action"]
 
         # Sanity check: AI values must be within reasonable range of LTP
         if el and (el < ltp * 0.5 or el > ltp * 1.5):
@@ -1330,6 +1334,11 @@ def override_algo_entry_exit(date_str: str):
             if val is not None:
                 sets.append(f"{col} = %s")
                 vals.append(round(float(val), 1))
+
+        # Override action with AI-resolved action (judge > LLM)
+        if resolved_action:
+            sets.append("action = %s")
+            vals.append(resolved_action)
 
         if not sets:
             continue

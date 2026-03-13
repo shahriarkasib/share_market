@@ -1086,14 +1086,14 @@ async def get_buy_radar(categories: str = "A", exclude_sectors: str = ""):
         if judge.get("agreement"):
             ai_score += 3; ai_signals.append("Algo+LLM agree")
 
-        # AI-computed entry/exit (prefer judge > llm > algo)
-        ai_entry_low = (judge.get("entry_low") if judge.get("entry_low")
-                        else llm.get("entry_low"))
-        ai_entry_high = (judge.get("entry_high") if judge.get("entry_high")
-                         else llm.get("entry_high"))
-        ai_sl = judge.get("sl") if judge.get("sl") else llm.get("sl")
-        ai_t1 = judge.get("t1") if judge.get("t1") else llm.get("t1")
-        ai_t2 = judge.get("t2") if judge.get("t2") else llm.get("t2")
+        # Entry/exit: use daily_analysis values (already overridden by Stage 4
+        # with judge > LLM > algo fallback). This ensures consistency across all pages.
+        algo_data = analysis_map.get(sym, {})
+        ai_entry_low = algo_data.get("entry_low")
+        ai_entry_high = algo_data.get("entry_high")
+        ai_sl = algo_data.get("sl")
+        ai_t1 = algo_data.get("t1")
+        ai_t2 = algo_data.get("t2")
 
         ai_pct = _clamp(ai_score / ai_max * 100)
 
@@ -1213,13 +1213,13 @@ async def get_buy_radar(categories: str = "A", exclude_sectors: str = ""):
             },
             "signals": all_signals[:6],  # Top 6 signals
             "red_flags": red_flags,
-            # Prefer AI entry/exit over algo (more context-aware)
-            "entry_low": ai_entry_low or a.get("entry_low"),
-            "entry_high": ai_entry_high or a.get("entry_high"),
-            "sl": ai_sl or a.get("sl"),
-            "t1": ai_t1 or a.get("t1"),
-            "t2": ai_t2 or a.get("t2"),
-            "action": ai_action or a.get("action", ""),
+            # Entry/exit from daily_analysis (Stage 4 already resolved judge > LLM > algo)
+            "entry_low": ai_entry_low,
+            "entry_high": ai_entry_high,
+            "sl": ai_sl,
+            "t1": ai_t1,
+            "t2": ai_t2,
+            "action": a.get("action", "") or ai_action,  # daily_analysis.action (Stage 4 resolved)
             "score": a.get("score"),
             # AI context fields
             "ai_action": ai_action,

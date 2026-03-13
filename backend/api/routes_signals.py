@@ -205,7 +205,7 @@ def _analysis_to_signal(a: dict, live_map: dict) -> dict:
         "signal_type": signal_type,
         "confidence": round(confidence, 3),
         "short_term_score": score,
-        "long_term_score": round(score * 0.8, 1),
+        "long_term_score": score,  # same as short_term (no separate long-term model)
         "target_price": t1,
         "stop_loss": sl,
         "risk_reward_ratio": risk_reward,
