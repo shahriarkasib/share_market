@@ -578,7 +578,10 @@ def call_claude(prompt: str, timeout: int = CLAUDE_TIMEOUT) -> str:
                     logger.warning(f"Failed to extract token from .bashrc: {e}")
 
         # Bash one-liner: cat prompt file | claude -p --model opus
-        bash_cmd = f'cat "{prompt_file.name}" | claude -p --model opus'
+        # Append a prefill hint so Claude starts with JSON immediately
+        with open(prompt_file.name, "a") as pf:
+            pf.write("\n\nRespond with ONLY the JSON array. Start your response with [")
+        bash_cmd = f'cat "{prompt_file.name}" | claude -p --model opus --max-turns 1'
         result = subprocess.run(
             ["bash", "-c", bash_cmd],
             capture_output=True,
