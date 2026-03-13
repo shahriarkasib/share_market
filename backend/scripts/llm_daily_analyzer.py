@@ -117,6 +117,10 @@ def ensure_tables():
         "ALTER TABLE llm_daily_analysis ADD COLUMN IF NOT EXISTS expected_return_2w DOUBLE PRECISION",
         "ALTER TABLE llm_daily_analysis ADD COLUMN IF NOT EXISTS expected_return_1m DOUBLE PRECISION",
         "ALTER TABLE llm_daily_analysis ADD COLUMN IF NOT EXISTS downside_risk DOUBLE PRECISION",
+        "ALTER TABLE llm_daily_analysis ADD COLUMN IF NOT EXISTS dsex_dependency TEXT",
+        "ALTER TABLE llm_daily_analysis ADD COLUMN IF NOT EXISTS if_dsex_drops TEXT",
+        "ALTER TABLE llm_daily_analysis ADD COLUMN IF NOT EXISTS if_dsex_rises TEXT",
+        "ALTER TABLE llm_daily_analysis ADD COLUMN IF NOT EXISTS dsex_outlook TEXT",
         "CREATE INDEX IF NOT EXISTS idx_llm_daily_date ON llm_daily_analysis(date)",
         """CREATE TABLE IF NOT EXISTS judge_daily_analysis (
             id SERIAL PRIMARY KEY, date DATE NOT NULL, symbol TEXT NOT NULL,
@@ -380,6 +384,121 @@ def load_dsex_history(days: int = 130) -> str:
     return "\n".join(lines)
 
 
+# ─── DSEX-Stock Correlation ───
+
+
+def compute_dsex_correlations(symbols: list[str], days: int = 130) -> dict[str, dict]:
+    """Compute beta, correlation, and scenario returns for each stock vs DSEX.
+
+    Returns dict[symbol -> {beta, correlation, avg_return_dsex_down, avg_return_dsex_up,
+                             scenario_m3, scenario_m1, scenario_p1, scenario_p3}]
+    """
+    conn = get_conn()
+    cur = conn.cursor()
+
+    # Load DSEX daily returns
+    cur.execute("""
+        SELECT date, dsex_index FROM dsex_history
+        ORDER BY date DESC LIMIT %s
+    """, (days + 1,))
+    dsex_rows = cur.fetchall()
+
+    # Load stock daily closes
+    placeholders = ",".join(["%s"] * len(symbols))
+    cur.execute(f"""
+        SELECT symbol, date, close FROM daily_prices
+        WHERE symbol IN ({placeholders})
+        ORDER BY date DESC
+    """, symbols)
+    price_rows = cur.fetchall()
+    conn.close()
+
+    if len(dsex_rows) < 10:
+        return {}
+
+    # Build DSEX returns by date
+    dsex_rows = list(reversed(dsex_rows))  # oldest first
+    dsex_by_date = {}
+    dsex_returns = {}
+    for i, r in enumerate(dsex_rows):
+        d = str(r["date"])
+        dsex_by_date[d] = float(r["dsex_index"])
+        if i > 0:
+            prev_d = str(dsex_rows[i - 1]["date"])
+            prev_val = dsex_by_date[prev_d]
+            if prev_val > 0:
+                dsex_returns[d] = (float(r["dsex_index"]) - prev_val) / prev_val * 100
+
+    # Build stock returns by symbol & date
+    from collections import defaultdict
+    stock_closes: dict[str, dict[str, float]] = defaultdict(dict)
+    for r in price_rows:
+        stock_closes[r["symbol"]][str(r["date"])] = float(r["close"])
+
+    results = {}
+    sorted_dates = sorted(dsex_returns.keys())
+
+    for sym in symbols:
+        closes = stock_closes.get(sym, {})
+        if len(closes) < 10:
+            continue
+
+        # Align stock returns with DSEX returns
+        paired_dsex = []
+        paired_stock = []
+        stock_sorted = sorted(closes.keys())
+
+        # Build stock returns
+        stock_returns = {}
+        for i in range(1, len(stock_sorted)):
+            d = stock_sorted[i]
+            prev_d = stock_sorted[i - 1]
+            if closes[prev_d] > 0:
+                stock_returns[d] = (closes[d] - closes[prev_d]) / closes[prev_d] * 100
+
+        # Pair up dates where both have returns
+        for d in sorted_dates:
+            if d in stock_returns:
+                paired_dsex.append(dsex_returns[d])
+                paired_stock.append(stock_returns[d])
+
+        n = len(paired_dsex)
+        if n < 10:
+            continue
+
+        # Compute beta and correlation
+        mean_d = sum(paired_dsex) / n
+        mean_s = sum(paired_stock) / n
+        cov = sum((paired_dsex[i] - mean_d) * (paired_stock[i] - mean_s) for i in range(n)) / n
+        var_d = sum((x - mean_d) ** 2 for x in paired_dsex) / n
+        std_d = var_d ** 0.5
+        std_s = (sum((x - mean_s) ** 2 for x in paired_stock) / n) ** 0.5
+
+        beta = cov / var_d if var_d > 0 else 1.0
+        corr = cov / (std_d * std_s) if (std_d > 0 and std_s > 0) else 0.0
+
+        # Avg return on DSEX-down days (< -0.3%) and DSEX-up days (> +0.3%)
+        down_returns = [paired_stock[i] for i in range(n) if paired_dsex[i] < -0.3]
+        up_returns = [paired_stock[i] for i in range(n) if paired_dsex[i] > 0.3]
+        avg_down = sum(down_returns) / len(down_returns) if down_returns else 0.0
+        avg_up = sum(up_returns) / len(up_returns) if up_returns else 0.0
+
+        # Scenario projections: if DSEX moves X%, stock moves approximately beta * X%
+        results[sym] = {
+            "beta": round(beta, 2),
+            "correlation": round(corr, 2),
+            "avg_return_dsex_down": round(avg_down, 2),
+            "avg_return_dsex_up": round(avg_up, 2),
+            "scenario_m3": round(beta * -3, 1),
+            "scenario_m1": round(beta * -1, 1),
+            "scenario_p1": round(beta * 1, 1),
+            "scenario_p3": round(beta * 3, 1),
+        }
+
+    logger.info(f"Computed DSEX correlations for {len(results)}/{len(symbols)} stocks")
+    return results
+
+
 # ─── Claude CLI ───
 
 
@@ -530,6 +649,7 @@ def parse_wait_days(wait_str: str) -> tuple[int, int]:
 def build_llm_prompt(
     stocks: list[dict], market: dict, feedback: str, batch_num: int, total_batches: int,
     ohlcv_map: dict[str, str] = None, dsex_csv: str = "",
+    dsex_corr: dict[str, dict] = None,
 ) -> str:
     """Build prompt for a batch of stocks — includes 60-day OHLCV history."""
     dsex = market.get("dsex_index", 0)
@@ -561,6 +681,18 @@ def build_llm_prompt(
         chg_20d = float(s.get("chg_20d") or 0)
 
         ohlcv_csv = (ohlcv_map or {}).get(s["symbol"], "")
+        corr = (dsex_corr or {}).get(s["symbol"], {})
+        corr_line = ""
+        if corr:
+            corr_line = (
+                f"DSEX Beta: {corr['beta']:.2f} | Correlation: {corr['correlation']:.2f} | "
+                f"When DSEX falls: avg {corr['avg_return_dsex_down']:+.2f}% | "
+                f"When DSEX rises: avg {corr['avg_return_dsex_up']:+.2f}%\n"
+                f"  DSEX Scenarios → -3%: stock ~{corr['scenario_m3']:+.1f}% | "
+                f"-1%: ~{corr['scenario_m1']:+.1f}% | "
+                f"+1%: ~{corr['scenario_p1']:+.1f}% | "
+                f"+3%: ~{corr['scenario_p3']:+.1f}%\n"
+            )
 
         stock_lines.append(
             f"### {s['symbol']} ({s.get('sector', '?')})\n"
@@ -572,12 +704,29 @@ def build_llm_prompt(
             f"EMA9: {ema9:.1f} | EMA21: {ema21:.1f} | SMA50: {sma50:.1f}\n"
             f"Momentum: 3d {mom_3d:+.1f}% | 5d {mom_5d:+.1f}% | Chg: 5d {chg_5d:+.1f}% 10d {chg_10d:+.1f}% 20d {chg_20d:+.1f}%\n"
             f"Support: {s.get('support', 0):.1f} | Resistance: {s.get('resistance', 0):.1f}\n"
+            + corr_line
             + (f"\nPrice History:\n```\n{ohlcv_csv}\n```\n" if ohlcv_csv else "")
         )
 
     dsex_block = ""
     if dsex_csv:
-        dsex_block = f"\n## DSEX Index — 6-month History\n```\n{dsex_csv}\n```\n"
+        dsex_block = f"""
+## DSEX Index — 6-month History
+```
+{dsex_csv}
+```
+
+## DSEX FORECAST TASK
+Study the DSEX history above carefully:
+1. What is the DSEX trend (last 5 days, 20 days, 60 days)?
+2. Where is DSEX relative to its support/resistance levels?
+3. Is volume increasing or decreasing?
+4. What will DSEX likely do tomorrow and in the next 3-5 days? Why?
+5. How will this DSEX movement affect EACH stock? (Use the beta/correlation data per stock)
+6. If DSEX drops 1-2%, which stocks are most/least affected?
+
+Include your DSEX forecast in each stock's reasoning.
+"""
 
     return f"""You are a BUY RADAR analyst for DSE (Dhaka Stock Exchange). Your ONLY goal: find the BEST TIME and BEST PRICE to buy stocks for MAXIMUM PROFIT over the next 1-4 weeks.
 
@@ -599,6 +748,8 @@ Your audience is BEGINNERS who want to make money.
 - **BB%**: Where price sits in its 20-day range. <15% = at bottom (cheap). >85% = at top (expensive).
 - **EMA9/21, SMA50**: Short/medium/long moving averages. Price above all = strong uptrend.
 - **Volume Ratio**: >2x average = strong interest. <0.5x = dead stock, avoid.
+- **DSEX Beta**: How much this stock moves per 1% DSEX move. Beta 1.5 = stock moves 1.5x DSEX. Beta 0.5 = stock is defensive. Beta > 1.5 = aggressive, riskier on market drops.
+- **DSEX Correlation**: How closely the stock tracks the index. >0.7 = closely tied to index. <0.3 = independent mover.
 - **T+2**: After buying, you CANNOT sell for 2 trading days. Factor this into every recommendation.
 - **DSE tick size**: 0.10 BDT. All prices in multiples of 0.10.
 
@@ -662,6 +813,10 @@ Return a JSON array (NO markdown fences, ONLY valid JSON):
     "sell_plan": "When to take profit: sell half at T1, trail stop, sell rest at T2.",
     "risk_factors": ["What could go wrong — in plain language"],
     "catalysts": ["What could push it up — in plain language"],
+    "dsex_dependency": "HIGH|MEDIUM|LOW",
+    "if_dsex_drops": "What happens to this stock if DSEX drops 1-2% tomorrow. E.g., 'Entry improves to 21.0-21.5, set limit order at 21.2'",
+    "if_dsex_rises": "What happens if DSEX rallies 1-2%. E.g., 'Stock will gap up, entry zone missed, wait for pullback'",
+    "dsex_outlook": "Your 3-5 day DSEX forecast and how it affects this specific stock's buy timing",
     "score": 50
   }}
 ]
@@ -698,8 +853,9 @@ def store_llm_results(date_str: str, results: list[dict], batch_id: int, raw: st
                      how_to_buy, volume_rule, next_day_plan, sell_plan,
                      stage, stage_reasoning,
                      expected_return_1w, expected_return_2w, expected_return_1m, downside_risk,
+                     dsex_dependency, if_dsex_drops, if_dsex_rises, dsex_outlook,
                      batch_id, raw_response)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (date, symbol) DO UPDATE SET
                     action = EXCLUDED.action, confidence = EXCLUDED.confidence,
                     reasoning = EXCLUDED.reasoning, wait_for = EXCLUDED.wait_for,
@@ -715,6 +871,10 @@ def store_llm_results(date_str: str, results: list[dict], batch_id: int, raw: st
                     expected_return_2w = EXCLUDED.expected_return_2w,
                     expected_return_1m = EXCLUDED.expected_return_1m,
                     downside_risk = EXCLUDED.downside_risk,
+                    dsex_dependency = EXCLUDED.dsex_dependency,
+                    if_dsex_drops = EXCLUDED.if_dsex_drops,
+                    if_dsex_rises = EXCLUDED.if_dsex_rises,
+                    dsex_outlook = EXCLUDED.dsex_outlook,
                     batch_id = EXCLUDED.batch_id, raw_response = EXCLUDED.raw_response
             """, (
                 date_str, symbol, action,
@@ -740,6 +900,10 @@ def store_llm_results(date_str: str, results: list[dict], batch_id: int, raw: st
                 r.get("expected_return_2w"),
                 r.get("expected_return_1m"),
                 r.get("downside_risk"),
+                r.get("dsex_dependency", ""),
+                r.get("if_dsex_drops", ""),
+                r.get("if_dsex_rises", ""),
+                r.get("dsex_outlook", ""),
                 batch_id,
                 raw if saved == 0 else None,
             ))
@@ -771,6 +935,10 @@ def run_llm_analysis(date_str: str) -> list[dict]:
     ohlcv_map = load_ohlcv_history(all_symbols, daily_days=130, weekly_weeks=52)
     logger.info(f"Loaded OHLCV history for {len(ohlcv_map)} stocks")
 
+    # Compute DSEX-stock correlations (beta, correlation, scenario returns)
+    dsex_corr = compute_dsex_correlations(all_symbols, days=130)
+    logger.info(f"Computed DSEX correlations for {len(dsex_corr)} stocks")
+
     batches = [stocks[i:i + LLM_BATCH_SIZE] for i in range(0, len(stocks), LLM_BATCH_SIZE)]
     total_batches = len(batches)
     logger.info(f"LLM analysis: {len(stocks)} stocks in {total_batches} batches (batch size {LLM_BATCH_SIZE})")
@@ -779,7 +947,7 @@ def run_llm_analysis(date_str: str) -> list[dict]:
     for i, batch in enumerate(batches, 1):
         prompt = build_llm_prompt(
             batch, market, feedback, i, total_batches,
-            ohlcv_map=ohlcv_map, dsex_csv=dsex_csv,
+            ohlcv_map=ohlcv_map, dsex_csv=dsex_csv, dsex_corr=dsex_corr,
         )
         logger.info(f"Batch {i} prompt: {len(prompt)} chars")
         raw = call_claude(prompt)

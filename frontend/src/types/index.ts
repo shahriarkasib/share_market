@@ -499,6 +499,16 @@ export interface BuyRadarStock {
   ai_risk_factors: string[];
   ai_signals: string[];
   stage_reasoning: string;
+  // Profit estimation
+  expected_return_1w?: number;
+  expected_return_2w?: number;
+  expected_return_1m?: number;
+  downside_risk?: number;
+  // DSEX analysis
+  dsex_dependency?: string;
+  if_dsex_drops?: string;
+  if_dsex_rises?: string;
+  dsex_outlook?: string;
   // Tracking fields
   days_on_radar: number;
   first_seen: string;

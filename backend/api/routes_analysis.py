@@ -608,7 +608,9 @@ async def get_buy_radar(categories: str = "A", exclude_sectors: str = ""):
         llm_rows = conn.execute(
             "SELECT symbol, action, confidence, reasoning, wait_for, wait_days, "
             "score, risk_factors, catalysts, how_to_buy, volume_rule, "
-            "entry_low, entry_high, sl, t1, t2, stage, stage_reasoning "
+            "entry_low, entry_high, sl, t1, t2, stage, stage_reasoning, "
+            "expected_return_1w, expected_return_2w, expected_return_1m, downside_risk, "
+            "dsex_dependency, if_dsex_drops, if_dsex_rises, dsex_outlook "
             "FROM llm_daily_analysis WHERE date = ?", (ai_date,),
         ).fetchall()
         llm_map = {r["symbol"]: dict(r) for r in llm_rows}
@@ -1212,14 +1214,24 @@ async def get_buy_radar(categories: str = "A", exclude_sectors: str = ""):
             # AI context fields
             "ai_action": ai_action,
             "ai_confidence": ai_confidence,
-            "ai_reasoning": ai_reasoning_text[:200] if ai_reasoning_text else "",
+            "ai_reasoning": ai_reasoning_text,
             "ai_how_to_buy": ai_how_to_buy,
             "ai_key_risk": ai_key_risk,
             "ai_wait_for": ai_wait_for,
-            "ai_catalysts": ai_catalysts[:3] if isinstance(ai_catalysts, list) else [],
-            "ai_risk_factors": ai_risk_factors[:3] if isinstance(ai_risk_factors, list) else [],
+            "ai_catalysts": ai_catalysts if isinstance(ai_catalysts, list) else [],
+            "ai_risk_factors": ai_risk_factors if isinstance(ai_risk_factors, list) else [],
             "ai_signals": ai_signals,
             "stage_reasoning": llm.get("stage_reasoning") or "",
+            # Profit estimation
+            "expected_return_1w": llm.get("expected_return_1w"),
+            "expected_return_2w": llm.get("expected_return_2w"),
+            "expected_return_1m": llm.get("expected_return_1m"),
+            "downside_risk": llm.get("downside_risk"),
+            # DSEX analysis
+            "dsex_dependency": llm.get("dsex_dependency") or "",
+            "if_dsex_drops": llm.get("if_dsex_drops") or "",
+            "if_dsex_rises": llm.get("if_dsex_rises") or "",
+            "dsex_outlook": llm.get("dsex_outlook") or "",
         })
 
     # ── Save today's snapshots & load history ──

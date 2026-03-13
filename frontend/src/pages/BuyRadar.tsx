@@ -360,6 +360,73 @@ function StockCard({ stock }: { stock: BuyRadarStock }) {
             </>
           )}
 
+          {/* Profit estimation */}
+          {(stock.expected_return_1w != null || stock.expected_return_2w != null || stock.expected_return_1m != null) && (
+            <div>
+              <SectionLabel icon={TrendingUp} label="Profit Estimation" color="text-emerald-400" />
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
+                {stock.expected_return_1w != null && (
+                  <div className="bg-[var(--surface)] rounded p-2 text-center border border-[var(--border)]">
+                    <div className="text-[var(--text-dim)] text-[10px]">1 Week</div>
+                    <div className={clsx("font-bold", stock.expected_return_1w > 0 ? "text-green-400" : "text-red-400")}>
+                      {stock.expected_return_1w > 0 ? "+" : ""}{stock.expected_return_1w.toFixed(1)}%
+                    </div>
+                  </div>
+                )}
+                {stock.expected_return_2w != null && (
+                  <div className="bg-[var(--surface)] rounded p-2 text-center border border-[var(--border)]">
+                    <div className="text-[var(--text-dim)] text-[10px]">2 Weeks</div>
+                    <div className={clsx("font-bold", stock.expected_return_2w > 0 ? "text-green-400" : "text-red-400")}>
+                      {stock.expected_return_2w > 0 ? "+" : ""}{stock.expected_return_2w.toFixed(1)}%
+                    </div>
+                  </div>
+                )}
+                {stock.expected_return_1m != null && (
+                  <div className="bg-[var(--surface)] rounded p-2 text-center border border-[var(--border)]">
+                    <div className="text-[var(--text-dim)] text-[10px]">1 Month</div>
+                    <div className={clsx("font-bold", stock.expected_return_1m > 0 ? "text-green-400" : "text-red-400")}>
+                      {stock.expected_return_1m > 0 ? "+" : ""}{stock.expected_return_1m.toFixed(1)}%
+                    </div>
+                  </div>
+                )}
+                {stock.downside_risk != null && (
+                  <div className="bg-[var(--surface)] rounded p-2 text-center border border-red-500/20">
+                    <div className="text-[var(--text-dim)] text-[10px]">Downside Risk</div>
+                    <div className="font-bold text-red-400">{stock.downside_risk.toFixed(1)}%</div>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* DSEX Impact Analysis */}
+          {(stock.dsex_outlook || stock.if_dsex_drops || stock.if_dsex_rises) && (
+            <div>
+              <SectionLabel icon={BarChart3} label={`DSEX Impact ${stock.dsex_dependency ? `(${stock.dsex_dependency} dependency)` : ""}`} color="text-indigo-400" />
+              <div className="space-y-2">
+                {stock.dsex_outlook && (
+                  <p className="text-xs text-indigo-300/80 leading-relaxed whitespace-pre-line">
+                    {stock.dsex_outlook}
+                  </p>
+                )}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  {stock.if_dsex_drops && (
+                    <div className="bg-red-500/5 border border-red-500/15 rounded p-2">
+                      <div className="text-[10px] text-red-400 font-medium mb-0.5">If DSEX drops 1-2%</div>
+                      <p className="text-xs text-red-300/80 leading-relaxed">{stock.if_dsex_drops}</p>
+                    </div>
+                  )}
+                  {stock.if_dsex_rises && (
+                    <div className="bg-green-500/5 border border-green-500/15 rounded p-2">
+                      <div className="text-[10px] text-green-400 font-medium mb-0.5">If DSEX rises 1-2%</div>
+                      <p className="text-xs text-green-300/80 leading-relaxed">{stock.if_dsex_rises}</p>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* Risk + Catalysts */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             {stock.ai_key_risk && (
