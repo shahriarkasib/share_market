@@ -602,14 +602,14 @@ Your audience is BEGINNERS. Explain every indicator in plain language.
 - **DSE tick size**: 0.10 BDT. All prices must be multiples of 0.10.
 
 ## STAGE DEFINITIONS — You MUST assign one per stock
-- **ENTRY_ZONE**: Buy opportunity is HERE, RIGHT NOW. A beginner could act on this today.
-- **READY**: Almost there. A specific trigger within 1-3 days would make this buyable.
-- **APPROACHING**: Showing promise but needs more development. 5-10 day horizon.
-- **BUILDING**: Early accumulation signs. Not actionable yet. 10-20 day horizon.
-- **WATCHING**: On radar but unclear. Or has problems that need to resolve first.
-- **TOO_LATE**: The opportunity already passed. Buying now would be chasing.
+- **ENTRY_ZONE**: Buy NOW. Price is at the ideal entry level, indicators confirmed, volume supports it. A beginner could place an order today.
+- **READY**: The stock is about to move up. You're waiting for ONE simple trigger — a small dip to support, a volume spike, or a MACD cross. Could happen today or tomorrow. Example: "Stock will rally but a dip to 22.0 would be the perfect entry" = READY.
+- **APPROACHING**: The setup is forming but MULTIPLE things still need to align — maybe MACD is still bearish, volume is dead, or price hasn't found a clear floor yet. 5-10 days before it becomes actionable.
+- **BUILDING**: Very early accumulation phase. Smart money may be entering quietly but it's too early to act. Check back in 2-3 weeks.
+- **WATCHING**: On radar but direction is unclear, or there are red flags (distribution, trendless, conflicting signals).
+- **TOO_LATE**: The stock already rallied from its base. The easy money was made. Buying now = chasing.
 
-**YOUR JOB**: Study the 60-day OHLCV data. See where the stock came from, how it moved, where it found floors and ceilings. Use the indicators, money flow, volume patterns, and DSEX context to form YOUR OWN judgment about which stage this stock is in. Do NOT just follow rules — think like a professional analyst looking at a chart.
+**YOUR JOB**: Study the price history like you're reading a chart. See where the stock came from, how it moved, where it found floors and ceilings. Use the indicators, money flow, volume patterns, and DSEX context to form YOUR OWN judgment. Do NOT follow mechanical rules — think like a professional analyst.
 
 ## Market Context
 - DSEX: {dsex:.1f} ({dsex_chg:+.2f}%)
