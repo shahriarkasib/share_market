@@ -965,6 +965,25 @@ def run_llm_analysis(date_str: str) -> list[dict]:
         logger.warning("No A-category stocks found for LLM analysis")
         return []
 
+    # Skip stocks already analyzed (allows resuming after partial failure)
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT symbol FROM llm_daily_analysis WHERE date = %s", (date_str,))
+    already_done = {row[0] for row in cur.fetchall()}
+    conn.close()
+    if already_done:
+        original_count = len(stocks)
+        stocks = [s for s in stocks if s["symbol"] not in already_done]
+        logger.info(f"Skipping {original_count - len(stocks)} already-analyzed stocks, {len(stocks)} remaining")
+        if not stocks:
+            logger.info("All stocks already analyzed — loading existing results")
+            conn = get_conn()
+            cur = conn.cursor()
+            cur.execute("SELECT symbol, action, confidence, reasoning, entry_low, entry_high, sl, t1, t2, score FROM llm_daily_analysis WHERE date = %s", (date_str,))
+            existing = [dict(r) for r in cur.fetchall()]
+            conn.close()
+            return existing
+
     market = load_market_context()
     feedback = load_accuracy_feedback()
 
@@ -1082,6 +1101,16 @@ def run_llm_analysis(date_str: str) -> list[dict]:
         missed = [s["symbol"] for _, batch in failed_batches for s in batch]
         logger.warning(f"PERMANENTLY FAILED {len(failed_batches)} batches after {MAX_RETRIES} retries. "
                        f"Missed stocks: {missed}")
+
+    # Merge newly analyzed results with previously existing ones for downstream stages
+    if already_done:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT symbol, action, confidence, reasoning, entry_low, entry_high, sl, t1, t2, score FROM llm_daily_analysis WHERE date = %s", (date_str,))
+        all_db_results = [dict(r) for r in cur.fetchall()]
+        conn.close()
+        logger.info(f"LLM analysis complete: {len(all_results)} new + {len(already_done)} existing = {len(all_db_results)} total")
+        return all_db_results
 
     logger.info(f"LLM analysis complete: {len(all_results)} total results")
     return all_results
