@@ -542,17 +542,35 @@ def call_claude(prompt: str, timeout: int = CLAUDE_TIMEOUT) -> str:
         prompt_file.write(prompt)
         prompt_file.close()
 
+        # Ensure CLAUDE_CODE_OAUTH_TOKEN is available
+        # Non-interactive SSH doesn't source .bashrc, so extract token if missing
+        env = os.environ.copy()
+        if not env.get("CLAUDE_CODE_OAUTH_TOKEN"):
+            bashrc = os.path.expanduser("~/.bashrc")
+            if os.path.exists(bashrc):
+                try:
+                    with open(bashrc) as f:
+                        for line in f:
+                            if "CLAUDE_CODE_OAUTH_TOKEN=" in line and line.strip().startswith("export"):
+                                token = line.split('"')[1] if '"' in line else line.split("=", 1)[1].strip()
+                                env["CLAUDE_CODE_OAUTH_TOKEN"] = token
+                                logger.info("Extracted CLAUDE_CODE_OAUTH_TOKEN from .bashrc")
+                                break
+                except Exception as e:
+                    logger.warning(f"Failed to extract token from .bashrc: {e}")
+
         # Bash one-liner: cat prompt file | claude -p --model sonnet
-        # This inherits the full shell env including CLAUDE_CODE_OAUTH_TOKEN
         bash_cmd = f'cat "{prompt_file.name}" | claude -p --model sonnet'
         result = subprocess.run(
             ["bash", "-c", bash_cmd],
             capture_output=True,
             text=True,
             timeout=timeout,
+            env=env,
         )
         if result.returncode != 0:
-            logger.error(f"Claude CLI error (exit {result.returncode}): {result.stderr[:300]}")
+            err_msg = (result.stderr or result.stdout or "")[:300]
+            logger.error(f"Claude CLI error (exit {result.returncode}): {err_msg}")
             return ""
         resp = result.stdout.strip()
         if "Not logged in" in resp or "Please run /login" in resp:
