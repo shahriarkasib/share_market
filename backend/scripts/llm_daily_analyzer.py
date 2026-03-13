@@ -77,7 +77,7 @@ ACTION_NORMALIZE = {
 LLM_BATCH_SIZE = 4
 JUDGE_BATCH_SIZE = 30
 CLAUDE_TIMEOUT = 900
-CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-5-20250514")
+CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-opus-4-5-20250514")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 
 
@@ -577,8 +577,8 @@ def call_claude(prompt: str, timeout: int = CLAUDE_TIMEOUT) -> str:
                 except Exception as e:
                     logger.warning(f"Failed to extract token from .bashrc: {e}")
 
-        # Bash one-liner: cat prompt file | claude -p --model sonnet
-        bash_cmd = f'cat "{prompt_file.name}" | claude -p --model sonnet'
+        # Bash one-liner: cat prompt file | claude -p --model opus
+        bash_cmd = f'cat "{prompt_file.name}" | claude -p --model opus'
         result = subprocess.run(
             ["bash", "-c", bash_cmd],
             capture_output=True,
