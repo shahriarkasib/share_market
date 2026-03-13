@@ -113,6 +113,10 @@ def ensure_tables():
         "ALTER TABLE llm_daily_analysis ADD COLUMN IF NOT EXISTS sell_plan TEXT",
         "ALTER TABLE llm_daily_analysis ADD COLUMN IF NOT EXISTS stage TEXT",
         "ALTER TABLE llm_daily_analysis ADD COLUMN IF NOT EXISTS stage_reasoning TEXT",
+        "ALTER TABLE llm_daily_analysis ADD COLUMN IF NOT EXISTS expected_return_1w DOUBLE PRECISION",
+        "ALTER TABLE llm_daily_analysis ADD COLUMN IF NOT EXISTS expected_return_2w DOUBLE PRECISION",
+        "ALTER TABLE llm_daily_analysis ADD COLUMN IF NOT EXISTS expected_return_1m DOUBLE PRECISION",
+        "ALTER TABLE llm_daily_analysis ADD COLUMN IF NOT EXISTS downside_risk DOUBLE PRECISION",
         "CREATE INDEX IF NOT EXISTS idx_llm_daily_date ON llm_daily_analysis(date)",
         """CREATE TABLE IF NOT EXISTS judge_daily_analysis (
             id SERIAL PRIMARY KEY, date DATE NOT NULL, symbol TEXT NOT NULL,
@@ -575,41 +579,41 @@ def build_llm_prompt(
     if dsex_csv:
         dsex_block = f"\n## DSEX Index — 6-month History\n```\n{dsex_csv}\n```\n"
 
-    return f"""You are a senior DSE (Dhaka Stock Exchange) trading analyst. For each stock you have:
-- **1-year weekly candles**: See the big picture — 52-week highs/lows, major support/resistance, long-term trend
-- **6-month daily candles**: Recent price action in detail — exact bounces, breakouts, volume patterns
-- **DSEX index history**: Market context — how the index moved alongside each stock
+    return f"""You are a BUY RADAR analyst for DSE (Dhaka Stock Exchange). Your ONLY goal: find the BEST TIME and BEST PRICE to buy stocks for MAXIMUM PROFIT over the next 1-4 weeks.
 
-Use ALL of this data to understand the REAL price pattern.
+For each stock you have:
+- **1-year weekly candles**: 52-week range, major support/resistance, long-term trend
+- **6-month daily candles**: Recent price action, exact bounces, breakouts, volume patterns
+- **16 technical indicators**: Momentum, money flow, trend, positioning
+- **DSEX index history**: Market context
 
-Your audience is BEGINNERS. Explain every indicator in plain language.
+Your audience is BEGINNERS who want to make money.
 
-## KEY CONCEPTS
-- **Support**: Price level where stock historically stops falling (visible as repeated lows in the OHLCV data).
-- **Resistance**: Price level where stock stops rising (visible as repeated highs).
-- **RSI < 30**: Oversold (bounce likely). **RSI > 70**: Overbought (drop likely). 40-60 neutral.
-- **StochRSI < 20**: Deeply oversold. **> 80**: Deeply overbought.
-- **MACD bullish cross**: Momentum shifting UP. **Bearish cross**: Momentum shifting DOWN.
-- **BB%**: 0-15% = near bottom of 20-day range (cheap). 85-100% = near top (expensive).
-- **Vol Ratio**: Today's volume vs 20-day avg. >2x = unusual interest. <0.5x = dead.
-- **MFI (Money Flow Index)**: Volume-weighted RSI. <20 = oversold with selling exhaustion. >80 = overbought.
-- **CMF (Chaikin Money Flow)**: Measures buying/selling pressure. Positive = accumulation (money flowing in). Negative = distribution (money flowing out). Range: -1 to +1.
-- **Williams %R**: Momentum oscillator. -80 to -100 = oversold. 0 to -20 = overbought. Similar to StochRSI but inverted scale.
-- **ADX (Average Directional Index)**: Trend strength (not direction). >25 = strong trend. <20 = weak/no trend. +DI > -DI = bullish trend. -DI > +DI = bearish trend.
-- **EMA9/EMA21/SMA50**: Moving averages. Price above all 3 = strong uptrend. EMA9 crossing above EMA21 = bullish signal.
-- **Momentum 3d/5d**: Price change over last 3/5 days. Positive = recent upward push.
-- **T+2**: After buying, you CANNOT sell for 2 trading days.
-- **DSE tick size**: 0.10 BDT. All prices must be multiples of 0.10.
+## INDICATOR REFERENCE
+- **RSI/StochRSI**: Oversold (<30/<20) = sellers exhausted, bounce coming. Overbought (>70/>80) = stretched.
+- **MFI**: Volume-weighted RSI. <20 = real selling exhaustion (stronger than RSI alone). >80 = overbought.
+- **CMF**: Money flow direction. Positive = money flowing IN (accumulation). Negative = money flowing OUT (distribution). This tells you if smart money is buying.
+- **MACD**: Momentum direction. Bullish cross = momentum turning UP. Histogram growing = accelerating.
+- **ADX/DI**: Trend strength. >25 = strong trend. +DI > -DI = uptrend. ADX < 15 = no trend (avoid).
+- **Williams %R**: -80 to -100 = oversold. 0 to -20 = overbought.
+- **BB%**: Where price sits in its 20-day range. <15% = at bottom (cheap). >85% = at top (expensive).
+- **EMA9/21, SMA50**: Short/medium/long moving averages. Price above all = strong uptrend.
+- **Volume Ratio**: >2x average = strong interest. <0.5x = dead stock, avoid.
+- **T+2**: After buying, you CANNOT sell for 2 trading days. Factor this into every recommendation.
+- **DSE tick size**: 0.10 BDT. All prices in multiples of 0.10.
 
-## STAGE DEFINITIONS — You MUST assign one per stock
-- **ENTRY_ZONE**: Buy NOW. Price is at the ideal entry level, indicators confirmed, volume supports it. A beginner could place an order today.
-- **READY**: The stock is about to move up. You're waiting for ONE simple trigger — a small dip to support, a volume spike, or a MACD cross. Could happen today or tomorrow. Example: "Stock will rally but a dip to 22.0 would be the perfect entry" = READY.
-- **APPROACHING**: The setup is forming but MULTIPLE things still need to align — maybe MACD is still bearish, volume is dead, or price hasn't found a clear floor yet. 5-10 days before it becomes actionable.
-- **BUILDING**: Very early accumulation phase. Smart money may be entering quietly but it's too early to act. Check back in 2-3 weeks.
-- **WATCHING**: On radar but direction is unclear, or there are red flags (distribution, trendless, conflicting signals).
-- **TOO_LATE**: The stock already rallied from its base. The easy money was made. Buying now = chasing.
+## BUY RADAR STAGES — Assign one per stock
+Think of these as: "How close is this stock to giving me a profitable buy entry?"
 
-**YOUR JOB**: Study the price history like you're reading a chart. See where the stock came from, how it moved, where it found floors and ceilings. Use the indicators, money flow, volume patterns, and DSEX context to form YOUR OWN judgment. Do NOT follow mechanical rules — think like a professional analyst.
+- **ENTRY_ZONE**: BUY TODAY. The best price is here NOW. Indicators aligned, money flowing in, price at support. If you wait, you'll pay more.
+- **READY**: BUY in 1-2 days. The upward move is coming. You just need ONE trigger — a small dip to support, a volume surge, or a MACD cross. Have your order ready.
+- **APPROACHING**: Setting up. 5-10 days out. The pieces are falling into place but it's not time yet. Watch it daily.
+- **BUILDING**: Early accumulation. 2-3 weeks. Smart money may be quietly entering. Too early to act.
+- **WATCHING**: Not a buy right now. Unclear or problematic.
+- **TOO_LATE**: Already moved. Buying now = chasing. Wait for the next pullback.
+
+## THE KEY QUESTION FOR EVERY STOCK
+"If I buy at [entry price] today/this week, what's my realistic profit in 1 week? 2 weeks? 1 month? And what's my downside risk?"
 
 ## Market Context
 - DSEX: {dsex:.1f} ({dsex_chg:+.2f}%)
@@ -622,14 +626,15 @@ Your audience is BEGINNERS. Explain every indicator in plain language.
 {chr(10).join(stock_lines)}
 
 ## Your Task
-For EACH stock, read the chart like a professional:
-- **Weekly candles (1yr)**: Where is the 52-week high/low? Is the long-term trend up, down, or sideways? Are there major support/resistance levels from months ago?
-- **Daily candles (6mo)**: Where did the stock recently bottom/top? What's the recent trajectory? Any consolidation patterns, breakouts, or breakdowns?
-- **Volume**: Is money flowing in (CMF+, rising OBV, volume spikes on green days) or out? In DSE's thin market, volume confirmation is critical.
-- **DSEX context**: How does this stock move relative to the index? Does it lead, lag, or ignore DSEX?
-- **The key question**: Would a beginner buying TODAY make money in the next 5-10 days, or get trapped?
+For EACH stock, study the full price history and answer:
 
-Set entry_low/entry_high based on ACTUAL support levels you see in the price data — repeated lows, bounce zones, consolidation ranges. Not from formulas.
+1. **Where is the money?** Look at CMF, OBV, volume patterns. Is smart money accumulating or distributing?
+2. **Where is the price in its range?** Use weekly candles for 52-week context, daily for recent range. Near the bottom = opportunity. Near the top = risk.
+3. **What's the setup?** Indicators turning from oversold? MACD about to cross? Or already overbought and extended?
+4. **What's the profit potential?** If I buy at [entry], what's realistic T1 (1-2 week target) and T2 (3-4 week target)?
+5. **What's the risk?** Where does the thesis break? What price = I was wrong?
+
+Set entry_low/entry_high from ACTUAL support levels in the chart — repeated lows, bounce zones, consolidation areas.
 
 Return a JSON array (NO markdown fences, ONLY valid JSON):
 [
@@ -638,35 +643,40 @@ Return a JSON array (NO markdown fences, ONLY valid JSON):
     "action": "BUY|BUY on dip|BUY on pullback|BUY (wait for MACD cross)|HOLD/WAIT|SELL/AVOID|AVOID",
     "confidence": "HIGH|MEDIUM|LOW",
     "stage": "ENTRY_ZONE|READY|APPROACHING|BUILDING|WATCHING|TOO_LATE",
-    "stage_reasoning": "1-2 sentences: WHY this stage. Reference specific prices from the OHLCV data. E.g., 'Stock bounced from 22.0 support 3 times in the last month, now at 22.3 with RSI 28 — right at entry zone.' Or: 'Stock already rallied from 31.0 to 33.5 (+8%) in 5 days, RSI 58 and rising — too late to chase.'",
-    "reasoning": "3-5 sentence EDUCATIONAL analysis. For EACH indicator, explain what it means. Reference specific prices and dates from the OHLCV data.",
-    "wait_for": "Specific trigger: e.g., 'Wait for price to pull back to 21.5-22.0 (recent support) with volume > 50K'",
-    "wait_days": "e.g., 'NOW', '1-3 days', '5-10 days', '15-30 days'",
+    "stage_reasoning": "WHY this stage. Reference specific prices and dates from the chart. E.g., 'Bounced from 22.0 three times (Jan 15, Feb 8, Mar 3), now at 22.3 with MFI 18 and CMF turning positive — buy zone is here.' Or: 'Rallied 31→33.5 in 5 days, CMF still positive but RSI 58 and approaching resistance at 34 — one more push possible but entry is late.'",
+    "reasoning": "3-5 sentence analysis for beginners. Reference specific prices, dates, and explain what each indicator means.",
+    "expected_return_1w": 0.0,
+    "expected_return_2w": 0.0,
+    "expected_return_1m": 0.0,
+    "downside_risk": 0.0,
+    "wait_for": "Specific trigger. E.g., 'Price dips to 21.5 with volume > 50K' or 'MACD crosses bullish'",
+    "wait_days": "e.g., 'NOW', '1-2 days', '3-5 days', '1-2 weeks', '2-4 weeks'",
     "entry_low": 0.0,
     "entry_high": 0.0,
     "sl": 0.0,
     "t1": 0.0,
     "t2": 0.0,
-    "how_to_buy": "Step-by-step for tomorrow. Include volume threshold, first-15-min rule, limit order price, stop loss, and what NOT to do.",
-    "volume_rule": "Min volume needed to confirm. E.g., 'Only buy if volume > 100K (20-day avg is 80K).'",
-    "next_day_plan": "3 scenarios: opens green, opens flat, opens red — specific action for each.",
-    "sell_plan": "When and how to sell: sell half at T1, move SL to entry, sell rest at T2 or on bearish signal.",
-    "risk_factors": ["Plain language risk"],
-    "catalysts": ["Plain language catalyst"],
+    "how_to_buy": "Step-by-step: when to place order, what price, what volume to look for, what to AVOID.",
+    "volume_rule": "Min volume needed. E.g., 'Only buy if volume > 100K.'",
+    "next_day_plan": "3 scenarios: opens green / flat / red — what to do in each.",
+    "sell_plan": "When to take profit: sell half at T1, trail stop, sell rest at T2.",
+    "risk_factors": ["What could go wrong — in plain language"],
+    "catalysts": ["What could push it up — in plain language"],
     "score": 50
   }}
 ]
 
 Rules:
-1. Analyze ALL {len(stocks)} stocks — every stock gets a verdict
-2. Base entry_low/entry_high on support levels you identify in the 60-day OHLCV data
-3. Score 0-100: your overall conviction (0=strong avoid, 50=neutral, 100=strong buy)
-4. T+2 settlement: buyer cannot sell for 2 trading days — factor this into timing
-5. DSE tick size 0.10 BDT — all prices in multiples of 0.10
-6. Be honest about uncertainty. If the chart is unclear, say WATCHING, not BUY
-7. If you made mistakes in past predictions (see feedback above), learn and adjust
-8. Think about DSE market context: this is a retail-dominated, low-liquidity market. Volume confirmation matters more here than in developed markets
-9. Return ONLY valid JSON array, no extra text"""
+1. Analyze ALL {len(stocks)} stocks
+2. entry_low/entry_high from actual support in the chart data
+3. Score 0-100: buying conviction (0=avoid, 100=strongest buy)
+4. expected_return fields: realistic % gain from entry_high price. Be conservative, not optimistic
+5. downside_risk: % loss if stop loss is hit (negative number)
+6. T+2: buyer cannot sell for 2 days — if the stock peaks tomorrow, the buyer is TRAPPED
+7. DSE tick size 0.10 BDT
+8. This is a retail-dominated, low-liquidity market. Volume confirmation is everything
+9. Be honest. If a stock is not a good buy, say so. Don't force BUY recommendations
+10. Return ONLY valid JSON array, no extra text"""
 
 
 def store_llm_results(date_str: str, results: list[dict], batch_id: int, raw: str):
@@ -687,8 +697,9 @@ def store_llm_results(date_str: str, results: list[dict], batch_id: int, raw: st
                      risk_factors, catalysts, score,
                      how_to_buy, volume_rule, next_day_plan, sell_plan,
                      stage, stage_reasoning,
+                     expected_return_1w, expected_return_2w, expected_return_1m, downside_risk,
                      batch_id, raw_response)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (date, symbol) DO UPDATE SET
                     action = EXCLUDED.action, confidence = EXCLUDED.confidence,
                     reasoning = EXCLUDED.reasoning, wait_for = EXCLUDED.wait_for,
@@ -700,6 +711,10 @@ def store_llm_results(date_str: str, results: list[dict], batch_id: int, raw: st
                     how_to_buy = EXCLUDED.how_to_buy, volume_rule = EXCLUDED.volume_rule,
                     next_day_plan = EXCLUDED.next_day_plan, sell_plan = EXCLUDED.sell_plan,
                     stage = EXCLUDED.stage, stage_reasoning = EXCLUDED.stage_reasoning,
+                    expected_return_1w = EXCLUDED.expected_return_1w,
+                    expected_return_2w = EXCLUDED.expected_return_2w,
+                    expected_return_1m = EXCLUDED.expected_return_1m,
+                    downside_risk = EXCLUDED.downside_risk,
                     batch_id = EXCLUDED.batch_id, raw_response = EXCLUDED.raw_response
             """, (
                 date_str, symbol, action,
@@ -721,8 +736,12 @@ def store_llm_results(date_str: str, results: list[dict], batch_id: int, raw: st
                 r.get("sell_plan", ""),
                 r.get("stage", ""),
                 r.get("stage_reasoning", ""),
+                r.get("expected_return_1w"),
+                r.get("expected_return_2w"),
+                r.get("expected_return_1m"),
+                r.get("downside_risk"),
                 batch_id,
-                raw if saved == 0 else None,  # Store raw only for first stock in batch
+                raw if saved == 0 else None,
             ))
             saved += 1
         except Exception as e:
