@@ -206,6 +206,12 @@ def load_algo_analysis(date_str: str) -> list[dict]:
                da.bb_pct, da.atr, da.atr_pct, da.volatility, da.vol_ratio,
                da.avg_vol, da.trend_50d, da.support, da.resistance,
                da.ltp, da.wait_days, da.category,
+               da.mfi, da.cmf, da.obv, da.williams_r,
+               da.adx, da.plus_di, da.minus_di,
+               da.ema9, da.ema21, da.sma50,
+               da.momentum_3d, da.momentum_5d,
+               da.turnover, da.chg_5d, da.chg_10d, da.chg_20d,
+               da.max_dd, da.last_5_json, da.scenarios_json,
                f.sector, f.company_name
         FROM daily_analysis da
         JOIN fundamentals f ON da.symbol = f.symbol
@@ -704,19 +710,49 @@ def build_llm_prompt(
     for s in stocks:
         ltp = float(s.get("ltp") or 0)
 
-        # Build raw indicator block — just data, no interpretation
-        indicators = []
+        # Build comprehensive indicator block — ALL available data
+        momentum_indicators = []
         for key, label in [
             ("rsi", "RSI"), ("stoch_rsi", "StochRSI"), ("mfi", "MFI"),
-            ("cmf", "CMF"), ("williams_r", "Williams%R"), ("adx", "ADX"),
-            ("plus_di", "+DI"), ("minus_di", "-DI"), ("bb_pct", "BB%"),
-            ("vol_ratio", "VolRatio"), ("trend_50d", "Trend50d"),
-            ("atr_pct", "ATR%"), ("ema9", "EMA9"), ("ema21", "EMA21"),
+            ("williams_r", "Williams%R"),
+        ]:
+            val = s.get(key)
+            if val is not None:
+                momentum_indicators.append(f"{label}: {float(val):.1f}")
+
+        trend_indicators = []
+        for key, label in [
+            ("adx", "ADX"), ("plus_di", "+DI"), ("minus_di", "-DI"),
+            ("trend_50d", "Trend50d"), ("ema9", "EMA9"), ("ema21", "EMA21"),
             ("sma50", "SMA50"),
         ]:
             val = s.get(key)
             if val is not None:
-                indicators.append(f"{label}: {float(val):.1f}")
+                trend_indicators.append(f"{label}: {float(val):.1f}")
+
+        volume_indicators = []
+        for key, label in [
+            ("cmf", "CMF"), ("vol_ratio", "VolRatio"),
+            ("avg_vol", "AvgVol"), ("turnover", "Turnover"),
+        ]:
+            val = s.get(key)
+            if val is not None:
+                if key in ("avg_vol", "turnover"):
+                    volume_indicators.append(f"{label}: {float(val):,.0f}")
+                else:
+                    volume_indicators.append(f"{label}: {float(val):.2f}")
+        obv = s.get("obv")
+        if obv is not None:
+            volume_indicators.append(f"OBV: {int(obv):,}")
+
+        volatility_indicators = []
+        for key, label in [
+            ("bb_pct", "BB%"), ("atr_pct", "ATR%"), ("volatility", "Volatility"),
+            ("max_dd", "MaxDrawdown"),
+        ]:
+            val = s.get(key)
+            if val is not None:
+                volatility_indicators.append(f"{label}: {float(val):.1f}")
 
         changes = []
         for key, label in [
@@ -727,25 +763,40 @@ def build_llm_prompt(
             if val is not None:
                 changes.append(f"{label}: {float(val):+.1f}%")
 
+        # Last 5 trading days detail
+        last5 = s.get("last_5_json", "")
+
         ohlcv_csv = (ohlcv_map or {}).get(s["symbol"], "")
         corr = (dsex_corr or {}).get(s["symbol"], {})
         corr_line = ""
         if corr:
             corr_line = (
-                f"DSEX Beta: {corr['beta']:.2f} | Correlation: {corr['correlation']:.2f} | "
-                f"Avg when DSEX falls: {corr['avg_return_dsex_down']:+.2f}% | "
-                f"Avg when DSEX rises: {corr['avg_return_dsex_up']:+.2f}%\n"
+                f"DSEX Correlation: beta={corr['beta']:.2f}, corr={corr['correlation']:.2f}, "
+                f"avg_when_dsex_falls={corr['avg_return_dsex_down']:+.2f}%, "
+                f"avg_when_dsex_rises={corr['avg_return_dsex_up']:+.2f}%, "
+                f"if_dsex_-3%≈{corr['scenario_m3']:+.1f}%, if_dsex_+3%≈{corr['scenario_p3']:+.1f}%\n"
             )
 
-        stock_lines.append(
+        stock_block = (
             f"### {s['symbol']} ({s.get('sector', '?')})\n"
-            f"LTP: {ltp:.1f} | MACD: {s.get('macd_status', '')} (hist {float(s.get('macd_hist') or 0):+.2f})\n"
-            f"{' | '.join(indicators)}\n"
-            f"Change: {' | '.join(changes)}\n"
-            f"Support: {s.get('support', 0):.1f} | Resistance: {s.get('resistance', 0):.1f} | AvgVol: {s.get('avg_vol', 0):,.0f}\n"
-            + corr_line
-            + (f"\nPrice History (daily + weekly):\n```\n{ohlcv_csv}\n```\n" if ohlcv_csv else "")
+            f"LTP: {ltp:.1f} | MACD: {s.get('macd_status', '')} "
+            f"(line {float(s.get('macd_line') or 0):+.2f}, signal {float(s.get('macd_signal') or 0):+.2f}, hist {float(s.get('macd_hist') or 0):+.2f})\n"
+            f"Momentum: {' | '.join(momentum_indicators)}\n"
+            f"Trend: {' | '.join(trend_indicators)}\n"
+            f"Volume/Flow: {' | '.join(volume_indicators)}\n"
+            f"Volatility: {' | '.join(volatility_indicators)}\n"
+            f"Price Change: {' | '.join(changes)}\n"
+            f"Support: {s.get('support', 0):.1f} | Resistance: {s.get('resistance', 0):.1f}\n"
+            f"Risk: {s.get('risk_pct', 0):.1f}% | Reward: {s.get('reward_pct', 0):.1f}%\n"
         )
+        if corr_line:
+            stock_block += corr_line
+        if last5:
+            stock_block += f"Last 5 days: {last5}\n"
+        if ohlcv_csv:
+            stock_block += f"\nPrice History (daily + weekly):\n```\n{ohlcv_csv}\n```\n"
+
+        stock_lines.append(stock_block)
 
     dsex_block = ""
     if dsex_csv:
@@ -756,20 +807,46 @@ def build_llm_prompt(
 ```
 """
 
-    return f"""You are analyzing DSE (Dhaka Stock Exchange) stocks for a trader whose biggest problem is buying TOO LATE — after stocks already moved up. Your job is to find stocks BEFORE they move, not after.
+    return f"""You are the sole decision-maker for a DSE (Dhaka Stock Exchange) Buy Radar system. Your stage assignment and score ARE the final output — there is NO post-processing or override. What you say is what the trader sees.
 
-You have raw data for each stock: 1-year weekly candles, 6-month daily candles, 16 technical indicators, and DSEX correlation data. Look at the data. Think independently. Be honest.
+## YOUR GOAL
+Find stocks BEFORE they move up, not after. The trader's biggest problem is buying TOO LATE.
 
-## The one question that matters
-For each stock: "If I buy today, am I EARLY or LATE?"
+## DATA YOU HAVE (use ALL of it)
+For each stock you receive:
+- **1-year weekly candles** + **6-month daily candles**: Full OHLCV price history. Study the trend, support/resistance levels, recent price action patterns.
+- **25+ technical indicators**: RSI, StochRSI, MFI, Williams%R (momentum); ADX, +DI, -DI, EMA9, EMA21, SMA50, Trend50d (trend); CMF, OBV, VolRatio, AvgVol, Turnover (volume/money flow); BB%, ATR%, Volatility, MaxDrawdown (volatility).
+- **MACD full data**: Line, Signal, Histogram values + crossover status.
+- **Price changes**: 5-day, 10-day, 20-day returns + 3d/5d momentum.
+- **Last 5 trading days**: Day-by-day price action detail.
+- **DSEX correlation**: Beta, correlation coefficient, how the stock behaves when DSEX falls/rises, scenario projections.
+- **Support/Resistance levels** from 6-month price history.
+- **Risk/Reward ratios** from algorithmic analysis.
 
-- Look at the price history. Where was this stock 5 days ago? 10 days ago? At its recent low?
-- If it already bounced significantly from its recent low, the move happened. You're late.
-- If it's still near the bottom, quiet, with signs of accumulation — you might be early.
-- If daily volume is tiny (under 10-20K), can you even get in and out safely?
-- Consider DSEX: this stock has beta data. If DSEX drops tomorrow, does this stock become cheaper? Maybe wait.
-- T+2 settlement: buyer cannot sell for 2 trading days. If the stock peaks tomorrow, you're trapped.
-- DSE tick size is 0.10 BDT. All prices in multiples of 0.10.
+## CRITICAL ANALYSIS FRAMEWORK
+
+**Step 1 — Am I EARLY or LATE?**
+- Compare current price to 5d/10d/20d ago. If stock already rallied 5%+ from recent low → you're LATE → TOO_LATE or WATCHING.
+- A stock that went from 150→165 in 5 days is NOT "READY" — that move already happened.
+- READY/ENTRY_ZONE = stock is STILL near the bottom, hasn't moved yet.
+
+**Step 2 — Indicator confluence**
+- Don't rely on a single indicator. Look for agreement across momentum (RSI+MFI+StochRSI), trend (ADX+DI+EMA), and volume (CMF+VolRatio+OBV).
+- Oversold RSI alone is not enough. Is money flowing IN (CMF positive, volume increasing)?
+- MACD histogram turning positive while price is near support = much stronger signal than either alone.
+
+**Step 3 — Volume reality check**
+- If AvgVol < 10,000 or Turnover < 500,000 BDT → liquidity risk. Hard to enter/exit.
+- VolRatio > 1.5 with price near support = accumulation signal.
+- VolRatio > 2.0 with price already up = you're late, someone already bought.
+
+**Step 4 — DSEX dependency**
+- High-beta stocks (beta > 1.2) will drop harder if DSEX falls. Factor this into entry timing.
+- If DSEX looks weak, even good stocks may dip further → better entry ahead.
+
+**Step 5 — T+2 settlement risk**
+- Buyer CANNOT sell for 2 trading days. If stock is already extended, you're trapped in a pullback.
+- DSE tick size is 0.10 BDT. All prices must be multiples of 0.10.
 
 ## Market Context
 - DSEX: {dsex:.1f} ({dsex_chg:+.2f}%)
@@ -781,14 +858,23 @@ For each stock: "If I buy today, am I EARLY or LATE?"
 
 {chr(10).join(stock_lines)}
 
-## Output
-For EACH stock, return your honest analysis as JSON. Assign a stage:
-- **ENTRY_ZONE**: The dip is here NOW. Price at bottom, oversold, money flowing in. Rare — most stocks don't qualify.
-- **READY**: 1-3 days away from a good entry. Near support, hasn't rallied yet.
-- **APPROACHING**: Setting up but needs a pullback. 5-10 days.
-- **BUILDING**: Early accumulation. Weeks away.
-- **WATCHING**: No setup. Unclear or not worth the risk.
-- **TOO_LATE**: Already moved. The bounce/rally happened. Wait for the next dip.
+## Output — YOUR STAGE IS FINAL (no override)
+Assign each stock a stage. Be brutally honest:
+- **ENTRY_ZONE**: Price at bottom NOW. Multiple indicators oversold, money flowing in, near strong support. VERY RARE — maybe 2-5% of stocks at any time.
+- **READY**: 1-3 days from good entry. Near support, hasn't rallied yet, indicators turning. Still uncommon — maybe 5-10%.
+- **APPROACHING**: Setting up but needs a pullback or more time. 5-10 days away.
+- **BUILDING**: Early accumulation phase. Weeks away from entry.
+- **WATCHING**: No clear setup. Unclear direction or not worth the risk.
+- **TOO_LATE**: Already moved up significantly. The rally/bounce happened. Do NOT mark these as READY.
+
+**SCORE IS TIMING QUALITY**: 0-100, how good is buying RIGHT NOW?
+- 70-100: Exceptional timing, rare oversold dip at strong support (ENTRY_ZONE only)
+- 50-69: Good setup, near support, indicators favorable (READY)
+- 30-49: Decent but needs pullback or more confirmation (APPROACHING)
+- 10-29: Too early or too late (BUILDING/WATCHING)
+- 0-9: Terrible timing, extended or broken (TOO_LATE)
+
+**Most stocks should score 20-40** because most stocks are NOT at ideal entry points at any given time. If you give 30+ stocks scores above 50, you're being too generous.
 
 Return a JSON array. Start with [ end with ]. NO other text:
 [
@@ -797,8 +883,8 @@ Return a JSON array. Start with [ end with ]. NO other text:
     "action": "BUY|BUY on dip|BUY on pullback|HOLD/WAIT|SELL/AVOID|AVOID",
     "confidence": "HIGH|MEDIUM|LOW",
     "stage": "ENTRY_ZONE|READY|APPROACHING|BUILDING|WATCHING|TOO_LATE",
-    "stage_reasoning": "Why this stage. Reference specific prices, dates, volumes from the chart. Be specific.",
-    "reasoning": "3-5 sentence honest analysis. What do the indicators and price history actually tell you? Don't sugarcoat.",
+    "stage_reasoning": "Why this stage. Reference specific prices, dates, volumes from the data. Be specific — cite actual numbers.",
+    "reasoning": "3-5 sentence honest analysis using multiple indicator groups. What does the confluence of momentum + trend + volume tell you? Don't sugarcoat.",
     "expected_return_1w": 0.0,
     "expected_return_2w": 0.0,
     "expected_return_1m": 0.0,
@@ -820,8 +906,6 @@ Return a JSON array. Start with [ end with ]. NO other text:
     "score": 50
   }}
 ]
-
-Score 0-100 = how good is the buy TIMING right now. 0 = terrible timing, 100 = perfect dip entry. Most stocks should score 20-40 because most stocks are NOT at ideal entry points at any given time.
 
 Start with [ end with ]. ONLY JSON."""
 

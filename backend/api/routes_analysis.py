@@ -777,12 +777,12 @@ async def get_buy_radar(categories: str = "A", exclude_sectors: str = ""):
         # Overall score comes directly from LLM (judge overrides if available)
         overall = float(judge.get("score") or llm.get("score") or 0)
 
-        # Stage comes directly from LLM
+        # Stage comes directly from LLM — no overrides
         action_upper = ai_action.upper()
         llm_stage = (llm.get("stage") or "").upper().replace(" ", "_")
         valid_stages = {"ENTRY_ZONE", "READY", "APPROACHING", "BUILDING", "WATCHING", "TOO_LATE"}
 
-        # Check recent rally from price history
+        # Check recent rally from price history (for ret_5d display)
         prices_close = df["close"].tolist()
         ret_5d_pct = 0
         if len(prices_close) >= 6:
@@ -791,32 +791,10 @@ async def get_buy_radar(categories: str = "A", exclude_sectors: str = ""):
                 ret_5d_pct = (close / p5 - 1) * 100
 
         if llm_stage in valid_stages:
-            if llm_stage == "TOO_LATE":
-                stage = "WATCHING"
-            elif llm_stage in ("ENTRY_ZONE", "READY"):
-                # Sanity check: demote if score is low or stock already rallied
-                if overall < 40 and ret_5d_pct > 5:
-                    stage = "APPROACHING"  # Already moved, not ready
-                elif overall < 30:
-                    stage = "APPROACHING"  # Score too low for READY
-                elif "HOLD" in action_upper or "WAIT" in action_upper:
-                    stage = "APPROACHING"  # LLM action contradicts READY
-                else:
-                    stage = llm_stage
-            else:
-                stage = llm_stage
+            stage = "WATCHING" if llm_stage == "TOO_LATE" else llm_stage
         else:
-            # No valid stage from LLM — infer from action/score
-            if overall >= 60 and "BUY" in action_upper:
-                stage = "ENTRY_ZONE"
-            elif overall >= 45 and "BUY" in action_upper:
-                stage = "READY"
-            elif overall >= 35 and "BUY" in action_upper:
-                stage = "APPROACHING"
-            elif overall >= 25:
-                stage = "BUILDING"
-            else:
-                stage = "WATCHING"
+            # No valid stage from LLM — use score as fallback
+            stage = "WATCHING"
 
         # Red flags from LLM risk_factors
         red_flags = []
