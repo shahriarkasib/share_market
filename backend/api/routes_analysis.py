@@ -1019,6 +1019,16 @@ async def get_buy_radar(categories: str = "A", exclude_sectors: str = ""):
             if pct_above > 5:
                 has_blocker = True  # Way past entry = hard block
 
+        # Recent rally detection: if price rallied >7% in last 5 days, it already moved
+        prices_close = full_df["close"].values
+        if len(prices_close) >= 6 and not already_moved:
+            recent_low = float(min(prices_close[-6:-1]))  # lowest of last 5 days (excluding today)
+            if recent_low > 0:
+                rally_pct = round((close / recent_low - 1) * 100, 1)
+                if rally_pct > 7 and rsi > 55 and bb_pct > 60:
+                    red_flags.append(f"Rallied {rally_pct:.0f}% in 5 days — chasing risk")
+                    already_moved = True
+
         # Mid-range stocks with no edge left
         if rsi > 55 and stoch_k > 60 and bb_pct > 60 and not already_moved:
             red_flags.append("Indicators mid-range — no discount left")
