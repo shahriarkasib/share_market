@@ -1412,8 +1412,13 @@ def run_daily_analysis():
             logger.warning("Daily analysis produced no results")
             return
 
-        today = datetime.now(DSE_TZ).strftime("%Y-%m-%d")
-        save_daily_analysis(analysis, today)
+        # Use latest trading day from daily_prices (not today, which may be a weekend)
+        from database import get_connection
+        conn = get_connection()
+        row = conn.execute("SELECT MAX(date) FROM daily_prices").fetchone()
+        conn.close()
+        analysis_date = str(row[0]) if row and row[0] else datetime.now(DSE_TZ).strftime("%Y-%m-%d")
+        save_daily_analysis(analysis, analysis_date)
 
         counts = {}
         for a in analysis:
