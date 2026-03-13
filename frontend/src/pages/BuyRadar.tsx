@@ -316,12 +316,16 @@ function StockCard({ stock }: { stock: BuyRadarStock }) {
             )}
           </div>
 
-          {/* AI reasoning (truncated) */}
-          {stock.ai_reasoning && (
+          {/* AI stage reasoning (why this stage) */}
+          {stock.stage_reasoning ? (
+            <p className="text-[8px] text-[var(--text-muted)] leading-relaxed line-clamp-3 mb-1">
+              {stock.stage_reasoning}
+            </p>
+          ) : stock.ai_reasoning ? (
             <p className="text-[8px] text-[var(--text-muted)] leading-relaxed line-clamp-2 mb-1">
               {stock.ai_reasoning}
             </p>
-          )}
+          ) : null}
 
           {/* How to buy + wait for */}
           <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[8px]">

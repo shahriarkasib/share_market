@@ -608,7 +608,7 @@ async def get_buy_radar(categories: str = "A", exclude_sectors: str = ""):
         llm_rows = conn.execute(
             "SELECT symbol, action, confidence, reasoning, wait_for, wait_days, "
             "score, risk_factors, catalysts, how_to_buy, volume_rule, "
-            "entry_low, entry_high, sl, t1, t2 "
+            "entry_low, entry_high, sl, t1, t2, stage, stage_reasoning "
             "FROM llm_daily_analysis WHERE date = ?", (ai_date,),
         ).fetchall()
         llm_map = {r["symbol"]: dict(r) for r in llm_rows}
@@ -1007,6 +1007,21 @@ async def get_buy_radar(categories: str = "A", exclude_sectors: str = ""):
         if adx < 12 and not (rsi < 35 or mfi < 25):
             red_flags.append("Completely trendless")
 
+        # "Already moved" detection: price above entry zone = too late
+        a_entry_high = float(analysis_map.get(sym, {}).get("entry_high") or 0)
+        already_moved = False
+        if a_entry_high > 0 and close > a_entry_high * 1.02:
+            pct_above = round((close / a_entry_high - 1) * 100, 1)
+            red_flags.append(f"Price {pct_above:.0f}% above entry zone ({a_entry_high:.1f})")
+            already_moved = True
+            if pct_above > 5:
+                has_blocker = True  # Way past entry = hard block
+
+        # Mid-range stocks with no edge left
+        if rsi > 55 and stoch_k > 60 and bb_pct > 60 and not already_moved:
+            red_flags.append("Indicators mid-range — no discount left")
+            already_moved = True
+
         # ════════════════════════════════════════
         #  LAYER 5 — AI VERDICT (from LLM + Judge)
         #  Uses Claude's analysis: news, context, sector, risk
@@ -1103,35 +1118,50 @@ async def get_buy_radar(categories: str = "A", exclude_sectors: str = ""):
         ready_count = sum(1 for p in [leading_pct, confirm_pct, money_pct,
                                        pos_pct, ai_pct] if p >= 60)
 
-        # Stage — requires specific combinations
+        # Stage — prefer LLM-produced stage (AI sees 60-day price history)
         has_ai_buy = "BUY" in action_upper and "AVOID" not in action_upper
         has_distribution = any("DISTRIBUTION" in f for f in money_signals)
 
-        if has_blocker:
-            if overall >= 10:
+        llm_stage = (llm.get("stage") or "").upper().replace(" ", "_")
+        valid_stages = {"ENTRY_ZONE", "READY", "APPROACHING", "BUILDING", "WATCHING", "TOO_LATE"}
+
+        if llm_stage in valid_stages:
+            # Use LLM's stage decision (it has 60-day OHLCV context)
+            if llm_stage == "TOO_LATE":
+                stage = "WATCHING"  # Show but demoted
+                red_flags.append("AI: already moved — too late to chase")
+            elif has_blocker and llm_stage in ("ENTRY_ZONE", "READY"):
+                stage = "WATCHING"  # Red flags override AI promotion
+            else:
+                stage = llm_stage
+        else:
+            # Fallback: hardcoded staging (no LLM stage available)
+            if has_blocker:
+                if overall >= 10:
+                    stage = "WATCHING"
+                else:
+                    continue
+            elif (ready_count >= 4 and money_pct >= 60 and leading_pct >= 50
+                  and has_ai_buy and not has_distribution and not already_moved):
+                stage = "ENTRY_ZONE"
+            elif (ready_count >= 3 and money_pct >= 40 and has_ai_buy
+                  and not already_moved
+                  and (macd_converging or macd_crossed or ema_converging or ema_bullish)):
+                stage = "ENTRY_ZONE"
+            elif (ready_count >= 2 and money_pct >= 40 and not already_moved
+                  and (macd_converging or macd_crossed or ema_converging or ema_bullish)):
+                stage = "READY"
+            elif has_ai_buy and not already_moved and (leading_pct >= 40 or money_pct >= 50):
+                stage = "READY"
+            elif (leading_pct >= 40 or money_pct >= 50
+                  or (confirm_pct >= 40 and pos_pct >= 40)):
+                stage = "APPROACHING"
+            elif overall >= 30 or leading_pct >= 30 or money_pct >= 30:
+                stage = "BUILDING"
+            elif overall >= 15 or has_ai_buy:
                 stage = "WATCHING"
             else:
                 continue
-        elif (ready_count >= 4 and money_pct >= 60 and leading_pct >= 50
-              and has_ai_buy and not has_distribution):
-            stage = "ENTRY_ZONE"
-        elif (ready_count >= 3 and money_pct >= 40 and has_ai_buy
-              and (macd_converging or macd_crossed or ema_converging or ema_bullish)):
-            stage = "ENTRY_ZONE"
-        elif (ready_count >= 2 and money_pct >= 40
-              and (macd_converging or macd_crossed or ema_converging or ema_bullish)):
-            stage = "READY"
-        elif has_ai_buy and (leading_pct >= 30 or money_pct >= 40):
-            stage = "READY"
-        elif (leading_pct >= 40 or money_pct >= 50
-              or (confirm_pct >= 40 and pos_pct >= 40)):
-            stage = "APPROACHING"
-        elif overall >= 30 or leading_pct >= 30 or money_pct >= 30:
-            stage = "BUILDING"
-        elif overall >= 15 or has_ai_buy:
-            stage = "WATCHING"
-        else:
-            continue
 
         # ── Build response object ──
         prices_list = df["close"].tolist()
@@ -1189,6 +1219,7 @@ async def get_buy_radar(categories: str = "A", exclude_sectors: str = ""):
             "ai_catalysts": ai_catalysts[:3] if isinstance(ai_catalysts, list) else [],
             "ai_risk_factors": ai_risk_factors[:3] if isinstance(ai_risk_factors, list) else [],
             "ai_signals": ai_signals,
+            "stage_reasoning": llm.get("stage_reasoning") or "",
         })
 
     # ── Save today's snapshots & load history ──

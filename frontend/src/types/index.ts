@@ -498,6 +498,7 @@ export interface BuyRadarStock {
   ai_catalysts: string[];
   ai_risk_factors: string[];
   ai_signals: string[];
+  stage_reasoning: string;
   // Tracking fields
   days_on_radar: number;
   first_seen: string;

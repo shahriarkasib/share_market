@@ -74,7 +74,7 @@ ACTION_NORMALIZE = {
     "SELL/AVOID": "SELL/AVOID",
 }
 
-LLM_BATCH_SIZE = 8
+LLM_BATCH_SIZE = 4
 JUDGE_BATCH_SIZE = 30
 CLAUDE_TIMEOUT = 900
 CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-5-20250514")
@@ -111,6 +111,8 @@ def ensure_tables():
         "ALTER TABLE llm_daily_analysis ADD COLUMN IF NOT EXISTS volume_rule TEXT",
         "ALTER TABLE llm_daily_analysis ADD COLUMN IF NOT EXISTS next_day_plan TEXT",
         "ALTER TABLE llm_daily_analysis ADD COLUMN IF NOT EXISTS sell_plan TEXT",
+        "ALTER TABLE llm_daily_analysis ADD COLUMN IF NOT EXISTS stage TEXT",
+        "ALTER TABLE llm_daily_analysis ADD COLUMN IF NOT EXISTS stage_reasoning TEXT",
         "CREATE INDEX IF NOT EXISTS idx_llm_daily_date ON llm_daily_analysis(date)",
         """CREATE TABLE IF NOT EXISTS judge_daily_analysis (
             id SERIAL PRIMARY KEY, date DATE NOT NULL, symbol TEXT NOT NULL,
@@ -273,6 +275,66 @@ def load_accuracy_feedback() -> str:
     return "\n".join(lines) + "\n"
 
 
+def load_ohlcv_history(symbols: list[str], days: int = 60) -> dict[str, str]:
+    """Load recent OHLCV history for symbols, return compact CSV per symbol."""
+    conn = get_conn()
+    cur = conn.cursor()
+    placeholders = ",".join(["%s"] * len(symbols))
+    cur.execute(f"""
+        SELECT symbol, date, open, high, low, close, volume
+        FROM daily_prices
+        WHERE symbol IN ({placeholders})
+        ORDER BY symbol, date DESC
+    """, symbols)
+    rows = cur.fetchall()
+    conn.close()
+
+    # Group by symbol, take last N days, format as CSV
+    from collections import defaultdict
+    by_sym: dict[str, list] = defaultdict(list)
+    for r in rows:
+        by_sym[r["symbol"]].append(r)
+
+    result = {}
+    for sym in symbols:
+        sym_rows = by_sym.get(sym, [])[:days]
+        sym_rows.reverse()  # Oldest first
+        if not sym_rows:
+            result[sym] = ""
+            continue
+        lines = ["date,O,H,L,C,Vol"]
+        for r in sym_rows:
+            lines.append(
+                f"{r['date']},{float(r['open']):.1f},{float(r['high']):.1f},"
+                f"{float(r['low']):.1f},{float(r['close']):.1f},{int(r['volume'])}"
+            )
+        result[sym] = "\n".join(lines)
+    return result
+
+
+def load_dsex_history(days: int = 60) -> str:
+    """Load recent DSEX index history, return compact CSV."""
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT date, dsex_index, total_volume, total_value
+        FROM dsex_history ORDER BY date DESC LIMIT %s
+    """, (days,))
+    rows = cur.fetchall()
+    conn.close()
+
+    rows.reverse()  # Oldest first
+    if not rows:
+        return ""
+    lines = ["date,DSEX,Volume,Turnover"]
+    for r in rows:
+        lines.append(
+            f"{r['date']},{float(r['dsex_index']):.1f},"
+            f"{int(r['total_volume'] or 0)},{int(r['total_value'] or 0)}"
+        )
+    return "\n".join(lines)
+
+
 # ─── Claude CLI ───
 
 
@@ -421,9 +483,10 @@ def parse_wait_days(wait_str: str) -> tuple[int, int]:
 
 
 def build_llm_prompt(
-    stocks: list[dict], market: dict, feedback: str, batch_num: int, total_batches: int
+    stocks: list[dict], market: dict, feedback: str, batch_num: int, total_batches: int,
+    ohlcv_map: dict[str, str] = None, dsex_csv: str = "",
 ) -> str:
-    """Build prompt for a batch of stocks."""
+    """Build prompt for a batch of stocks — includes 60-day OHLCV history."""
     dsex = market.get("dsex_index", 0)
     dsex_chg = market.get("dsex_change_pct", 0)
 
@@ -438,49 +501,63 @@ def build_llm_prompt(
         trend = float(s.get("trend_50d") or 0)
         atr_p = float(s.get("atr_pct") or 0)
 
+        ohlcv_csv = (ohlcv_map or {}).get(s["symbol"], "")
+
         stock_lines.append(
             f"### {s['symbol']} ({s.get('sector', '?')})\n"
             f"LTP: {ltp:.1f} | Algo: {s['action']} (score {s.get('score', 0):.0f})\n"
-            f"Entry: {s.get('entry_low', 0):.1f}-{s.get('entry_high', 0):.1f} | "
-            f"SL: {s.get('sl', 0):.1f} | T1: {s.get('t1', 0):.1f} | T2: {s.get('t2', 0):.1f}\n"
             f"RSI: {rsi:.1f} | StochRSI: {stoch:.1f} | MACD: {s.get('macd_status', '')} (hist {macd_h:+.2f})\n"
             f"BB%: {bb:.1f}% | VolRatio: {vol_r:.1f}x | Trend50d: {trend:+.1f}% | ATR%: {atr_p:.1f}%\n"
             f"Support: {s.get('support', 0):.1f} | Resistance: {s.get('resistance', 0):.1f}\n"
-            f"Risk: {s.get('risk_pct', 0):.1f}% | Reward: {s.get('reward_pct', 0):.1f}%\n"
-            f"Algo reason: {(s.get('reasoning') or '')[:120]}\n"
-            f"Algo wait: {s.get('wait_days', '')}"
+            + (f"\n60-day OHLCV:\n```\n{ohlcv_csv}\n```\n" if ohlcv_csv else "")
         )
 
-    return f"""You are a senior DSE (Dhaka Stock Exchange) trading analyst writing for BEGINNERS who are new to the stock market. Your readers do NOT know what RSI, MACD, Bollinger Bands, or ATR mean. You MUST explain every indicator you reference in plain language.
+    dsex_block = ""
+    if dsex_csv:
+        dsex_block = f"\n## DSEX Index — 60-day History\n```\n{dsex_csv}\n```\n"
 
-## INDICATOR GLOSSARY (use these explanations in your reasoning)
-- **RSI** (Relative Strength Index, 0-100): Measures if a stock is oversold (<30 = sellers exhausted, price likely to bounce UP) or overbought (>70 = buyers exhausted, price likely to drop). 40-60 is neutral.
-- **StochRSI** (0-100): A faster version of RSI. <20 = deeply oversold (strong bounce signal). >80 = deeply overbought (pullback coming).
-- **MACD**: Shows momentum direction. "Bullish cross" = momentum shifting UP (buy signal). "Bearish cross" = momentum shifting DOWN (sell signal). "Converging" = about to cross (get ready). Histogram > 0 = upward momentum.
-- **BB%** (Bollinger Band %): Where price sits within its 20-day range. 0-15% = near bottom (cheap vs average, bounce zone). 85-100% = near top (expensive vs average, may drop). 40-60% = fair value.
-- **ATR%** (Average True Range %): How much the stock typically moves per day as % of price. High ATR% = volatile stock (bigger moves, bigger risk). Used to set stop loss distance.
-- **Vol Ratio**: Today's volume vs 20-day average. >2x = unusual interest (big move likely). <0.5x = nobody cares (avoid).
-- **Trend50d**: Price change over 50 days. Positive = uptrend. Negative = downtrend.
-- **SMA50**: 50-day average price. Price above = uptrend. Below = downtrend.
-- **Support**: Price level where stock historically stops falling (floor). **Resistance**: Price level where stock historically stops rising (ceiling).
-- **T+2**: After buying, you CANNOT sell for 2 trading days. If stock peaks today, buying is BAD.
-- **Pullback**: Stock in uptrend that dipped temporarily — buy at a discount before it resumes rising.
-- **Dip**: Price dropped to lower part of normal range — buy before it bounces back to average.
+    return f"""You are a senior DSE (Dhaka Stock Exchange) trading analyst. You have 60 days of OHLCV price history for each stock below, plus the DSEX index history. Use this data to understand the REAL price pattern — where the stock came from, whether it already rallied, where it found support, and whether there is still upside.
+
+Your audience is BEGINNERS. Explain every indicator in plain language.
+
+## KEY CONCEPTS
+- **Support**: Price level where stock historically stops falling (visible as repeated lows in the OHLCV data).
+- **Resistance**: Price level where stock stops rising (visible as repeated highs).
+- **RSI < 30**: Oversold (bounce likely). **RSI > 70**: Overbought (drop likely). 40-60 neutral.
+- **StochRSI < 20**: Deeply oversold. **> 80**: Deeply overbought.
+- **MACD bullish cross**: Momentum shifting UP. **Bearish cross**: Momentum shifting DOWN.
+- **BB%**: 0-15% = near bottom of 20-day range (cheap). 85-100% = near top (expensive).
+- **Vol Ratio**: Today's volume vs 20-day avg. >2x = unusual interest. <0.5x = dead.
+- **T+2**: After buying, you CANNOT sell for 2 trading days.
+- **DSE tick size**: 0.10 BDT. All prices must be multiples of 0.10.
+
+## STAGE DEFINITIONS — You MUST assign one per stock
+- **ENTRY_ZONE**: Stock is AT or BELOW its ideal buy price RIGHT NOW. All signals aligned. Ready to buy TODAY.
+- **READY**: Stock is very close to becoming buyable. 1-3 day wait for a specific trigger (e.g., MACD cross, volume surge, small dip).
+- **APPROACHING**: Building up signals but needs more confirmation. 5-10 day wait.
+- **BUILDING**: Early signs of accumulation. Not ready yet. 10-20 day wait.
+- **WATCHING**: On radar but no clear signal yet. Or has red flags that need resolving.
+- **TOO_LATE**: Stock already rallied from its recent low. The move happened. Buying now = chasing.
+
+**CRITICAL STAGE RULES:**
+1. Look at the 60-day OHLCV. If the stock is up >5% from its recent low (last 10-20 days) and indicators are mid-range (RSI 50-65, StochRSI > 50, BB% > 50), it is TOO_LATE or WATCHING, NOT ENTRY_ZONE or READY.
+2. ENTRY_ZONE requires: price near recent support/low, oversold indicators, AND volume confirmation.
+3. READY requires: price within 2-3% of entry zone, clear trigger identified, indicators turning.
+4. If the stock peaked and is now falling, it is NOT a buy — it is WATCHING until it stabilizes.
+5. Compare current price to the 20-day and 50-day price range. If price is in the upper third, be very skeptical of BUY calls.
 
 ## Market Context
 - DSEX: {dsex:.1f} ({dsex_chg:+.2f}%)
 - Advances: {market.get('advances', 0)} | Declines: {market.get('declines', 0)}
 - Volume: {market.get('total_volume', 0):,} | Turnover: {market.get('total_value', 0):,.0f}
-
+{dsex_block}
 {feedback}
 ## Stocks to Analyze (batch {batch_num}/{total_batches})
 
 {chr(10).join(stock_lines)}
 
 ## Your Task
-For EACH stock, provide your INDEPENDENT analysis. You may agree or disagree with the algo.
-
-**CRITICAL: Write your reasoning as if teaching a beginner.** Don't just say "RSI is 28" — say "RSI is at 28, which is below 30 (oversold territory) — this means sellers are running out of steam and the price is likely to bounce upward soon."
+For EACH stock, analyze the 60-day price history. Look at where the stock was, where it is now, and whether there is still opportunity. Set entry_low/entry_high based on ACTUAL support levels visible in the price data, NOT from a formula.
 
 Return a JSON array (NO markdown fences, ONLY valid JSON):
 [
@@ -488,38 +565,37 @@ Return a JSON array (NO markdown fences, ONLY valid JSON):
     "symbol": "SYMBOL",
     "action": "BUY|BUY on dip|BUY on pullback|BUY (wait for MACD cross)|HOLD/WAIT|SELL/AVOID|AVOID",
     "confidence": "HIGH|MEDIUM|LOW",
-    "reasoning": "3-5 sentence EDUCATIONAL analysis. For EACH indicator you mention, explain what it means and WHY it matters. Example: 'RSI is at 28 (below 30 = oversold, sellers exhausted). MACD just crossed bullish (momentum shifting up). Price near lower Bollinger Band (cheap vs 20-day average). Together: stock beaten down enough, ready to bounce.'",
-    "wait_for": "Specific trigger in PLAIN LANGUAGE: e.g., 'Wait for MACD to cross bullish + volume above 50K in a single day.'",
+    "stage": "ENTRY_ZONE|READY|APPROACHING|BUILDING|WATCHING|TOO_LATE",
+    "stage_reasoning": "1-2 sentences: WHY this stage. Reference specific prices from the OHLCV data. E.g., 'Stock bounced from 22.0 support 3 times in the last month, now at 22.3 with RSI 28 — right at entry zone.' Or: 'Stock already rallied from 31.0 to 33.5 (+8%) in 5 days, RSI 58 and rising — too late to chase.'",
+    "reasoning": "3-5 sentence EDUCATIONAL analysis. For EACH indicator, explain what it means. Reference specific prices and dates from the OHLCV data.",
+    "wait_for": "Specific trigger: e.g., 'Wait for price to pull back to 21.5-22.0 (recent support) with volume > 50K'",
     "wait_days": "e.g., 'NOW', '1-3 days', '5-10 days', '15-30 days'",
     "entry_low": 0.0,
     "entry_high": 0.0,
     "sl": 0.0,
     "t1": 0.0,
     "t2": 0.0,
-    "how_to_buy": "Step-by-step instructions for TOMORROW. Example: '1. Wait first 15 minutes after market opens. 2. Check if volume crosses 50,000 — if yes, buyers are real. 3. Place limit order at 22.0 (near support). 4. Set stop loss at 20.5 immediately after buying. 5. If price gaps up above 23.5 at open, DO NOT chase — wait for pullback.'",
-    "volume_rule": "Minimum volume needed to confirm the trade. Example: 'Only buy if today\\'s volume exceeds 100,000 (above the 20-day average of 80,000). Low volume = fake move.'",
-    "next_day_plan": "Exactly what to do tomorrow for this stock. Example: 'If opens GREEN above 22.5: hold, trail stop to 21.8. If opens FLAT 21.5-22.5: watch for breakout above 22.5 with volume. If opens RED below 21.0: do NOT buy, wait another day.'",
-    "sell_plan": "When and how to sell. Example: 'Sell half at T1 (24.0) to lock profit. Move stop loss to entry price for remaining. Sell rest at T2 (25.5) or if MACD turns bearish.'",
-    "risk_factors": ["Plain language risk: e.g., 'If DSEX drops below 5000, this stock falls too regardless of technicals'"],
-    "catalysts": ["Plain language catalyst: e.g., 'Dividend announcement expected next week could push price up'"],
+    "how_to_buy": "Step-by-step for tomorrow. Include volume threshold, first-15-min rule, limit order price, stop loss, and what NOT to do.",
+    "volume_rule": "Min volume needed to confirm. E.g., 'Only buy if volume > 100K (20-day avg is 80K).'",
+    "next_day_plan": "3 scenarios: opens green, opens flat, opens red — specific action for each.",
+    "sell_plan": "When and how to sell: sell half at T1, move SL to entry, sell rest at T2 or on bearish signal.",
+    "risk_factors": ["Plain language risk"],
+    "catalysts": ["Plain language catalyst"],
     "score": 50
   }}
 ]
 
 Rules:
-1. Analyze ALL {len(stocks)} stocks, not just BUY candidates
-2. T+2 settlement: buyer CANNOT sell for 2 trading days. If stock peaks today, BAD BUY. Flag this risk.
-3. DSE tick size: 0.10 BDT. All prices must be multiples of 0.10.
-4. EVERY indicator mentioned in reasoning MUST include what it means (use the glossary above)
-5. Score 0-100: 0=strong avoid, 50=neutral, 100=strong buy
-6. HOLD/WAIT must explain EXACTLY what to watch for and how a beginner would recognize the trigger
-7. For AVOID stocks, explain what would need to change (in plain language) for it to become buyable
-8. Risk factors and catalysts must be understandable by someone who has never traded before
-9. If you made mistakes in past predictions (shown in feedback above), EXPLICITLY adjust your approach
-10. how_to_buy MUST include: volume threshold, first-15-min rule, limit order price, stop loss placement, and what NOT to do
-11. next_day_plan MUST cover 3 scenarios: opens green, opens flat, opens red — with specific actions for each
-12. sell_plan MUST specify: sell half at T1, move SL to entry, sell rest at T2 or on bearish signal
-13. Return ONLY valid JSON array, no extra text"""
+1. Analyze ALL {len(stocks)} stocks
+2. entry_low/entry_high MUST be based on actual support levels visible in the 60-day OHLCV data, NOT calculated from a formula
+3. If current price is already above a reasonable entry zone, say so — set stage to TOO_LATE or WATCHING
+4. Score 0-100: 0=strong avoid, 50=neutral, 100=strong buy
+5. T+2: buyer cannot sell for 2 days. If stock peaks today, BAD BUY
+6. DSE tick size 0.10 BDT — all prices in multiples of 0.10
+7. HOLD/WAIT must explain EXACTLY what trigger to watch for
+8. For AVOID stocks, explain what would change to make it buyable
+9. If you made mistakes in past predictions (see feedback above), EXPLICITLY adjust
+10. Return ONLY valid JSON array, no extra text"""
 
 
 def store_llm_results(date_str: str, results: list[dict], batch_id: int, raw: str):
@@ -539,8 +615,9 @@ def store_llm_results(date_str: str, results: list[dict], batch_id: int, raw: st
                      entry_low, entry_high, sl, t1, t2,
                      risk_factors, catalysts, score,
                      how_to_buy, volume_rule, next_day_plan, sell_plan,
+                     stage, stage_reasoning,
                      batch_id, raw_response)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (date, symbol) DO UPDATE SET
                     action = EXCLUDED.action, confidence = EXCLUDED.confidence,
                     reasoning = EXCLUDED.reasoning, wait_for = EXCLUDED.wait_for,
@@ -551,6 +628,7 @@ def store_llm_results(date_str: str, results: list[dict], batch_id: int, raw: st
                     score = EXCLUDED.score,
                     how_to_buy = EXCLUDED.how_to_buy, volume_rule = EXCLUDED.volume_rule,
                     next_day_plan = EXCLUDED.next_day_plan, sell_plan = EXCLUDED.sell_plan,
+                    stage = EXCLUDED.stage, stage_reasoning = EXCLUDED.stage_reasoning,
                     batch_id = EXCLUDED.batch_id, raw_response = EXCLUDED.raw_response
             """, (
                 date_str, symbol, action,
@@ -570,6 +648,8 @@ def store_llm_results(date_str: str, results: list[dict], batch_id: int, raw: st
                 r.get("volume_rule", ""),
                 r.get("next_day_plan", ""),
                 r.get("sell_plan", ""),
+                r.get("stage", ""),
+                r.get("stage_reasoning", ""),
                 batch_id,
                 raw if saved == 0 else None,  # Store raw only for first stock in batch
             ))
@@ -583,7 +663,7 @@ def store_llm_results(date_str: str, results: list[dict], batch_id: int, raw: st
 
 
 def run_llm_analysis(date_str: str) -> list[dict]:
-    """Stage 1: Batch all A-category stocks through Claude LLM."""
+    """Stage 1: Batch all A-category stocks through Claude LLM with 60-day OHLCV."""
     stocks = load_algo_analysis(date_str)
     if not stocks:
         logger.warning("No A-category stocks found for LLM analysis")
@@ -592,13 +672,26 @@ def run_llm_analysis(date_str: str) -> list[dict]:
     market = load_market_context()
     feedback = load_accuracy_feedback()
 
+    # Load 60-day DSEX history (shared across all batches)
+    dsex_csv = load_dsex_history(60)
+    logger.info(f"Loaded DSEX history: {len(dsex_csv)} chars")
+
+    # Load 60-day OHLCV for all stocks at once
+    all_symbols = [s["symbol"] for s in stocks]
+    ohlcv_map = load_ohlcv_history(all_symbols, 60)
+    logger.info(f"Loaded OHLCV history for {len(ohlcv_map)} stocks")
+
     batches = [stocks[i:i + LLM_BATCH_SIZE] for i in range(0, len(stocks), LLM_BATCH_SIZE)]
     total_batches = len(batches)
-    logger.info(f"LLM analysis: {len(stocks)} stocks in {total_batches} batches")
+    logger.info(f"LLM analysis: {len(stocks)} stocks in {total_batches} batches (batch size {LLM_BATCH_SIZE})")
 
     all_results = []
     for i, batch in enumerate(batches, 1):
-        prompt = build_llm_prompt(batch, market, feedback, i, total_batches)
+        prompt = build_llm_prompt(
+            batch, market, feedback, i, total_batches,
+            ohlcv_map=ohlcv_map, dsex_csv=dsex_csv,
+        )
+        logger.info(f"Batch {i} prompt: {len(prompt)} chars")
         raw = call_claude(prompt)
         if not raw:
             logger.error(f"Batch {i}: no response")
