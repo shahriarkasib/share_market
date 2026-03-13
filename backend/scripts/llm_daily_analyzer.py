@@ -873,7 +873,8 @@ Rules:
 7. DSE tick size 0.10 BDT
 8. This is a retail-dominated, low-liquidity market. Volume confirmation is everything
 9. Be honest. If a stock is not a good buy, say so. Don't force BUY recommendations
-10. Return ONLY valid JSON array, no extra text"""
+
+CRITICAL OUTPUT FORMAT: Your response must start with [ and end with ]. Return ONLY a valid JSON array. No markdown, no commentary, no explanation — ONLY the JSON array. If you include ANY text outside the JSON array, the system will crash."""
 
 
 def store_llm_results(date_str: str, results: list[dict], batch_id: int, raw: str):
