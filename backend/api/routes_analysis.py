@@ -517,6 +517,23 @@ async def get_buy_radar(categories: str = "A", exclude_sectors: str = ""):
     if cached:
         return cached
 
+    # Try pre-computed radar first (instant load)
+    if categories.strip().upper() == "A" and not exclude_sectors:
+        try:
+            precomp_conn = get_connection()
+            row = precomp_conn.execute(
+                "SELECT data_json FROM radar_precomputed "
+                "WHERE category = 'A' ORDER BY date DESC LIMIT 1"
+            ).fetchone()
+            precomp_conn.close()
+            if row and row["data_json"]:
+                import json as _json
+                result = _json.loads(row["data_json"])
+                cache.set(cache_key, result, ttl=1800)
+                return result
+        except Exception:
+            pass  # Fall through to live computation
+
     conn = get_connection()
 
     # Get symbols with sector info based on category filter
@@ -1366,11 +1383,27 @@ async def get_buy_radar(categories: str = "A", exclude_sectors: str = ""):
     for s in stocks:
         stage_counts[s["stage"]] = stage_counts.get(s["stage"], 0) + 1
 
+    # Load DSEX forecast if available
+    dsex_forecast = None
+    try:
+        fc_conn = get_connection()
+        fc_row = fc_conn.execute(
+            "SELECT forecast, sentiment, support, resistance, expected_direction, "
+            "confidence, key_factors, scenario_bull, scenario_bear, scenario_base "
+            "FROM dsex_forecast ORDER BY date DESC LIMIT 1"
+        ).fetchone()
+        fc_conn.close()
+        if fc_row:
+            dsex_forecast = dict(fc_row)
+    except Exception:
+        pass
+
     result = {
         "date": latest_date,
         "count": len(stocks),
         "stages": stage_counts,
         "market_ctx": market_ctx,
+        "dsex_forecast": dsex_forecast,
         "stocks": stocks,
         "removed": removed,
     }

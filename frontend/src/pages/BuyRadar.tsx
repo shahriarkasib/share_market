@@ -24,7 +24,7 @@ import {
   BarChart3,
 } from "lucide-react";
 import { fetchBuyRadar } from "../api/client.ts";
-import type { BuyRadarStock, BuyRadarResponse, RemovedRadarStock, MarketContext } from "../types/index.ts";
+import type { BuyRadarStock, BuyRadarResponse, RemovedRadarStock, MarketContext, DsexForecast } from "../types/index.ts";
 
 /* ── Stage config ── */
 const STAGES = [
@@ -186,6 +186,78 @@ function MarketContextBanner({ ctx }: { ctx: MarketContext }) {
         <div className="text-xs text-[var(--text-muted)] flex items-center gap-1.5">
           <Brain className="h-3.5 w-3.5 text-purple-400 shrink-0" />
           {ctx.signal}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ── DSEX Forecast banner ── */
+const SENTIMENT_STYLES: Record<string, { bg: string; border: string; text: string; icon: typeof TrendingUp }> = {
+  BULLISH: { bg: "bg-green-500/5", border: "border-green-500/20", text: "text-green-400", icon: TrendingUp },
+  BEARISH: { bg: "bg-red-500/5", border: "border-red-500/20", text: "text-red-400", icon: TrendingDown },
+  CAUTIOUS: { bg: "bg-yellow-500/5", border: "border-yellow-500/20", text: "text-yellow-400", icon: AlertTriangle },
+  NEUTRAL: { bg: "bg-[var(--surface)]", border: "border-[var(--border)]", text: "text-[var(--text-muted)]", icon: Minus },
+};
+
+function DsexForecastBanner({ forecast }: { forecast: DsexForecast }) {
+  const [expanded, setExpanded] = useState(false);
+  const style = SENTIMENT_STYLES[forecast.sentiment] || SENTIMENT_STYLES.NEUTRAL;
+  const DirIcon = style.icon;
+
+  return (
+    <div className={clsx("mb-4 rounded-lg border", style.bg, style.border)}>
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="w-full px-4 py-3 text-left"
+      >
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <DirIcon className={clsx("h-4 w-4", style.text)} />
+            <span className={clsx("text-sm font-bold", style.text)}>
+              DSEX Forecast: {forecast.sentiment} ({forecast.expected_direction})
+            </span>
+            <span className="text-xs text-[var(--text-dim)]">
+              Support {forecast.support?.toFixed(0)} | Resistance {forecast.resistance?.toFixed(0)}
+            </span>
+          </div>
+          {expanded ? <ChevronUp className="h-4 w-4 text-[var(--text-dim)]" /> : <ChevronDown className="h-4 w-4 text-[var(--text-dim)]" />}
+        </div>
+      </button>
+
+      {expanded && (
+        <div className="px-4 pb-4 space-y-3 border-t border-[var(--border)] pt-3">
+          <p className="text-xs text-[var(--text-muted)] leading-relaxed whitespace-pre-line">
+            {forecast.forecast}
+          </p>
+
+          {forecast.key_factors && (
+            <div>
+              <div className="text-[10px] font-bold uppercase text-[var(--text-dim)] mb-1">Key Factors</div>
+              <p className="text-xs text-[var(--text-muted)] leading-relaxed">{forecast.key_factors}</p>
+            </div>
+          )}
+
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+            {forecast.scenario_base && (
+              <div className="bg-blue-500/5 border border-blue-500/15 rounded p-2">
+                <div className="text-[10px] text-blue-400 font-medium mb-0.5">Most Likely (Base)</div>
+                <p className="text-xs text-blue-300/80 leading-relaxed">{forecast.scenario_base}</p>
+              </div>
+            )}
+            {forecast.scenario_bull && (
+              <div className="bg-green-500/5 border border-green-500/15 rounded p-2">
+                <div className="text-[10px] text-green-400 font-medium mb-0.5">Bull Case</div>
+                <p className="text-xs text-green-300/80 leading-relaxed">{forecast.scenario_bull}</p>
+              </div>
+            )}
+            {forecast.scenario_bear && (
+              <div className="bg-red-500/5 border border-red-500/15 rounded p-2">
+                <div className="text-[10px] text-red-400 font-medium mb-0.5">Bear Case</div>
+                <p className="text-xs text-red-300/80 leading-relaxed">{forecast.scenario_bear}</p>
+              </div>
+            )}
+          </div>
         </div>
       )}
     </div>
@@ -735,6 +807,9 @@ export default function BuyRadar() {
 
       {/* Market context banner */}
       {data.market_ctx && <MarketContextBanner ctx={data.market_ctx} />}
+
+      {/* DSEX Forecast */}
+      {data.dsex_forecast && <DsexForecastBanner forecast={data.dsex_forecast} />}
 
       {/* Indicator explainer */}
       <IndicatorHelp />

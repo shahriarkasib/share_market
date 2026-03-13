@@ -546,11 +546,25 @@ export interface MarketContext {
   signal: string;
 }
 
+export interface DsexForecast {
+  forecast: string;
+  sentiment: string;
+  support: number;
+  resistance: number;
+  expected_direction: string;
+  confidence: string;
+  key_factors: string;
+  scenario_bull: string;
+  scenario_bear: string;
+  scenario_base: string;
+}
+
 export interface BuyRadarResponse {
   date: string;
   count: number;
   stages: Record<string, number>;
   market_ctx: MarketContext;
+  dsex_forecast?: DsexForecast;
   stocks: BuyRadarStock[];
   removed: RemovedRadarStock[];
 }

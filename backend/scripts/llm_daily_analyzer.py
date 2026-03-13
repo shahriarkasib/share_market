@@ -134,6 +134,24 @@ def ensure_tables():
             created_at TIMESTAMP DEFAULT NOW(), UNIQUE(date, symbol)
         )""",
         "CREATE INDEX IF NOT EXISTS idx_judge_daily_date ON judge_daily_analysis(date)",
+        # DSEX forecast table
+        """CREATE TABLE IF NOT EXISTS dsex_forecast (
+            id SERIAL PRIMARY KEY, date DATE NOT NULL UNIQUE,
+            forecast TEXT, sentiment TEXT, support DOUBLE PRECISION,
+            resistance DOUBLE PRECISION, expected_direction TEXT,
+            confidence TEXT, key_factors TEXT,
+            scenario_bull TEXT, scenario_bear TEXT, scenario_base TEXT,
+            raw_response TEXT,
+            created_at TIMESTAMP DEFAULT NOW()
+        )""",
+        # Pre-computed radar cache
+        """CREATE TABLE IF NOT EXISTS radar_precomputed (
+            id SERIAL PRIMARY KEY, date DATE NOT NULL,
+            category TEXT NOT NULL DEFAULT 'A',
+            data_json TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT NOW(),
+            UNIQUE(date, category)
+        )""",
         """CREATE TABLE IF NOT EXISTS prediction_tracker (
             id SERIAL PRIMARY KEY, date DATE NOT NULL, symbol TEXT NOT NULL,
             source TEXT NOT NULL, action TEXT NOT NULL, score DOUBLE PRECISION,
@@ -1463,6 +1481,157 @@ PORTFOLIO
         logger.error(f"Email notification failed: {e}")
 
 
+# ─── Stage 5: DSEX Forecast ───
+
+
+def run_dsex_forecast(date_str: str):
+    """Dedicated DSEX index analysis — forecast tomorrow + next 3-5 days."""
+    dsex_csv = load_dsex_history(130)
+    if not dsex_csv:
+        logger.warning("No DSEX history for forecast")
+        return
+
+    market = load_market_context()
+
+    prompt = f"""You are a DSEX (Dhaka Stock Exchange Index) analyst. Analyze the 6-month DSEX history below and provide a detailed forecast.
+
+## DSEX History (6 months)
+```
+{dsex_csv}
+```
+
+## Current Market
+- DSEX: {market.get('dsex_index', 0):.1f} ({market.get('dsex_change_pct', 0):+.2f}%)
+- Advances: {market.get('advances', 0)} | Declines: {market.get('declines', 0)}
+- Volume: {market.get('total_volume', 0):,} | Turnover: {market.get('total_value', 0):,.0f}
+
+## Your Task
+Analyze the DSEX chart like an expert technical analyst. Study:
+1. **Trend**: 5-day, 20-day, 60-day trends. Is DSEX trending up, down, or sideways?
+2. **Support/Resistance**: Where are the key levels? Where has DSEX bounced or been rejected?
+3. **Volume**: Is volume increasing or decreasing? What does it mean?
+4. **Momentum**: Is the rally/decline accelerating or fading?
+5. **Pattern**: Any recognizable patterns (double bottom, head & shoulders, channel)?
+
+Then forecast:
+- **Tomorrow**: What will DSEX likely do? Up/Down/Flat? By how much?
+- **Next 3-5 trading days**: Direction and range
+- **Next 1-2 weeks**: Where is DSEX heading?
+
+Return JSON (NO markdown fences):
+{{
+    "forecast": "2-3 paragraph detailed analysis of DSEX direction with specific price levels and dates. Written for beginners — explain WHY the index will move that way.",
+    "sentiment": "BULLISH|BEARISH|NEUTRAL|CAUTIOUS",
+    "support": 0.0,
+    "resistance": 0.0,
+    "expected_direction": "UP|DOWN|SIDEWAYS",
+    "confidence": "HIGH|MEDIUM|LOW",
+    "key_factors": "Top 3 factors driving DSEX direction right now",
+    "scenario_bull": "Bull case: what happens if DSEX breaks above resistance. Expected move, target, timeline.",
+    "scenario_bear": "Bear case: what happens if DSEX breaks below support. Expected drop, floor, timeline.",
+    "scenario_base": "Most likely scenario (60%+ probability). What DSEX does in next 5 days and why."
+}}"""
+
+    raw = call_claude(prompt, timeout=120)
+    if not raw:
+        logger.error("DSEX forecast: no response")
+        return
+
+    parsed = parse_json_response(raw)
+    if not parsed or not isinstance(parsed, dict):
+        logger.error("DSEX forecast: failed to parse")
+        return
+
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            INSERT INTO dsex_forecast
+                (date, forecast, sentiment, support, resistance, expected_direction,
+                 confidence, key_factors, scenario_bull, scenario_bear, scenario_base,
+                 raw_response)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (date) DO UPDATE SET
+                forecast = EXCLUDED.forecast, sentiment = EXCLUDED.sentiment,
+                support = EXCLUDED.support, resistance = EXCLUDED.resistance,
+                expected_direction = EXCLUDED.expected_direction,
+                confidence = EXCLUDED.confidence, key_factors = EXCLUDED.key_factors,
+                scenario_bull = EXCLUDED.scenario_bull, scenario_bear = EXCLUDED.scenario_bear,
+                scenario_base = EXCLUDED.scenario_base, raw_response = EXCLUDED.raw_response
+        """, (
+            date_str,
+            parsed.get("forecast", ""),
+            parsed.get("sentiment", ""),
+            parsed.get("support"),
+            parsed.get("resistance"),
+            parsed.get("expected_direction", ""),
+            parsed.get("confidence", ""),
+            parsed.get("key_factors", ""),
+            parsed.get("scenario_bull", ""),
+            parsed.get("scenario_bear", ""),
+            parsed.get("scenario_base", ""),
+            raw,
+        ))
+        conn.commit()
+        logger.info(f"Stage 5: DSEX forecast stored ({parsed.get('sentiment', '?')}, {parsed.get('expected_direction', '?')})")
+    except Exception as e:
+        logger.error(f"Store DSEX forecast: {e}")
+    finally:
+        conn.close()
+
+
+# ─── Stage 6: Pre-compute Radar ───
+
+
+def precompute_radar(date_str: str):
+    """Pre-compute the Buy Radar and store as JSON for instant API loading."""
+    import sys
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+    try:
+        # Import the radar endpoint function and call its logic
+        from api.routes_analysis import get_buy_radar
+        import asyncio
+
+        # Run the async endpoint synchronously
+        loop = asyncio.new_event_loop()
+        result = loop.run_until_complete(get_buy_radar(categories="A"))
+        loop.close()
+
+        if not result or not isinstance(result, dict):
+            logger.warning("Radar precompute: empty result")
+            return
+
+        # Add DSEX forecast to the result
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT forecast, sentiment, support, resistance, expected_direction, "
+                     "confidence, key_factors, scenario_bull, scenario_bear, scenario_base "
+                     "FROM dsex_forecast WHERE date = %s", (date_str,))
+        dsex_row = cur.fetchone()
+        if dsex_row:
+            result["dsex_forecast"] = dict(dsex_row)
+
+        # Store as JSON
+        data_json = json.dumps(result, default=str)
+        cur.execute("""
+            INSERT INTO radar_precomputed (date, category, data_json)
+            VALUES (%s, 'A', %s)
+            ON CONFLICT (date, category) DO UPDATE SET
+                data_json = EXCLUDED.data_json, created_at = NOW()
+        """, (date_str, data_json))
+        conn.commit()
+        conn.close()
+
+        stock_count = result.get("count", 0)
+        logger.info(f"Stage 6: Radar precomputed and stored ({stock_count} stocks)")
+
+    except Exception as e:
+        logger.error(f"Radar precompute failed: {e}")
+        import traceback
+        traceback.print_exc()
+
+
 # ─── Main ───
 
 
@@ -1512,7 +1681,13 @@ def run():
     # Stage 4: Override algo's hardcoded entry/exit with AI-computed values
     override_count = override_algo_entry_exit(date_str)
 
-    # Stage 5: Email notification
+    # Stage 5: DSEX forecast (dedicated analysis)
+    run_dsex_forecast(date_str)
+
+    # Stage 6: Pre-compute Buy Radar (store for instant API loading)
+    precompute_radar(date_str)
+
+    # Stage 7: Email notification
     send_completion_email(date_str, len(llm_results), judge_count, override_count)
 
     logger.info("=== LLM Daily Analyzer complete ===")
