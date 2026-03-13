@@ -586,15 +586,21 @@ def call_claude(prompt: str, timeout: int = CLAUDE_TIMEOUT) -> str:
             timeout=timeout,
             env=env,
         )
+        stderr_msg = (result.stderr or "").strip()
+        if stderr_msg:
+            logger.warning(f"Claude CLI stderr: {stderr_msg[:500]}")
         if result.returncode != 0:
-            err_msg = (result.stderr or result.stdout or "")[:300]
+            err_msg = (stderr_msg or result.stdout or "")[:300]
             logger.error(f"Claude CLI error (exit {result.returncode}): {err_msg}")
             return ""
         resp = result.stdout.strip()
         if "Not logged in" in resp or "Please run /login" in resp:
             logger.error("Claude CLI not authenticated. Ensure CLAUDE_CODE_OAUTH_TOKEN is set.")
             return ""
-        logger.info(f"Claude CLI response: {len(resp)} chars")
+        if not resp:
+            logger.warning("Claude CLI returned empty stdout (possible rate limit)")
+        else:
+            logger.info(f"Claude CLI response: {len(resp)} chars")
         return resp
     except FileNotFoundError:
         logger.error("Claude CLI not found. Install: npm install -g @anthropic-ai/claude-code")
@@ -980,9 +986,13 @@ def run_llm_analysis(date_str: str) -> list[dict]:
     logger.info(f"LLM analysis: {len(stocks)} stocks in {total_batches} batches (batch size {LLM_BATCH_SIZE})")
 
     MAX_RETRIES = 2
+    BATCH_DELAY = 30  # seconds between batches to avoid rate limits
+    COOLDOWN_AFTER_FAIL = 120  # 2 min cooldown after consecutive failures
+    CONSECUTIVE_FAIL_THRESHOLD = 2  # trigger cooldown after this many consecutive failures
 
     all_results = []
     failed_batches = []  # (batch_index, batch_data) for retry
+    consecutive_fails = 0
 
     for i, batch in enumerate(batches, 1):
         prompt = build_llm_prompt(
@@ -992,15 +1002,24 @@ def run_llm_analysis(date_str: str) -> list[dict]:
         logger.info(f"Batch {i} prompt: {len(prompt)} chars")
         raw = call_claude(prompt)
         if not raw:
-            logger.error(f"Batch {i}: no response — queued for retry")
+            consecutive_fails += 1
+            logger.error(f"Batch {i}: no response — queued for retry (consecutive fails: {consecutive_fails})")
             failed_batches.append((i, batch))
+            if consecutive_fails >= CONSECUTIVE_FAIL_THRESHOLD:
+                logger.warning(f"Rate limit likely — cooling down {COOLDOWN_AFTER_FAIL}s...")
+                time.sleep(COOLDOWN_AFTER_FAIL)
+                consecutive_fails = 0
             continue
 
         parsed = parse_json_response(raw)
         if not parsed:
+            consecutive_fails += 1
             logger.error(f"Batch {i}: failed to parse — queued for retry")
             failed_batches.append((i, batch))
             continue
+
+        # Success — reset consecutive fail counter
+        consecutive_fails = 0
 
         if isinstance(parsed, dict):
             parsed = [parsed]
@@ -1010,16 +1029,17 @@ def run_llm_analysis(date_str: str) -> list[dict]:
         logger.info(f"Batch {i}/{total_batches}: {stored} stocks stored")
 
         if i < total_batches:
-            time.sleep(5)
+            time.sleep(BATCH_DELAY)
 
     # Retry failed batches (up to MAX_RETRIES times)
     for retry_round in range(1, MAX_RETRIES + 1):
         if not failed_batches:
             break
-        logger.info(f"Retry round {retry_round}: {len(failed_batches)} failed batches")
-        time.sleep(15)  # Wait before retrying
+        logger.info(f"Retry round {retry_round}: {len(failed_batches)} failed batches — waiting 3 min before retries...")
+        time.sleep(180)  # 3 min cooldown before retry round
 
         still_failed = []
+        consecutive_fails = 0
         for batch_idx, batch in failed_batches:
             symbols = [s["symbol"] for s in batch]
             logger.info(f"Retrying batch {batch_idx} ({symbols})...")
@@ -1029,25 +1049,32 @@ def run_llm_analysis(date_str: str) -> list[dict]:
             )
             raw = call_claude(prompt)
             if not raw:
+                consecutive_fails += 1
                 logger.error(f"Retry {retry_round} batch {batch_idx}: still no response")
                 still_failed.append((batch_idx, batch))
-                time.sleep(10)
+                if consecutive_fails >= CONSECUTIVE_FAIL_THRESHOLD:
+                    logger.warning(f"Rate limit on retries — cooling down {COOLDOWN_AFTER_FAIL}s...")
+                    time.sleep(COOLDOWN_AFTER_FAIL)
+                    consecutive_fails = 0
+                else:
+                    time.sleep(BATCH_DELAY)
                 continue
 
             parsed = parse_json_response(raw)
             if not parsed:
                 logger.error(f"Retry {retry_round} batch {batch_idx}: still failed to parse")
                 still_failed.append((batch_idx, batch))
-                time.sleep(10)
+                time.sleep(BATCH_DELAY)
                 continue
 
+            consecutive_fails = 0
             if isinstance(parsed, dict):
                 parsed = [parsed]
 
             stored = store_llm_results(date_str, parsed, batch_idx, raw)
             all_results.extend(parsed)
             logger.info(f"Retry {retry_round} batch {batch_idx}: SUCCESS — {stored} stocks stored")
-            time.sleep(5)
+            time.sleep(BATCH_DELAY)
 
         failed_batches = still_failed
 
@@ -1207,17 +1234,25 @@ def run_judge_analysis(date_str: str, llm_results: list[dict]) -> int:
     total = len(batches)
     logger.info(f"Judge analysis: {len(pairs)} pairs in {total} batches")
 
+    consecutive_fails = 0
     for i, batch in enumerate(batches, 1):
         prompt = build_judge_prompt(batch, market, i, total)
         raw = call_claude(prompt)
         if not raw:
-            logger.error(f"Judge batch {i}: no response")
+            consecutive_fails += 1
+            logger.error(f"Judge batch {i}: no response (consecutive fails: {consecutive_fails})")
+            if consecutive_fails >= 2:
+                logger.warning("Rate limit likely on judge — cooling down 120s...")
+                time.sleep(120)
+                consecutive_fails = 0
             continue
 
         parsed = parse_json_response(raw)
         if not parsed:
             logger.error(f"Judge batch {i}: failed to parse")
             continue
+
+        consecutive_fails = 0
 
         if isinstance(parsed, dict):
             parsed = [parsed]
@@ -1234,7 +1269,7 @@ def run_judge_analysis(date_str: str, llm_results: list[dict]) -> int:
         logger.info(f"Judge batch {i}/{total} done")
 
         if i < total:
-            time.sleep(5)
+            time.sleep(30)
 
     return len(pairs)
 
