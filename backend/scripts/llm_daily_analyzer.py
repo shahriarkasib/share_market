@@ -275,8 +275,8 @@ def load_accuracy_feedback() -> str:
     return "\n".join(lines) + "\n"
 
 
-def load_ohlcv_history(symbols: list[str], days: int = 60) -> dict[str, str]:
-    """Load recent OHLCV history for symbols, return compact CSV per symbol."""
+def load_ohlcv_history(symbols: list[str], daily_days: int = 130, weekly_weeks: int = 52) -> dict[str, str]:
+    """Load OHLCV history: 6-month daily + 1-year weekly candles per symbol."""
     conn = get_conn()
     cur = conn.cursor()
     placeholders = ",".join(["%s"] * len(symbols))
@@ -289,7 +289,6 @@ def load_ohlcv_history(symbols: list[str], days: int = 60) -> dict[str, str]:
     rows = cur.fetchall()
     conn.close()
 
-    # Group by symbol, take last N days, format as CSV
     from collections import defaultdict
     by_sym: dict[str, list] = defaultdict(list)
     for r in rows:
@@ -297,23 +296,65 @@ def load_ohlcv_history(symbols: list[str], days: int = 60) -> dict[str, str]:
 
     result = {}
     for sym in symbols:
-        sym_rows = by_sym.get(sym, [])[:days]
-        sym_rows.reverse()  # Oldest first
+        sym_rows = by_sym.get(sym, [])
         if not sym_rows:
             result[sym] = ""
             continue
-        lines = ["date,O,H,L,C,Vol"]
-        for r in sym_rows:
-            lines.append(
-                f"{r['date']},{float(r['open']):.1f},{float(r['high']):.1f},"
-                f"{float(r['low']):.1f},{float(r['close']):.1f},{int(r['volume'])}"
-            )
-        result[sym] = "\n".join(lines)
+
+        parts = []
+
+        # ── 1-year weekly candles (aggregate daily into weeks) ──
+        all_rows = list(reversed(sym_rows))  # oldest first
+        if len(all_rows) > daily_days:
+            older_rows = all_rows[:len(all_rows) - daily_days]  # rows older than 6 months
+            weeks = []
+            week_rows = []
+            for r in older_rows:
+                d = r["date"]
+                iso_week = d.isocalendar()[1] if hasattr(d, "isocalendar") else 0
+                iso_year = d.isocalendar()[0] if hasattr(d, "isocalendar") else 0
+                key = (iso_year, iso_week)
+                if week_rows and (week_rows[0]["_wk"] != key):
+                    weeks.append(week_rows)
+                    week_rows = []
+                r["_wk"] = key
+                week_rows.append(r)
+            if week_rows:
+                weeks.append(week_rows)
+
+            # Take last N weeks
+            weeks = weeks[-weekly_weeks:]
+            if weeks:
+                lines = ["week,O,H,L,C,Vol"]
+                for wk in weeks:
+                    w_open = float(wk[0]["open"])
+                    w_high = max(float(r["high"]) for r in wk)
+                    w_low = min(float(r["low"]) for r in wk)
+                    w_close = float(wk[-1]["close"])
+                    w_vol = sum(int(r["volume"]) for r in wk)
+                    lines.append(
+                        f"{wk[0]['date']},{w_open:.1f},{w_high:.1f},"
+                        f"{w_low:.1f},{w_close:.1f},{w_vol}"
+                    )
+                parts.append("Weekly (1yr):\n" + "\n".join(lines))
+
+        # ── 6-month daily candles ──
+        daily_rows = list(reversed(sym_rows[:daily_days]))  # most recent N days, oldest first
+        if daily_rows:
+            lines = ["date,O,H,L,C,Vol"]
+            for r in daily_rows:
+                lines.append(
+                    f"{r['date']},{float(r['open']):.1f},{float(r['high']):.1f},"
+                    f"{float(r['low']):.1f},{float(r['close']):.1f},{int(r['volume'])}"
+                )
+            parts.append("Daily (6mo):\n" + "\n".join(lines))
+
+        result[sym] = "\n\n".join(parts)
     return result
 
 
-def load_dsex_history(days: int = 60) -> str:
-    """Load recent DSEX index history, return compact CSV."""
+def load_dsex_history(days: int = 130) -> str:
+    """Load recent DSEX index history (6 months), return compact CSV."""
     conn = get_conn()
     cur = conn.cursor()
     cur.execute("""
@@ -527,14 +568,19 @@ def build_llm_prompt(
             f"EMA9: {ema9:.1f} | EMA21: {ema21:.1f} | SMA50: {sma50:.1f}\n"
             f"Momentum: 3d {mom_3d:+.1f}% | 5d {mom_5d:+.1f}% | Chg: 5d {chg_5d:+.1f}% 10d {chg_10d:+.1f}% 20d {chg_20d:+.1f}%\n"
             f"Support: {s.get('support', 0):.1f} | Resistance: {s.get('resistance', 0):.1f}\n"
-            + (f"\n60-day OHLCV:\n```\n{ohlcv_csv}\n```\n" if ohlcv_csv else "")
+            + (f"\nPrice History:\n```\n{ohlcv_csv}\n```\n" if ohlcv_csv else "")
         )
 
     dsex_block = ""
     if dsex_csv:
-        dsex_block = f"\n## DSEX Index — 60-day History\n```\n{dsex_csv}\n```\n"
+        dsex_block = f"\n## DSEX Index — 6-month History\n```\n{dsex_csv}\n```\n"
 
-    return f"""You are a senior DSE (Dhaka Stock Exchange) trading analyst. You have 60 days of OHLCV price history for each stock below, plus the DSEX index history. Use this data to understand the REAL price pattern — where the stock came from, whether it already rallied, where it found support, and whether there is still upside.
+    return f"""You are a senior DSE (Dhaka Stock Exchange) trading analyst. For each stock you have:
+- **1-year weekly candles**: See the big picture — 52-week highs/lows, major support/resistance, long-term trend
+- **6-month daily candles**: Recent price action in detail — exact bounces, breakouts, volume patterns
+- **DSEX index history**: Market context — how the index moved alongside each stock
+
+Use ALL of this data to understand the REAL price pattern.
 
 Your audience is BEGINNERS. Explain every indicator in plain language.
 
@@ -576,12 +622,12 @@ Your audience is BEGINNERS. Explain every indicator in plain language.
 {chr(10).join(stock_lines)}
 
 ## Your Task
-For EACH stock, study the 60-day OHLCV like you're reading a chart. Look at:
-- Where did the stock bottom? Where did it top? Where is it NOW in that range?
-- Is money flowing in (CMF+, rising OBV, volume spikes on green days) or out?
-- Are indicators turning from oversold, or has the move already happened?
-- How does this stock behave when DSEX moves — does it follow the index or lead/lag?
-- Would a beginner buying TODAY make money in the next 5-10 days, or get trapped?
+For EACH stock, read the chart like a professional:
+- **Weekly candles (1yr)**: Where is the 52-week high/low? Is the long-term trend up, down, or sideways? Are there major support/resistance levels from months ago?
+- **Daily candles (6mo)**: Where did the stock recently bottom/top? What's the recent trajectory? Any consolidation patterns, breakouts, or breakdowns?
+- **Volume**: Is money flowing in (CMF+, rising OBV, volume spikes on green days) or out? In DSE's thin market, volume confirmation is critical.
+- **DSEX context**: How does this stock move relative to the index? Does it lead, lag, or ignore DSEX?
+- **The key question**: Would a beginner buying TODAY make money in the next 5-10 days, or get trapped?
 
 Set entry_low/entry_high based on ACTUAL support levels you see in the price data — repeated lows, bounce zones, consolidation ranges. Not from formulas.
 
@@ -697,13 +743,13 @@ def run_llm_analysis(date_str: str) -> list[dict]:
     market = load_market_context()
     feedback = load_accuracy_feedback()
 
-    # Load 60-day DSEX history (shared across all batches)
-    dsex_csv = load_dsex_history(60)
+    # Load 6-month DSEX history (shared across all batches)
+    dsex_csv = load_dsex_history(130)
     logger.info(f"Loaded DSEX history: {len(dsex_csv)} chars")
 
-    # Load 60-day OHLCV for all stocks at once
+    # Load 1-year weekly + 6-month daily OHLCV for all stocks
     all_symbols = [s["symbol"] for s in stocks]
-    ohlcv_map = load_ohlcv_history(all_symbols, 60)
+    ohlcv_map = load_ohlcv_history(all_symbols, daily_days=130, weekly_weeks=52)
     logger.info(f"Loaded OHLCV history for {len(ohlcv_map)} stocks")
 
     batches = [stocks[i:i + LLM_BATCH_SIZE] for i in range(0, len(stocks), LLM_BATCH_SIZE)]
