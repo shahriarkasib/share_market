@@ -696,34 +696,36 @@ def build_llm_prompt(
     ohlcv_map: dict[str, str] = None, dsex_csv: str = "",
     dsex_corr: dict[str, dict] = None,
 ) -> str:
-    """Build prompt for a batch of stocks — includes 60-day OHLCV history."""
+    """Build prompt for a batch of stocks — minimal rules, let AI think."""
     dsex = market.get("dsex_index", 0)
     dsex_chg = market.get("dsex_change_pct", 0)
 
     stock_lines = []
     for s in stocks:
         ltp = float(s.get("ltp") or 0)
-        rsi = float(s.get("rsi") or 0)
-        stoch = float(s.get("stoch_rsi") or 0)
-        macd_h = float(s.get("macd_hist") or 0)
-        bb = float(s.get("bb_pct") or 0)
-        vol_r = float(s.get("vol_ratio") or 0)
-        trend = float(s.get("trend_50d") or 0)
-        atr_p = float(s.get("atr_pct") or 0)
-        mfi = float(s.get("mfi") or 0)
-        cmf = float(s.get("cmf") or 0)
-        williams = float(s.get("williams_r") or 0)
-        adx = float(s.get("adx") or 0)
-        plus_di = float(s.get("plus_di") or 0)
-        minus_di = float(s.get("minus_di") or 0)
-        ema9 = float(s.get("ema9") or 0)
-        ema21 = float(s.get("ema21") or 0)
-        sma50 = float(s.get("sma50") or 0)
-        mom_3d = float(s.get("momentum_3d") or 0)
-        mom_5d = float(s.get("momentum_5d") or 0)
-        chg_5d = float(s.get("chg_5d") or 0)
-        chg_10d = float(s.get("chg_10d") or 0)
-        chg_20d = float(s.get("chg_20d") or 0)
+
+        # Build raw indicator block — just data, no interpretation
+        indicators = []
+        for key, label in [
+            ("rsi", "RSI"), ("stoch_rsi", "StochRSI"), ("mfi", "MFI"),
+            ("cmf", "CMF"), ("williams_r", "Williams%R"), ("adx", "ADX"),
+            ("plus_di", "+DI"), ("minus_di", "-DI"), ("bb_pct", "BB%"),
+            ("vol_ratio", "VolRatio"), ("trend_50d", "Trend50d"),
+            ("atr_pct", "ATR%"), ("ema9", "EMA9"), ("ema21", "EMA21"),
+            ("sma50", "SMA50"),
+        ]:
+            val = s.get(key)
+            if val is not None:
+                indicators.append(f"{label}: {float(val):.1f}")
+
+        changes = []
+        for key, label in [
+            ("chg_5d", "5d"), ("chg_10d", "10d"), ("chg_20d", "20d"),
+            ("momentum_3d", "Mom3d"), ("momentum_5d", "Mom5d"),
+        ]:
+            val = s.get(key)
+            if val is not None:
+                changes.append(f"{label}: {float(val):+.1f}%")
 
         ohlcv_csv = (ohlcv_map or {}).get(s["symbol"], "")
         corr = (dsex_corr or {}).get(s["symbol"], {})
@@ -731,26 +733,18 @@ def build_llm_prompt(
         if corr:
             corr_line = (
                 f"DSEX Beta: {corr['beta']:.2f} | Correlation: {corr['correlation']:.2f} | "
-                f"When DSEX falls: avg {corr['avg_return_dsex_down']:+.2f}% | "
-                f"When DSEX rises: avg {corr['avg_return_dsex_up']:+.2f}%\n"
-                f"  DSEX Scenarios → -3%: stock ~{corr['scenario_m3']:+.1f}% | "
-                f"-1%: ~{corr['scenario_m1']:+.1f}% | "
-                f"+1%: ~{corr['scenario_p1']:+.1f}% | "
-                f"+3%: ~{corr['scenario_p3']:+.1f}%\n"
+                f"Avg when DSEX falls: {corr['avg_return_dsex_down']:+.2f}% | "
+                f"Avg when DSEX rises: {corr['avg_return_dsex_up']:+.2f}%\n"
             )
 
         stock_lines.append(
             f"### {s['symbol']} ({s.get('sector', '?')})\n"
-            f"LTP: {ltp:.1f} | Algo: {s['action']} (score {s.get('score', 0):.0f})\n"
-            f"RSI: {rsi:.1f} | StochRSI: {stoch:.1f} | MACD: {s.get('macd_status', '')} (hist {macd_h:+.2f})\n"
-            f"MFI: {mfi:.1f} | CMF: {cmf:+.3f} | Williams%R: {williams:.1f}\n"
-            f"ADX: {adx:.1f} | +DI: {plus_di:.1f} | -DI: {minus_di:.1f}\n"
-            f"BB%: {bb:.1f}% | VolRatio: {vol_r:.1f}x | Trend50d: {trend:+.1f}% | ATR%: {atr_p:.1f}%\n"
-            f"EMA9: {ema9:.1f} | EMA21: {ema21:.1f} | SMA50: {sma50:.1f}\n"
-            f"Chg: 5d {chg_5d:+.1f}% | 10d {chg_10d:+.1f}% | 20d {chg_20d:+.1f}% | Momentum: 3d {mom_3d:+.1f}% 5d {mom_5d:+.1f}%\n"
-            f"Support: {s.get('support', 0):.1f} | Resistance: {s.get('resistance', 0):.1f}\n"
+            f"LTP: {ltp:.1f} | MACD: {s.get('macd_status', '')} (hist {float(s.get('macd_hist') or 0):+.2f})\n"
+            f"{' | '.join(indicators)}\n"
+            f"Change: {' | '.join(changes)}\n"
+            f"Support: {s.get('support', 0):.1f} | Resistance: {s.get('resistance', 0):.1f} | AvgVol: {s.get('avg_vol', 0):,.0f}\n"
             + corr_line
-            + (f"\nPrice History:\n```\n{ohlcv_csv}\n```\n" if ohlcv_csv else "")
+            + (f"\nPrice History (daily + weekly):\n```\n{ohlcv_csv}\n```\n" if ohlcv_csv else "")
         )
 
     dsex_block = ""
@@ -762,128 +756,74 @@ def build_llm_prompt(
 ```
 """
 
-    return f"""You are a BUY TIMING analyst for DSE (Dhaka Stock Exchange).
+    return f"""You are analyzing DSE (Dhaka Stock Exchange) stocks for a trader whose biggest problem is buying TOO LATE — after stocks already moved up. Your job is to find stocks BEFORE they move, not after.
 
-## WHO YOU'RE ADVISING
-A retail trader in Bangladesh who:
-- Biggest weakness: BUYS TOO LATE — after stocks already rallied
-- Your #1 job: catch buy signals EARLY, BEFORE the price moves up
-- Uses T+2 settlement — cannot sell for 2 trading days after buying
+You have raw data for each stock: 1-year weekly candles, 6-month daily candles, 16 technical indicators, and DSEX correlation data. Look at the data. Think independently. Be honest.
 
-## YOUR CORE PHILOSOPHY
-You are an EARLY SIGNAL DETECTOR. Find stocks ABOUT TO move up — not stocks that ALREADY moved.
+## The one question that matters
+For each stock: "If I buy today, am I EARLY or LATE?"
 
-- **Catch the signal BEFORE the rally, not AFTER**. If a stock went up 5%+ this week, you MISSED it
-- **The best buys look boring or scary** — oversold, quiet accumulation, nobody talking about them yet
-- **Entry price must be BELOW current price**. If you can't find entry below LTP, you're too late
-- **Smart money moves first, price follows** — CMF turning positive, MFI bottoming, volume creeping up BEFORE price moves
-- **Patience is alpha** — WAIT is more valuable than a late BUY. The next setup always comes
+- Look at the price history. Where was this stock 5 days ago? 10 days ago? At its recent low?
+- If it already bounced significantly from its recent low, the move happened. You're late.
+- If it's still near the bottom, quiet, with signs of accumulation — you might be early.
+- If daily volume is tiny (under 10-20K), can you even get in and out safely?
+- Consider DSEX: this stock has beta data. If DSEX drops tomorrow, does this stock become cheaper? Maybe wait.
+- T+2 settlement: buyer cannot sell for 2 trading days. If the stock peaks tomorrow, you're trapped.
+- DSE tick size is 0.10 BDT. All prices in multiples of 0.10.
 
-## DATA YOU HAVE PER STOCK
-- 1-year weekly candles: 52-week range, major support/resistance, long-term trend
-- 6-month daily candles: Recent price action, bounces, breakouts, volume
-- 16 technical indicators: Momentum, money flow, trend, positioning
-- DSEX correlation: Beta, historical behavior when index moves
-- DSEX index 6-month history
-
-## HOW TO USE INDICATORS
-- **RSI < 30 + StochRSI < 20**: Oversold — sellers exhausted, bounce likely. BUY zone
-- **RSI > 60 + StochRSI > 80**: Already stretched — move happened. DON'T chase
-- **MFI < 20**: Real selling exhaustion (volume-confirmed). Stronger than RSI alone
-- **CMF positive + price at support**: Smart money accumulating. Best setup
-- **CMF negative + price at resistance**: Distribution. Stay away
-- **MACD bullish cross (histogram turning positive)**: Momentum shifting up. Entry trigger
-- **BB% < 15%**: Price at bottom of range — cheap. **BB% > 85%**: At top — expensive
-- **ADX > 25 with +DI > -DI**: Strong uptrend. **ADX < 15**: No trend, avoid
-- **Volume Ratio > 2x on green day**: Institutional buying. **> 2x on red day**: Institutional selling
-- **DSEX Beta**: Stock moves Beta x DSEX%. High beta (>1.5) = risky on drops, great on rallies
-- **5-day change > +5%**: ALREADY MOVED — you missed it. TOO_LATE
-- **DSE tick size**: 0.10 BDT. All prices in multiples of 0.10
-
-## EARLY SIGNAL PATTERNS — What to look for
-1. **Quiet accumulation**: Volume creeping up, CMF turning positive, price hasn't moved yet
-2. **Oversold bounce**: RSI < 30, MFI < 25, price at strong support (tested 3+ times)
-3. **MACD about to cross**: Histogram shrinking toward zero from negative. Momentum shift imminent
-4. **Bollinger squeeze**: BB% near 0-15%, ATR declining. Compression = big move coming
-5. **Higher lows forming**: Price making higher lows while below resistance. Uptrend building
-
-## STAGE ASSIGNMENT — Your most important decision
-Ask: "Has this stock ALREADY moved, or is the move STILL AHEAD?"
-
-- **ENTRY_ZONE**: BUY TODAY. Price at BOTTOM of range. Oversold turning. CMF positive/turning. The dip is HERE. Score 70+
-- **READY**: BUY in 1-3 days on small dip. Near support, NOT resistance. Has NOT rallied. Entry 2-5% below LTP. Score 55-75
-- **APPROACHING**: 5-10 days out. Indicators improving, price mid-range. Need pullback. Score 40-60
-- **BUILDING**: 2-4 weeks. Early accumulation. Too early to act. Score 30-50
-- **WATCHING**: No clear setup. Sideways or problematic. Score 10-40
-- **TOO_LATE**: ALREADY rallied >5% recently. Wait for pullback. Score 0-30
-
-## DSEX IMPACT
-Use beta/correlation per stock:
-- If DSEX drops 1-2%, where does entry improve to?
-- If DSEX rallies, does entry get worse? Wait for red day?
-{dsex_block}
 ## Market Context
 - DSEX: {dsex:.1f} ({dsex_chg:+.2f}%)
 - Advances: {market.get('advances', 0)} | Declines: {market.get('declines', 0)}
 - Volume: {market.get('total_volume', 0):,} | Turnover: {market.get('total_value', 0):,.0f}
+{dsex_block}
 {feedback}
-## Stocks to Analyze (batch {batch_num}/{total_batches})
+## Stocks (batch {batch_num}/{total_batches})
 
 {chr(10).join(stock_lines)}
 
-## YOUR TASK
-For EACH stock, study the FULL price history (weekly + daily candles) and determine:
+## Output
+For EACH stock, return your honest analysis as JSON. Assign a stage:
+- **ENTRY_ZONE**: The dip is here NOW. Price at bottom, oversold, money flowing in. Rare — most stocks don't qualify.
+- **READY**: 1-3 days away from a good entry. Near support, hasn't rallied yet.
+- **APPROACHING**: Setting up but needs a pullback. 5-10 days.
+- **BUILDING**: Early accumulation. Weeks away.
+- **WATCHING**: No setup. Unclear or not worth the risk.
+- **TOO_LATE**: Already moved. The bounce/rally happened. Wait for the next dip.
 
-1. **Has it already moved?** Check 5d/10d change. If >5% up recently, it's TOO_LATE
-2. **Where is price in its range?** Bottom 30% = opportunity. Top 30% = too late
-3. **Is money flowing in or out?** CMF, MFI, volume patterns — is smart money accumulating BEFORE price moves?
-4. **What's the entry?** Find ACTUAL support from chart (repeated bounces, consolidation). MUST be below current price
-5. **What's the realistic profit?** From entry_high to T1 in 1-2 weeks. Be conservative
-6. **What if DSEX drops?** Use beta to estimate. Does entry improve?
-
-Return a JSON array. Start with [ and end with ]. ONLY JSON, nothing else:
+Return a JSON array. Start with [ end with ]. NO other text:
 [
   {{
     "symbol": "SYMBOL",
     "action": "BUY|BUY on dip|BUY on pullback|HOLD/WAIT|SELL/AVOID|AVOID",
     "confidence": "HIGH|MEDIUM|LOW",
     "stage": "ENTRY_ZONE|READY|APPROACHING|BUILDING|WATCHING|TOO_LATE",
-    "stage_reasoning": "Why this stage — reference specific prices and dates from chart. E.g., 'Price at 22.3, bounced from 22.0 three times (Jan 15, Feb 8, Mar 3), MFI 18, CMF turning positive — dip buy zone.' Or: 'Rallied 12.0 to 14.2 in 5 days (+18%), RSI 57 — already moved, wait for pullback to 13.0-13.3.'",
-    "reasoning": "3-5 sentence analysis. Reference specific prices, dates, indicator values. Explain what each means for a beginner.",
+    "stage_reasoning": "Why this stage. Reference specific prices, dates, volumes from the chart. Be specific.",
+    "reasoning": "3-5 sentence honest analysis. What do the indicators and price history actually tell you? Don't sugarcoat.",
     "expected_return_1w": 0.0,
     "expected_return_2w": 0.0,
     "expected_return_1m": 0.0,
     "downside_risk": -0.0,
-    "wait_for": "Specific trigger: 'Price dips to X with volume > Y' or 'MACD crosses bullish'",
+    "wait_for": "Specific trigger or condition",
     "wait_days": "NOW|1-2 days|3-5 days|1-2 weeks|2-4 weeks",
     "entry_low": 0.0,
     "entry_high": 0.0,
     "sl": 0.0,
     "t1": 0.0,
     "t2": 0.0,
-    "how_to_buy": "Step by step for a beginner. When to place order, what price, what volume to watch, what to AVOID",
-    "sell_plan": "When to take profit, how to trail stop",
-    "risk_factors": ["plain language risks"],
+    "how_to_buy": "Practical steps. Include what to AVOID.",
+    "sell_plan": "When to take profit, how to manage the position",
+    "risk_factors": ["honest risks in plain language"],
     "catalysts": ["what could push it up"],
     "dsex_dependency": "HIGH|MEDIUM|LOW",
-    "if_dsex_drops": "What happens to entry if DSEX drops 1-2%",
+    "if_dsex_drops": "What happens to this stock and your entry if DSEX drops 1-2%",
     "if_dsex_rises": "What happens if DSEX rallies 1-2%",
     "score": 50
   }}
 ]
 
-Rules:
-1. Analyze ALL {len(stocks)} stocks — one JSON object per stock
-2. entry_low/entry_high from ACTUAL chart support. entry_high MUST be below current LTP
-3. If stock rallied >5% in 5 days → stage = TOO_LATE, score <= 30
-4. Score 0-100: how good is the buy TIMING right now (not stock quality)
-5. expected_return: realistic % from entry_high. Conservative, not hopeful
-6. downside_risk: negative %. Loss if SL hit
-7. T+2: cannot sell for 2 days. Peak tomorrow = buyer TRAPPED
-8. Be brutally honest. Most stocks are NOT good buys right now. HOLD/WAIT and AVOID are good answers
-9. Volume confirmation is everything in this low-liquidity market
+Score 0-100 = how good is the buy TIMING right now. 0 = terrible timing, 100 = perfect dip entry. Most stocks should score 20-40 because most stocks are NOT at ideal entry points at any given time.
 
-Start your response with [ and end with ]. ONLY valid JSON array, no other text."""
+Start with [ end with ]. ONLY JSON."""
 
 
 def store_llm_results(date_str: str, results: list[dict], batch_id: int, raw: str):
@@ -1156,9 +1096,9 @@ def build_judge_prompt(
             f"SL: {llm.get('sl', 0)} | T1: {llm.get('t1', 0)} | T2: {llm.get('t2', 0)}"
         )
 
-    return f"""You are a senior trading judge for DSE (Dhaka Stock Exchange). Compare the ALGORITHMIC and LLM analyses and produce a FINAL verdict.
+    return f"""You have two analyses for each DSE stock — one from an algorithm (math-based) and one from an LLM (context-based). Produce a FINAL verdict.
 
-CRITICAL PRINCIPLE: The trader's biggest weakness is buying TOO LATE — after stocks already rallied. If a stock went up >5% in the last 5 days, it is TOO_LATE regardless of what algo or LLM says. Protect the trader from chasing.
+The trader's biggest problem: buying too late, after stocks already moved. Protect them from this.
 
 ## Market: DSEX {dsex:.1f}
 
@@ -1166,23 +1106,21 @@ CRITICAL PRINCIPLE: The trader's biggest weakness is buying TOO LATE — after s
 
 {chr(10).join(stock_lines)}
 
-## Your Task
-For EACH stock:
-1. Check 5d change — if >5%, final_action = HOLD/WAIT or AVOID regardless of what algo/LLM say
-2. Compare algo vs LLM — pick the MORE CONSERVATIVE entry (lower entry price = safer)
-3. entry_high MUST be below current LTP. If both suggest entry at/above LTP, the stock is not ready
+For each stock, think independently. Who made the better call — algo or LLM? Where do they agree? Where do they contradict? What does the data actually say?
 
-Return a JSON array. Start with [ end with ]. ONLY JSON:
+When in doubt, be MORE conservative. A missed buy is free. A bad buy costs money.
+
+Return JSON array. Start with [ end with ]. NO other text:
 [
   {{
     "symbol": "SYMBOL",
     "final_action": "BUY|BUY on dip|BUY on pullback|HOLD/WAIT|SELL/AVOID|AVOID",
     "final_confidence": "HIGH|MEDIUM|LOW",
     "agreement": true,
-    "reasoning": "2-3 sentences: why this action, what to DO, what to WATCH for. Plain language for beginners.",
+    "reasoning": "2-3 sentences: your honest verdict. What should the trader actually DO?",
     "algo_strengths": "What the algorithm got right",
-    "llm_strengths": "What the LLM analysis added",
-    "key_risk": "Primary risk in plain language",
+    "llm_strengths": "What the LLM added",
+    "key_risk": "The one thing that could go wrong",
     "wait_days": "e.g., '5-10 days'",
     "entry_low": 0.0,
     "entry_high": 0.0,
@@ -1193,13 +1131,7 @@ Return a JSON array. Start with [ end with ]. ONLY JSON:
   }}
 ]
 
-Rules:
-1. If both agree, blend reasoning. If disagree, pick MORE CONSERVATIVE
-2. Algo = better for technical signals (RSI, MACD). LLM = better for context/narrative
-3. T+2: cannot sell for 2 days. Warn if stock might peak soon
-4. entry_high must be below LTP. Conservative entries protect the trader
-5. Be honest — most stocks are not good buys RIGHT NOW
-6. Start with [ end with ]. ONLY valid JSON array"""
+Start with [ end with ]. ONLY JSON."""
 
 
 def store_judge_results(date_str: str, results: list[dict], batch_id: int, raw: str):
