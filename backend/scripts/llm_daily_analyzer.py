@@ -500,6 +500,20 @@ def build_llm_prompt(
         vol_r = float(s.get("vol_ratio") or 0)
         trend = float(s.get("trend_50d") or 0)
         atr_p = float(s.get("atr_pct") or 0)
+        mfi = float(s.get("mfi") or 0)
+        cmf = float(s.get("cmf") or 0)
+        williams = float(s.get("williams_r") or 0)
+        adx = float(s.get("adx") or 0)
+        plus_di = float(s.get("plus_di") or 0)
+        minus_di = float(s.get("minus_di") or 0)
+        ema9 = float(s.get("ema9") or 0)
+        ema21 = float(s.get("ema21") or 0)
+        sma50 = float(s.get("sma50") or 0)
+        mom_3d = float(s.get("momentum_3d") or 0)
+        mom_5d = float(s.get("momentum_5d") or 0)
+        chg_5d = float(s.get("chg_5d") or 0)
+        chg_10d = float(s.get("chg_10d") or 0)
+        chg_20d = float(s.get("chg_20d") or 0)
 
         ohlcv_csv = (ohlcv_map or {}).get(s["symbol"], "")
 
@@ -507,7 +521,11 @@ def build_llm_prompt(
             f"### {s['symbol']} ({s.get('sector', '?')})\n"
             f"LTP: {ltp:.1f} | Algo: {s['action']} (score {s.get('score', 0):.0f})\n"
             f"RSI: {rsi:.1f} | StochRSI: {stoch:.1f} | MACD: {s.get('macd_status', '')} (hist {macd_h:+.2f})\n"
+            f"MFI: {mfi:.1f} | CMF: {cmf:+.3f} | Williams%R: {williams:.1f}\n"
+            f"ADX: {adx:.1f} | +DI: {plus_di:.1f} | -DI: {minus_di:.1f}\n"
             f"BB%: {bb:.1f}% | VolRatio: {vol_r:.1f}x | Trend50d: {trend:+.1f}% | ATR%: {atr_p:.1f}%\n"
+            f"EMA9: {ema9:.1f} | EMA21: {ema21:.1f} | SMA50: {sma50:.1f}\n"
+            f"Momentum: 3d {mom_3d:+.1f}% | 5d {mom_5d:+.1f}% | Chg: 5d {chg_5d:+.1f}% 10d {chg_10d:+.1f}% 20d {chg_20d:+.1f}%\n"
             f"Support: {s.get('support', 0):.1f} | Resistance: {s.get('resistance', 0):.1f}\n"
             + (f"\n60-day OHLCV:\n```\n{ohlcv_csv}\n```\n" if ohlcv_csv else "")
         )
@@ -528,23 +546,24 @@ Your audience is BEGINNERS. Explain every indicator in plain language.
 - **MACD bullish cross**: Momentum shifting UP. **Bearish cross**: Momentum shifting DOWN.
 - **BB%**: 0-15% = near bottom of 20-day range (cheap). 85-100% = near top (expensive).
 - **Vol Ratio**: Today's volume vs 20-day avg. >2x = unusual interest. <0.5x = dead.
+- **MFI (Money Flow Index)**: Volume-weighted RSI. <20 = oversold with selling exhaustion. >80 = overbought.
+- **CMF (Chaikin Money Flow)**: Measures buying/selling pressure. Positive = accumulation (money flowing in). Negative = distribution (money flowing out). Range: -1 to +1.
+- **Williams %R**: Momentum oscillator. -80 to -100 = oversold. 0 to -20 = overbought. Similar to StochRSI but inverted scale.
+- **ADX (Average Directional Index)**: Trend strength (not direction). >25 = strong trend. <20 = weak/no trend. +DI > -DI = bullish trend. -DI > +DI = bearish trend.
+- **EMA9/EMA21/SMA50**: Moving averages. Price above all 3 = strong uptrend. EMA9 crossing above EMA21 = bullish signal.
+- **Momentum 3d/5d**: Price change over last 3/5 days. Positive = recent upward push.
 - **T+2**: After buying, you CANNOT sell for 2 trading days.
 - **DSE tick size**: 0.10 BDT. All prices must be multiples of 0.10.
 
 ## STAGE DEFINITIONS — You MUST assign one per stock
-- **ENTRY_ZONE**: Stock is AT or BELOW its ideal buy price RIGHT NOW. All signals aligned. Ready to buy TODAY.
-- **READY**: Stock is very close to becoming buyable. 1-3 day wait for a specific trigger (e.g., MACD cross, volume surge, small dip).
-- **APPROACHING**: Building up signals but needs more confirmation. 5-10 day wait.
-- **BUILDING**: Early signs of accumulation. Not ready yet. 10-20 day wait.
-- **WATCHING**: On radar but no clear signal yet. Or has red flags that need resolving.
-- **TOO_LATE**: Stock already rallied from its recent low. The move happened. Buying now = chasing.
+- **ENTRY_ZONE**: Buy opportunity is HERE, RIGHT NOW. A beginner could act on this today.
+- **READY**: Almost there. A specific trigger within 1-3 days would make this buyable.
+- **APPROACHING**: Showing promise but needs more development. 5-10 day horizon.
+- **BUILDING**: Early accumulation signs. Not actionable yet. 10-20 day horizon.
+- **WATCHING**: On radar but unclear. Or has problems that need to resolve first.
+- **TOO_LATE**: The opportunity already passed. Buying now would be chasing.
 
-**CRITICAL STAGE RULES:**
-1. Look at the 60-day OHLCV. If the stock is up >5% from its recent low (last 10-20 days) and indicators are mid-range (RSI 50-65, StochRSI > 50, BB% > 50), it is TOO_LATE or WATCHING, NOT ENTRY_ZONE or READY.
-2. ENTRY_ZONE requires: price near recent support/low, oversold indicators, AND volume confirmation.
-3. READY requires: price within 2-3% of entry zone, clear trigger identified, indicators turning.
-4. If the stock peaked and is now falling, it is NOT a buy — it is WATCHING until it stabilizes.
-5. Compare current price to the 20-day and 50-day price range. If price is in the upper third, be very skeptical of BUY calls.
+**YOUR JOB**: Study the 60-day OHLCV data. See where the stock came from, how it moved, where it found floors and ceilings. Use the indicators, money flow, volume patterns, and DSEX context to form YOUR OWN judgment about which stage this stock is in. Do NOT just follow rules — think like a professional analyst looking at a chart.
 
 ## Market Context
 - DSEX: {dsex:.1f} ({dsex_chg:+.2f}%)
@@ -557,7 +576,14 @@ Your audience is BEGINNERS. Explain every indicator in plain language.
 {chr(10).join(stock_lines)}
 
 ## Your Task
-For EACH stock, analyze the 60-day price history. Look at where the stock was, where it is now, and whether there is still opportunity. Set entry_low/entry_high based on ACTUAL support levels visible in the price data, NOT from a formula.
+For EACH stock, study the 60-day OHLCV like you're reading a chart. Look at:
+- Where did the stock bottom? Where did it top? Where is it NOW in that range?
+- Is money flowing in (CMF+, rising OBV, volume spikes on green days) or out?
+- Are indicators turning from oversold, or has the move already happened?
+- How does this stock behave when DSEX moves — does it follow the index or lead/lag?
+- Would a beginner buying TODAY make money in the next 5-10 days, or get trapped?
+
+Set entry_low/entry_high based on ACTUAL support levels you see in the price data — repeated lows, bounce zones, consolidation ranges. Not from formulas.
 
 Return a JSON array (NO markdown fences, ONLY valid JSON):
 [
@@ -586,16 +612,15 @@ Return a JSON array (NO markdown fences, ONLY valid JSON):
 ]
 
 Rules:
-1. Analyze ALL {len(stocks)} stocks
-2. entry_low/entry_high MUST be based on actual support levels visible in the 60-day OHLCV data, NOT calculated from a formula
-3. If current price is already above a reasonable entry zone, say so — set stage to TOO_LATE or WATCHING
-4. Score 0-100: 0=strong avoid, 50=neutral, 100=strong buy
-5. T+2: buyer cannot sell for 2 days. If stock peaks today, BAD BUY
-6. DSE tick size 0.10 BDT — all prices in multiples of 0.10
-7. HOLD/WAIT must explain EXACTLY what trigger to watch for
-8. For AVOID stocks, explain what would change to make it buyable
-9. If you made mistakes in past predictions (see feedback above), EXPLICITLY adjust
-10. Return ONLY valid JSON array, no extra text"""
+1. Analyze ALL {len(stocks)} stocks — every stock gets a verdict
+2. Base entry_low/entry_high on support levels you identify in the 60-day OHLCV data
+3. Score 0-100: your overall conviction (0=strong avoid, 50=neutral, 100=strong buy)
+4. T+2 settlement: buyer cannot sell for 2 trading days — factor this into timing
+5. DSE tick size 0.10 BDT — all prices in multiples of 0.10
+6. Be honest about uncertainty. If the chart is unclear, say WATCHING, not BUY
+7. If you made mistakes in past predictions (see feedback above), learn and adjust
+8. Think about DSE market context: this is a retail-dominated, low-liquidity market. Volume confirmation matters more here than in developed markets
+9. Return ONLY valid JSON array, no extra text"""
 
 
 def store_llm_results(date_str: str, results: list[dict], batch_id: int, raw: str):

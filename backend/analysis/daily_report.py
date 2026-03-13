@@ -145,6 +145,15 @@ def _analyze_stock(symbol: str, df: pd.DataFrame, live: dict,
     atr = _safe(latest.get("atr_14"))
     vol_ratio = _safe(latest.get("volume_ratio"))
     avg_vol = _safe(latest.get("volume_sma_20"))
+    mfi = _safe(latest.get("mfi_14"))
+    cmf = _safe(latest.get("cmf_20"))
+    obv_val = latest.get("obv")
+    williams = _safe(latest.get("williams_r"))
+    adx_val = _safe(latest.get("adx_14"))
+    plus_di_val = _safe(latest.get("plus_di"))
+    minus_di_val = _safe(latest.get("minus_di"))
+    momentum_3d = _safe(latest.get("momentum_3d"))
+    momentum_5d = _safe(latest.get("momentum_5d"))
 
     # Derived metrics
     above_sma50 = ltp > sma50 if sma50 > 0 else False
@@ -359,6 +368,15 @@ def _analyze_stock(symbol: str, df: pd.DataFrame, live: dict,
         "above_sma50": above_sma50,
         "win_rate": win_rate,
         "bounce_rate": bounce_rate,
+        "mfi": round(mfi, 1) if mfi else 0,
+        "cmf": round(cmf, 3) if cmf else 0,
+        "obv": int(obv_val) if obv_val and not math.isnan(obv_val) else 0,
+        "williams_r": round(williams, 1) if williams else 0,
+        "adx": round(adx_val, 1) if adx_val else 0,
+        "plus_di": round(plus_di_val, 1) if plus_di_val else 0,
+        "minus_di": round(minus_di_val, 1) if minus_di_val else 0,
+        "momentum_3d": round(momentum_3d, 1) if momentum_3d else 0,
+        "momentum_5d": round(momentum_5d, 1) if momentum_5d else 0,
         "chg_5d": chg_5d,
         "chg_10d": chg_10d,
         "chg_20d": chg_20d,
@@ -1181,6 +1199,22 @@ def save_daily_analysis(analysis: list[dict], date_str: str | None = None):
         ("hold_days_t1", "INTEGER"),
         ("hold_days_t2", "INTEGER"),
         ("prediction_json", "TEXT"),
+        ("mfi", "REAL"),
+        ("cmf", "REAL"),
+        ("obv", "BIGINT"),
+        ("williams_r", "REAL"),
+        ("adx", "REAL"),
+        ("plus_di", "REAL"),
+        ("minus_di", "REAL"),
+        ("ema9", "REAL"),
+        ("ema21", "REAL"),
+        ("sma50", "REAL"),
+        ("momentum_3d", "REAL"),
+        ("momentum_5d", "REAL"),
+        ("turnover", "REAL"),
+        ("chg_5d", "REAL"),
+        ("chg_10d", "REAL"),
+        ("chg_20d", "REAL"),
     ]:
         try:
             conn.execute(f"ALTER TABLE daily_analysis ADD COLUMN IF NOT EXISTS {col} {ctype}")
@@ -1198,9 +1232,13 @@ def save_daily_analysis(analysis: list[dict], date_str: str | None = None):
                     macd_status, bb_pct, atr, atr_pct, volatility, max_dd, support, resistance,
                     trend_50d, avg_vol, vol_ratio, wait_days, vol_entry,
                     entry_start, entry_end, exit_t1_by, exit_t2_by, hold_days_t1, hold_days_t2,
-                    scenarios_json, last_5_json, ltp, score, category, prediction_json)
+                    scenarios_json, last_5_json, ltp, score, category, prediction_json,
+                    mfi, cmf, obv, williams_r, adx, plus_di, minus_di,
+                    ema9, ema21, sma50, momentum_3d, momentum_5d, turnover,
+                    chg_5d, chg_10d, chg_20d)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                           ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                           ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                           ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT (date, symbol) DO UPDATE SET
                      action=EXCLUDED.action, reasoning=EXCLUDED.reasoning,
                      entry_low=EXCLUDED.entry_low, entry_high=EXCLUDED.entry_high,
@@ -1220,7 +1258,15 @@ def save_daily_analysis(analysis: list[dict], date_str: str | None = None):
                      hold_days_t1=EXCLUDED.hold_days_t1, hold_days_t2=EXCLUDED.hold_days_t2,
                      scenarios_json=EXCLUDED.scenarios_json,
                      last_5_json=EXCLUDED.last_5_json, ltp=EXCLUDED.ltp, score=EXCLUDED.score,
-                     category=EXCLUDED.category, prediction_json=EXCLUDED.prediction_json""",
+                     category=EXCLUDED.category, prediction_json=EXCLUDED.prediction_json,
+                     mfi=EXCLUDED.mfi, cmf=EXCLUDED.cmf, obv=EXCLUDED.obv,
+                     williams_r=EXCLUDED.williams_r, adx=EXCLUDED.adx,
+                     plus_di=EXCLUDED.plus_di, minus_di=EXCLUDED.minus_di,
+                     ema9=EXCLUDED.ema9, ema21=EXCLUDED.ema21, sma50=EXCLUDED.sma50,
+                     momentum_3d=EXCLUDED.momentum_3d, momentum_5d=EXCLUDED.momentum_5d,
+                     turnover=EXCLUDED.turnover,
+                     chg_5d=EXCLUDED.chg_5d, chg_10d=EXCLUDED.chg_10d,
+                     chg_20d=EXCLUDED.chg_20d""",
                 (
                     date_str, a["symbol"], a["action"], a["reasoning"],
                     a["entry_low"], a["entry_high"], a["sl"], a["t1"], a["t2"],
@@ -1233,6 +1279,13 @@ def save_daily_analysis(analysis: list[dict], date_str: str | None = None):
                     a["hold_days_t1"], a["hold_days_t2"],
                     a["scenarios_json"], a["last_5_json"], a["ltp"], a.get("score", 0),
                     a.get("category", ""), a.get("prediction_json"),
+                    a.get("mfi", 0), a.get("cmf", 0), a.get("obv", 0),
+                    a.get("williams_r", 0), a.get("adx", 0),
+                    a.get("plus_di", 0), a.get("minus_di", 0),
+                    a.get("ema9", 0), a.get("ema21", 0), a.get("sma50", 0),
+                    a.get("momentum_3d", 0), a.get("momentum_5d", 0),
+                    a.get("avg_turnover", 0),
+                    a.get("chg_5d", 0), a.get("chg_10d", 0), a.get("chg_20d", 0),
                 ),
             )
             saved += 1
