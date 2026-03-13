@@ -781,9 +781,27 @@ async def get_buy_radar(categories: str = "A", exclude_sectors: str = ""):
         llm_stage = (llm.get("stage") or "").upper().replace(" ", "_")
         valid_stages = {"ENTRY_ZONE", "READY", "APPROACHING", "BUILDING", "WATCHING", "TOO_LATE"}
 
+        # Check recent rally from price history
+        prices_close = df["close"].tolist()
+        ret_5d_pct = 0
+        if len(prices_close) >= 6:
+            p5 = prices_close[-6]
+            if p5 > 0:
+                ret_5d_pct = (close / p5 - 1) * 100
+
         if llm_stage in valid_stages:
             if llm_stage == "TOO_LATE":
                 stage = "WATCHING"
+            elif llm_stage in ("ENTRY_ZONE", "READY"):
+                # Sanity check: demote if score is low or stock already rallied
+                if overall < 40 and ret_5d_pct > 5:
+                    stage = "APPROACHING"  # Already moved, not ready
+                elif overall < 30:
+                    stage = "APPROACHING"  # Score too low for READY
+                elif "HOLD" in action_upper or "WAIT" in action_upper:
+                    stage = "APPROACHING"  # LLM action contradicts READY
+                else:
+                    stage = llm_stage
             else:
                 stage = llm_stage
         else:
@@ -835,8 +853,7 @@ async def get_buy_radar(categories: str = "A", exclude_sectors: str = ""):
         ] if v)
 
         # ── Build response object ──
-        prices_list = df["close"].tolist()
-        ret_5d = round(((prices_list[-1] / prices_list[-6]) - 1) * 100, 1) if len(prices_list) >= 6 else 0
+        ret_5d = round(ret_5d_pct, 1)
 
         a = analysis_map.get(sym, {})
 

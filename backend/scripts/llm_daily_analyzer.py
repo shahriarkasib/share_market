@@ -1673,15 +1673,38 @@ def precompute_radar(date_str: str):
             logger.warning("Radar precompute: empty result")
             return
 
-        # Add DSEX forecast to the result
+        # Add DSEX forecast to the result (including day-by-day predictions)
         conn = get_conn()
         cur = conn.cursor()
         cur.execute("SELECT forecast, sentiment, support, resistance, expected_direction, "
-                     "confidence, key_factors, scenario_bull, scenario_bear, scenario_base "
+                     "confidence, key_factors, scenario_bull, scenario_bear, scenario_base, "
+                     "raw_response "
                      "FROM dsex_forecast WHERE date = %s", (date_str,))
         dsex_row = cur.fetchone()
         if dsex_row:
-            result["dsex_forecast"] = dict(dsex_row)
+            dsex_data = dict(dsex_row)
+            # Extract day-by-day predictions from raw_response
+            raw_text = dsex_data.pop("raw_response", "") or ""
+            try:
+                start = raw_text.find("{")
+                end = raw_text.rfind("}") + 1
+                if start >= 0 and end > start:
+                    raw_json = json.loads(raw_text[start:end])
+                    days = []
+                    for i in range(1, 6):
+                        day = {
+                            "day": i,
+                            "direction": raw_json.get(f"day{i}_direction", ""),
+                            "range_low": raw_json.get(f"day{i}_range_low", 0),
+                            "range_high": raw_json.get(f"day{i}_range_high", 0),
+                            "reasoning": raw_json.get(f"day{i}_reasoning", ""),
+                        }
+                        if day["direction"]:
+                            days.append(day)
+                    dsex_data["daily_predictions"] = days
+            except Exception:
+                pass
+            result["dsex_forecast"] = dsex_data
 
         # Store as JSON
         data_json = json.dumps(result, default=str)
