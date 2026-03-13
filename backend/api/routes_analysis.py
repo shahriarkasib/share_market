@@ -550,43 +550,15 @@ async def get_buy_radar(categories: str = "A", exclude_sectors: str = ""):
         ).fetchall()
     a_cat = {r["symbol"]: {"sector": r["sector"] or "", "category": r["category"] or "A"} for r in rows}
 
-    # Filter out bank/insurance/tobacco/mutual funds
-    # Default excluded sectors (halal filter)
-    default_skip = {"bank", "insurance", "nbfi", "life insurance",
-                    "general insurance", "tobacco", "mutual funds"}
-    # Add user's extra excludes
+    # Optional sector filter (user-specified only, no default halal filter)
     if exclude_sectors:
-        for es in exclude_sectors.split(","):
-            if es.strip():
-                default_skip.add(es.strip().lower())
-    skip_symbols = {
-        "BATBC",
-        # Banks with non-obvious names
-        "UCB", "CITYBANK", "BRACBANK", "EBL", "DUTCHBANGL",
-        # Insurance with non-obvious names
-        "BGIC", "CONTININS", "KABORINS",
-    }
-    # Also filter by symbol name patterns (sector data is often empty)
-    skip_name_patterns = ("INS", "LIFE", "BANK", "MF", "1MF")
-
-    def _should_skip(sym: str, sec: str) -> bool:
-        if sym in skip_symbols:
-            return True
-        if sec and any(k in sec.lower() for k in default_skip):
-            return True
-        # Symbol-name heuristic (always check — sector data is unreliable)
-        s_up = sym.upper()
-        if any(s_up.endswith(p) for p in skip_name_patterns):
-            return True
-        # Also check for MF/INS anywhere in symbol (e.g. ICBEPMF1S1, PHPMF1)
-        if "MF" in s_up and any(c.isdigit() for c in s_up):
-            return True  # Likely a mutual fund with scheme number
-        return False
-
-    filtered = {
-        s: info["sector"] for s, info in a_cat.items()
-        if not _should_skip(s, info["sector"])
-    }
+        skip_sectors = {es.strip().lower() for es in exclude_sectors.split(",") if es.strip()}
+        filtered = {
+            s: info["sector"] for s, info in a_cat.items()
+            if not (info["sector"] and any(k in info["sector"].lower() for k in skip_sectors))
+        }
+    else:
+        filtered = {s: info["sector"] for s, info in a_cat.items()}
     # Keep category info for response
     cat_map = {s: info["category"] for s, info in a_cat.items()}
 
@@ -634,7 +606,8 @@ async def get_buy_radar(categories: str = "A", exclude_sectors: str = ""):
 
         judge_rows = conn.execute(
             "SELECT symbol, final_action, final_confidence, agreement, "
-            "reasoning, key_risk, algo_strengths, llm_strengths "
+            "reasoning, key_risk, algo_strengths, llm_strengths, "
+            "entry_low, entry_high, sl, t1, t2, score "
             "FROM judge_daily_analysis WHERE date = ?", (ai_date,),
         ).fetchall()
         judge_map = {r["symbol"]: dict(r) for r in judge_rows}
@@ -745,20 +718,6 @@ async def get_buy_radar(categories: str = "A", exclude_sectors: str = ""):
     for col in ["open", "high", "low", "close", "volume"]:
         all_df[col] = pd.to_numeric(all_df[col], errors="coerce")
 
-    # ═══════════════════════════════════════════════════════
-    #  MULTI-LAYER SIGNAL ENGINE
-    #  Layer 1 — LEADING (signal early): StochRSI, MFI, Williams %R
-    #  Layer 2 — CONFIRMING (validate trend): MACD, ADX/DI, EMA crossover
-    #  Layer 3 — MONEY FLOW (is the move real?): CMF, OBV direction, Vol ratio
-    #  Layer 4 — POSITIONING (where in range?): RSI, BB%, price vs VWAP/SMA50
-    #  Red flags — hard blockers that prevent promotion
-    # ═══════════════════════════════════════════════════════
-
-    import numpy as np
-
-    def _clamp(v):
-        return max(0.0, min(100.0, float(v)))
-
     stocks = []
     for sym, group in all_df.groupby("symbol"):
         if sym not in filtered or len(group) < 30:
@@ -779,288 +738,30 @@ async def get_buy_radar(categories: str = "A", exclude_sectors: str = ""):
         close = ind.get("close") or 0
         volume = ind.get("volume") or 0
         vol_sma = ind.get("volume_sma_20") or 1
-        if volume < 5000 and vol_sma < 5000:
-            continue
 
-        # ── Extract all indicators ──
+        # ── Extract indicators for display only ──
         rsi = ind.get("rsi_14") or 50
         mfi = ind.get("mfi_14") or 50
         cmf = ind.get("cmf_20") or 0
         macd_hist = ind.get("macd_histogram") or 0
-        prev_macd = ind.get("prev_macd_histogram") or 0
         stoch_k = ind.get("stoch_k") or 50
-        stoch_d = ind.get("stoch_d") or 50
-        adx = ind.get("adx_14") or 0
-        plus_di = ind.get("plus_di") or 0
-        minus_di = ind.get("minus_di") or 0
-        williams = ind.get("williams_r") or -50
         bb_upper = ind.get("bb_upper") or 0
         bb_lower = ind.get("bb_lower") or 0
-        bb_mid = ind.get("bb_middle") or 0
-        ema9 = ind.get("ema_9") or close
-        ema21 = ind.get("ema_21") or close
-        prev_ema9 = ind.get("prev_ema_9") or ema9
-        prev_ema21 = ind.get("prev_ema_21") or ema21
-        sma50 = ind.get("sma_50") or close
-        vwap = ind.get("vwap_20") or close
-        obv = ind.get("obv") or 0
-        ad_line = ind.get("ad_line") or 0
-        atr = ind.get("atr_14") or 0
         vol_ratio = ind.get("volume_ratio") or 0
-        mom_3d = ind.get("momentum_3d") or 0
-        mom_5d = ind.get("momentum_5d") or 0
 
         bb_range = bb_upper - bb_lower
         bb_pct = ((close - bb_lower) / bb_range * 100) if bb_range > 0 else 50
 
-        # ── Detect divergences & crossovers from full DataFrame ──
-        n = len(full_df)
-
-        # RSI bullish divergence: price made new 10-day low but RSI is higher
-        rsi_divergence = False
-        if n >= 10 and "rsi_14" in full_df.columns:
-            price_10d = full_df["close"].iloc[-10:].values
-            rsi_10d = full_df["rsi_14"].iloc[-10:].dropna().values
-            if len(rsi_10d) >= 10:
-                if price_10d[-1] <= np.min(price_10d[:-1]) and rsi_10d[-1] > np.min(rsi_10d[:-1]):
-                    rsi_divergence = True
-
-        # OBV direction (rising = bullish even if price flat/down)
-        obv_rising = False
-        if n >= 5 and "obv" in full_df.columns:
-            obv_5 = full_df["obv"].iloc[-5:].values
-            if len(obv_5) == 5:
-                obv_rising = obv_5[-1] > obv_5[0]
-
-        # A/D line direction
-        ad_rising = False
-        if n >= 5 and "ad_line" in full_df.columns:
-            ad_5 = full_df["ad_line"].iloc[-5:].values
-            if len(ad_5) == 5:
-                ad_rising = ad_5[-1] > ad_5[0]
-
-        # EMA crossover detection
-        ema_golden = (ema9 > ema21) and (prev_ema9 <= prev_ema21)  # Just crossed
-        ema_bullish = ema9 > ema21  # Already above
-        ema_converging = (ema9 < ema21) and (ema9 - ema21 > prev_ema9 - prev_ema21)
-
-        # MACD state
-        macd_converging = macd_hist < 0 and prev_macd < 0 and macd_hist > prev_macd
-        macd_crossed = macd_hist >= 0 and prev_macd < 0
-
-        # StochRSI K/D crossover
-        stoch_buy_cross = stoch_k > stoch_d and stoch_k < 30  # K crosses above D in oversold zone
-
         # ════════════════════════════════════════
-        #  LAYER 1 — LEADING INDICATORS (max 30 pts)
-        #  These signal BEFORE the move happens
+        #  LLM-POWERED RADAR
+        #  Stage, score, and signals all come from Claude's analysis
         # ════════════════════════════════════════
-        leading_score = 0
-        leading_signals = []
-
-        # StochRSI deeply oversold
-        if stoch_k < 15:
-            leading_score += 10; leading_signals.append(f"StochRSI {stoch_k:.0f} deeply oversold")
-        elif stoch_k < 25:
-            leading_score += 7; leading_signals.append(f"StochRSI {stoch_k:.0f} oversold")
-        elif stoch_k < 40:
-            leading_score += 3; leading_signals.append(f"StochRSI {stoch_k:.0f}")
-
-        # StochRSI K>D crossover in oversold zone (very strong early signal)
-        if stoch_buy_cross:
-            leading_score += 5; leading_signals.append("StochRSI K>D cross in oversold!")
-
-        # MFI oversold (volume-confirmed — more reliable than RSI)
-        if mfi < 20:
-            leading_score += 10; leading_signals.append(f"MFI {mfi:.0f} vol-confirmed oversold")
-        elif mfi < 30:
-            leading_score += 7; leading_signals.append(f"MFI {mfi:.0f} cheap on volume")
-        elif mfi < 45:
-            leading_score += 3; leading_signals.append(f"MFI {mfi:.0f}")
-
-        # Williams %R oversold
-        if williams < -90:
-            leading_score += 5; leading_signals.append(f"W%R {williams:.0f} extreme oversold")
-        elif williams < -80:
-            leading_score += 3; leading_signals.append(f"W%R {williams:.0f} oversold")
-
-        # RSI bullish divergence (strongest leading signal)
-        if rsi_divergence:
-            leading_score += 8; leading_signals.append("RSI bullish divergence!")
-
-        leading_max = 30
-        leading_pct = _clamp(leading_score / leading_max * 100)
-
-        # ════════════════════════════════════════
-        #  LAYER 2 — CONFIRMING INDICATORS (max 30 pts)
-        #  These validate the trend direction
-        # ════════════════════════════════════════
-        confirm_score = 0
-        confirm_signals = []
-
-        # MACD
-        if macd_crossed:
-            confirm_score += 10; confirm_signals.append("MACD bull cross!")
-        elif macd_converging:
-            conv_rate = abs(macd_hist) / max(abs(prev_macd), 0.001)
-            pts = int(7 * (1 - conv_rate))
-            confirm_score += max(1, pts); confirm_signals.append(f"MACD converging ({(1-conv_rate)*100:.0f}%)")
-
-        # ADX + DI (trend strength + direction)
-        if adx > 25 and plus_di > minus_di:
-            confirm_score += 8; confirm_signals.append(f"ADX {adx:.0f} strong uptrend")
-        elif adx > 20 and plus_di > minus_di:
-            confirm_score += 4; confirm_signals.append(f"ADX {adx:.0f} trend forming")
-        elif adx < 15:
-            confirm_score -= 2  # Trendless = bad for trending strategies
-
-        # EMA crossover
-        if ema_golden:
-            confirm_score += 8; confirm_signals.append("EMA9/21 golden cross!")
-        elif ema_bullish:
-            confirm_score += 4; confirm_signals.append("EMA9 > EMA21 bullish")
-        elif ema_converging:
-            confirm_score += 2; confirm_signals.append("EMA converging")
-
-        # Price vs SMA50 (medium-term trend)
-        if close > sma50 and sma50 > 0:
-            confirm_score += 2; confirm_signals.append("Above SMA50")
-
-        confirm_max = 30
-        confirm_pct = _clamp(confirm_score / confirm_max * 100)
-
-        # ════════════════════════════════════════
-        #  LAYER 3 — MONEY FLOW (max 25 pts)
-        #  Is the move backed by real money?
-        # ════════════════════════════════════════
-        money_score = 0
-        money_signals = []
-
-        # CMF — the most important for detecting smart money
-        if cmf > 0.15:
-            money_score += 10; money_signals.append(f"CMF +{cmf:.2f} STRONG accumulation")
-        elif cmf > 0.05:
-            money_score += 7; money_signals.append(f"CMF +{cmf:.2f} accumulation")
-        elif cmf > 0:
-            money_score += 4; money_signals.append(f"CMF +{cmf:.2f} mild accumulation")
-        elif cmf > -0.1:
-            money_score += 1; money_signals.append(f"CMF {cmf:.2f} neutral")
-        else:
-            money_score -= 3; money_signals.append(f"CMF {cmf:.2f} DISTRIBUTION")
-
-        # OBV direction (confirms whether volume supports price)
-        if obv_rising:
-            money_score += 5; money_signals.append("OBV rising (buying volume)")
-        elif not obv_rising:
-            money_score -= 1; money_signals.append("OBV falling")
-
-        # A/D line direction
-        if ad_rising:
-            money_score += 4; money_signals.append("A/D rising (accumulation)")
-
-        # Volume ratio
-        if vol_ratio > 2.0:
-            money_score += 4; money_signals.append(f"Vol {vol_ratio:.1f}x strong")
-        elif vol_ratio > 1.3:
-            money_score += 2; money_signals.append(f"Vol {vol_ratio:.1f}x above avg")
-        elif vol_ratio < 0.5:
-            money_score -= 3; money_signals.append(f"Vol {vol_ratio:.1f}x THIN")
-
-        money_max = 25
-        money_pct = _clamp(money_score / money_max * 100)
-
-        # ════════════════════════════════════════
-        #  LAYER 4 — POSITIONING (max 15 pts)
-        #  Where is price relative to its range?
-        # ════════════════════════════════════════
-        pos_score = 0
-        pos_signals = []
-
-        # RSI zone
-        if rsi < 30:
-            pos_score += 6; pos_signals.append(f"RSI {rsi:.0f} oversold")
-        elif rsi < 40:
-            pos_score += 4; pos_signals.append(f"RSI {rsi:.0f} near oversold")
-        elif rsi < 50:
-            pos_score += 2; pos_signals.append(f"RSI {rsi:.0f} neutral-low")
-
-        # BB% position
-        if bb_pct < 10:
-            pos_score += 5; pos_signals.append(f"BB% {bb_pct:.0f}% at bottom")
-        elif bb_pct < 25:
-            pos_score += 3; pos_signals.append(f"BB% {bb_pct:.0f}% lower zone")
-        elif bb_pct < 40:
-            pos_score += 1; pos_signals.append(f"BB% {bb_pct:.0f}%")
-
-        # Price vs VWAP (below VWAP = discount to institutional price)
-        if close < vwap and vwap > 0:
-            pos_score += 3; pos_signals.append("Below VWAP (discount)")
-
-        pos_max = 15
-        pos_pct = _clamp(pos_score / pos_max * 100)
-
-        # ════════════════════════════════════════
-        #  RED FLAGS — hard blockers
-        # ════════════════════════════════════════
-        red_flags = []
-        has_blocker = False
-
-        if vol_ratio < 0.4 and vol_sma > 10000:
-            red_flags.append("Volume dead — signal unreliable")
-            has_blocker = True
-        if cmf < -0.25:
-            red_flags.append("Heavy distribution — smart money exiting")
-            has_blocker = True
-        if rsi > 70:
-            red_flags.append("RSI overbought — too late")
-            has_blocker = True
-        if mfi > 80 and rsi > 65:
-            red_flags.append("MFI+RSI double overbought")
-            has_blocker = True
-        if mom_5d > 8:
-            red_flags.append(f"Already up {mom_5d:.0f}% in 5d — chasing")
-            if mom_5d > 12:
-                has_blocker = True
-        if bb_pct > 90:
-            red_flags.append("At top of BB — stretched")
-        if adx < 12 and not (rsi < 35 or mfi < 25):
-            red_flags.append("Completely trendless")
-
-        # "Already moved" detection: price above entry zone = too late
-        a_entry_high = float(analysis_map.get(sym, {}).get("entry_high") or 0)
-        already_moved = False
-        if a_entry_high > 0 and close > a_entry_high * 1.02:
-            pct_above = round((close / a_entry_high - 1) * 100, 1)
-            red_flags.append(f"Price {pct_above:.0f}% above entry zone ({a_entry_high:.1f})")
-            already_moved = True
-            if pct_above > 5:
-                has_blocker = True  # Way past entry = hard block
-
-        # Recent rally detection: if price rallied >7% in last 5 days, it already moved
-        prices_close = full_df["close"].values
-        if len(prices_close) >= 6 and not already_moved:
-            recent_low = float(min(prices_close[-6:-1]))  # lowest of last 5 days (excluding today)
-            if recent_low > 0:
-                rally_pct = round((close / recent_low - 1) * 100, 1)
-                if rally_pct > 7 and rsi > 55 and bb_pct > 60:
-                    red_flags.append(f"Rallied {rally_pct:.0f}% in 5 days — chasing risk")
-                    already_moved = True
-
-        # Mid-range stocks with no edge left
-        if rsi > 55 and stoch_k > 60 and bb_pct > 60 and not already_moved:
-            red_flags.append("Indicators mid-range — no discount left")
-            already_moved = True
-
-        # ════════════════════════════════════════
-        #  LAYER 5 — AI VERDICT (from LLM + Judge)
-        #  Uses Claude's analysis: news, context, sector, risk
-        # ════════════════════════════════════════
-        ai_score = 0
-        ai_signals = []
-        ai_max = 25
-
         llm = llm_map.get(sym, {})
         judge = judge_map.get(sym, {})
+
+        # Skip stocks with no LLM analysis
+        if not llm and not judge:
+            continue
 
         # Use judge final_action if available, else LLM action
         ai_action = judge.get("final_action") or llm.get("action") or ""
@@ -1069,137 +770,75 @@ async def get_buy_radar(categories: str = "A", exclude_sectors: str = ""):
         ai_reasoning_text = llm.get("reasoning") or ""
         ai_wait_for = llm.get("wait_for") or ""
         ai_how_to_buy = llm.get("how_to_buy") or ""
-        ai_volume_rule = llm.get("volume_rule") or ""
         ai_key_risk = judge.get("key_risk") or ""
         ai_catalysts = llm.get("catalysts") or []
         ai_risk_factors = llm.get("risk_factors") or []
 
-        # Score based on AI action
-        action_upper = ai_action.upper()
-        if "STRONG" in action_upper and "BUY" in action_upper:
-            ai_score += 20; ai_signals.append(f"AI: {ai_action}")
-        elif "BUY" in action_upper and "AVOID" not in action_upper:
-            if "PULLBACK" in action_upper or "DIP" in action_upper:
-                ai_score += 14; ai_signals.append(f"AI: {ai_action}")
-            elif "WAIT" in action_upper or "MACD" in action_upper:
-                ai_score += 10; ai_signals.append(f"AI: {ai_action}")
-            else:
-                ai_score += 16; ai_signals.append(f"AI: {ai_action}")
-        elif "HOLD" in action_upper or "WAIT" in action_upper:
-            ai_score += 4; ai_signals.append(f"AI: {ai_action}")
-        elif "SELL" in action_upper or "AVOID" in action_upper:
-            ai_score -= 5; ai_signals.append(f"AI: {ai_action}")
-            red_flags.append(f"AI says {ai_action}")
-            has_blocker = True  # AI SELL is a hard blocker
+        # Overall score comes directly from LLM (judge overrides if available)
+        overall = float(judge.get("score") or llm.get("score") or 0)
 
-        # Confidence boost
-        conf_upper = ai_confidence.upper()
-        if conf_upper == "HIGH":
-            ai_score += 5; ai_signals.append("Confidence: HIGH")
-        elif conf_upper == "MEDIUM":
-            ai_score += 2
-
-        # Agreement between algo and LLM (judge agreed)
-        if judge.get("agreement"):
-            ai_score += 3; ai_signals.append("Algo+LLM agree")
-
-        # Entry/exit: use daily_analysis values (already overridden by Stage 4
-        # with judge > LLM > algo fallback). This ensures consistency across all pages.
-        algo_data = analysis_map.get(sym, {})
-        ai_entry_low = algo_data.get("entry_low")
-        ai_entry_high = algo_data.get("entry_high")
-        ai_sl = algo_data.get("sl")
-        ai_t1 = algo_data.get("t1")
-        ai_t2 = algo_data.get("t2")
-
-        ai_pct = _clamp(ai_score / ai_max * 100)
-
-        # ════════════════════════════════════════
-        #  OVERALL SCORE & STAGE
-        #  Algo layers 60% + AI layer 25% + Market context 15%
-        # ════════════════════════════════════════
-        algo_composite = (leading_pct * 0.25 + confirm_pct * 0.20 +
-                          money_pct * 0.25 + pos_pct * 0.10)
-
-        # Market context adjustment
-        adj = market_ctx["adjustment"]
-        # In oversold market: algo signals worth more (stocks are genuinely cheap)
-        # In overbought market: demand higher AI confidence to avoid chasing
-        market_bonus = 0
-        if market_ctx["regime"] == "OVERSOLD":
-            market_bonus = 10
-        elif market_ctx["regime"] == "WEAK":
-            market_bonus = 5
-        elif market_ctx["regime"] == "OVERBOUGHT":
-            market_bonus = -10
-        elif market_ctx["regime"] == "HEATED":
-            market_bonus = -5
-
-        overall = algo_composite * adj + ai_pct * 0.25 + market_bonus
-
-        # Penalty for red flags
-        if has_blocker:
-            overall *= 0.4
-        elif len(red_flags) >= 2:
-            overall *= 0.7
-
-        # Count "ready" layers (5 layers now, pct >= 60)
-        ready_count = sum(1 for p in [leading_pct, confirm_pct, money_pct,
-                                       pos_pct, ai_pct] if p >= 60)
-
-        # Stage — prefer LLM-produced stage (AI sees 60-day price history)
-        has_ai_buy = "BUY" in action_upper and "AVOID" not in action_upper
-        has_distribution = any("DISTRIBUTION" in f for f in money_signals)
-
+        # Stage comes directly from LLM
         llm_stage = (llm.get("stage") or "").upper().replace(" ", "_")
         valid_stages = {"ENTRY_ZONE", "READY", "APPROACHING", "BUILDING", "WATCHING", "TOO_LATE"}
 
         if llm_stage in valid_stages:
-            # Use LLM's stage decision (it has 60-day OHLCV context)
             if llm_stage == "TOO_LATE":
-                stage = "WATCHING"  # Show but demoted
-                red_flags.append("AI: already moved — too late to chase")
-            elif has_blocker and llm_stage in ("ENTRY_ZONE", "READY"):
-                stage = "WATCHING"  # Red flags override AI promotion
+                stage = "WATCHING"
             else:
                 stage = llm_stage
         else:
-            # Fallback: hardcoded staging (no LLM stage available)
-            if has_blocker:
-                if overall >= 10:
-                    stage = "WATCHING"
-                else:
-                    continue
-            elif (ready_count >= 4 and money_pct >= 60 and leading_pct >= 50
-                  and has_ai_buy and not has_distribution and not already_moved):
+            # No valid stage from LLM — infer from action/score
+            action_upper = ai_action.upper()
+            if overall >= 60 and "BUY" in action_upper:
                 stage = "ENTRY_ZONE"
-            elif (ready_count >= 3 and money_pct >= 40 and has_ai_buy
-                  and not already_moved
-                  and (macd_converging or macd_crossed or ema_converging or ema_bullish)):
-                stage = "ENTRY_ZONE"
-            elif (ready_count >= 2 and money_pct >= 40 and not already_moved
-                  and (macd_converging or macd_crossed or ema_converging or ema_bullish)):
+            elif overall >= 45 and "BUY" in action_upper:
                 stage = "READY"
-            elif has_ai_buy and not already_moved and (leading_pct >= 40 or money_pct >= 50):
-                stage = "READY"
-            elif (leading_pct >= 40 or money_pct >= 50
-                  or (confirm_pct >= 40 and pos_pct >= 40)):
+            elif overall >= 35 and "BUY" in action_upper:
                 stage = "APPROACHING"
-            elif overall >= 30 or leading_pct >= 30 or money_pct >= 30:
+            elif overall >= 25:
                 stage = "BUILDING"
-            elif overall >= 15 or has_ai_buy:
-                stage = "WATCHING"
             else:
-                continue
+                stage = "WATCHING"
+
+        # Red flags from LLM risk_factors
+        red_flags = []
+        if isinstance(ai_risk_factors, list):
+            red_flags = ai_risk_factors[:5]
+        action_upper = ai_action.upper()
+        if "SELL" in action_upper or "AVOID" in action_upper:
+            red_flags.append(f"AI says {ai_action}")
+
+        # Signals from LLM catalysts
+        all_signals = []
+        if isinstance(ai_catalysts, list):
+            all_signals = ai_catalysts[:4]
+        all_signals.append(f"AI: {ai_action} ({ai_confidence})")
+        if llm.get("wait_days"):
+            all_signals.append(f"Wait: {llm['wait_days']}")
+
+        # Entry/exit: prefer judge > LLM > algo
+        algo_data = analysis_map.get(sym, {})
+        ai_entry_low = (judge.get("entry_low") or llm.get("entry_low") or
+                        algo_data.get("entry_low"))
+        ai_entry_high = (judge.get("entry_high") or llm.get("entry_high") or
+                         algo_data.get("entry_high"))
+        ai_sl = judge.get("sl") or llm.get("sl") or algo_data.get("sl")
+        ai_t1 = judge.get("t1") or llm.get("t1") or algo_data.get("t1")
+        ai_t2 = judge.get("t2") or llm.get("t2") or algo_data.get("t2")
+
+        ready_count = sum(1 for v in [
+            llm.get("stage") in ("ENTRY_ZONE", "READY"),
+            "BUY" in action_upper and "AVOID" not in action_upper,
+            ai_confidence and ai_confidence.upper() == "HIGH",
+            judge.get("agreement"),
+            overall >= 40,
+        ] if v)
 
         # ── Build response object ──
         prices_list = df["close"].tolist()
         ret_5d = round(((prices_list[-1] / prices_list[-6]) - 1) * 100, 1) if len(prices_list) >= 6 else 0
 
         a = analysis_map.get(sym, {})
-
-        # Combine all signals for display
-        all_signals = leading_signals + confirm_signals + money_signals + pos_signals
 
         stocks.append({
             "symbol": sym,
@@ -1213,31 +852,31 @@ async def get_buy_radar(categories: str = "A", exclude_sectors: str = ""):
             "volume": int(volume),
             "vol_ratio": round(vol_ratio, 1),
             "indicators": {
-                "rsi":       {"value": round(rsi, 1),       "readiness": round(pos_pct, 0)},
-                "mfi":       {"value": round(mfi, 1),       "readiness": round(leading_pct, 0)},
-                "cmf":       {"value": round(cmf, 3),       "readiness": round(money_pct, 0)},
-                "macd":      {"value": round(macd_hist, 2), "readiness": round(confirm_pct, 0)},
-                "stoch_rsi": {"value": round(stoch_k, 1),   "readiness": round(leading_pct, 0)},
-                "bb_pct":    {"value": round(bb_pct, 1),    "readiness": round(pos_pct, 0)},
+                "rsi":       {"value": round(rsi, 1),       "readiness": round(overall, 0)},
+                "mfi":       {"value": round(mfi, 1),       "readiness": round(overall, 0)},
+                "cmf":       {"value": round(cmf, 3),       "readiness": round(overall, 0)},
+                "macd":      {"value": round(macd_hist, 2), "readiness": round(overall, 0)},
+                "stoch_rsi": {"value": round(stoch_k, 1),   "readiness": round(overall, 0)},
+                "bb_pct":    {"value": round(bb_pct, 1),    "readiness": round(overall, 0)},
             },
-            # Layer scores for frontend
+            # Layer scores — all driven by AI now
             "layers": {
-                "leading":    round(leading_pct, 0),
-                "confirming": round(confirm_pct, 0),
-                "money_flow": round(money_pct, 0),
-                "positioning": round(pos_pct, 0),
-                "ai_verdict": round(ai_pct, 0),
+                "leading":    round(overall, 0),
+                "confirming": round(overall, 0),
+                "money_flow": round(overall, 0),
+                "positioning": round(overall, 0),
+                "ai_verdict": round(overall, 0),
             },
-            "signals": all_signals[:6],  # Top 6 signals
+            "signals": all_signals[:6],
             "red_flags": red_flags,
-            # Entry/exit from daily_analysis (Stage 4 already resolved judge > LLM > algo)
+            # Entry/exit from AI (judge > LLM > algo)
             "entry_low": ai_entry_low,
             "entry_high": ai_entry_high,
             "sl": ai_sl,
             "t1": ai_t1,
             "t2": ai_t2,
-            "action": a.get("action", "") or ai_action,  # daily_analysis.action (Stage 4 resolved)
-            "score": a.get("score"),
+            "action": ai_action,
+            "score": overall,
             # AI context fields
             "ai_action": ai_action,
             "ai_confidence": ai_confidence,
@@ -1247,7 +886,7 @@ async def get_buy_radar(categories: str = "A", exclude_sectors: str = ""):
             "ai_wait_for": ai_wait_for,
             "ai_catalysts": ai_catalysts if isinstance(ai_catalysts, list) else [],
             "ai_risk_factors": ai_risk_factors if isinstance(ai_risk_factors, list) else [],
-            "ai_signals": ai_signals,
+            "ai_signals": [f"AI: {ai_action}"],
             "stage_reasoning": llm.get("stage_reasoning") or "",
             # Profit estimation
             "expected_return_1w": llm.get("expected_return_1w"),
