@@ -207,7 +207,6 @@ const DAY_DIR_STYLE: Record<string, { bg: string; text: string; icon: typeof Tre
 };
 
 function DayPredictionCard({ pred, label }: { pred: DsexDailyPrediction; label: string }) {
-  const [showReason, setShowReason] = useState(false);
   const ds = DAY_DIR_STYLE[pred.direction] || DAY_DIR_STYLE.FLAT;
   const DIcon = ds.icon;
 
@@ -222,15 +221,7 @@ function DayPredictionCard({ pred, label }: { pred: DsexDailyPrediction; label: 
         {pred.range_low?.toFixed(0)} – {pred.range_high?.toFixed(0)}
       </div>
       {pred.reasoning && (
-        <button
-          onClick={() => setShowReason(!showReason)}
-          className="text-[10px] text-[var(--text-dim)] hover:text-[var(--text)] text-left mt-0.5"
-        >
-          {showReason ? "Hide reason" : "Why?"}
-        </button>
-      )}
-      {showReason && pred.reasoning && (
-        <p className="text-[10px] text-[var(--text-muted)] leading-relaxed mt-1">
+        <p className="text-[10px] text-[var(--text-muted)] leading-relaxed mt-1 border-t border-[var(--border)] pt-1">
           {pred.reasoning}
         </p>
       )}
@@ -239,38 +230,57 @@ function DayPredictionCard({ pred, label }: { pred: DsexDailyPrediction; label: 
 }
 
 function DsexForecastBanner({ forecast }: { forecast: DsexForecast }) {
-  const [showDetails, setShowDetails] = useState(false);
   const style = SENTIMENT_STYLES[forecast.sentiment] || SENTIMENT_STYLES.NEUTRAL;
   const DirIcon = style.icon;
   const days = forecast.daily_predictions || [];
 
   return (
-    <div className={clsx("mb-4 rounded-lg border", style.bg, style.border)}>
-      {/* Header — always visible */}
-      <div className="px-4 py-3">
+    <div className={clsx("mb-4 rounded-xl border", style.bg, style.border)}>
+      {/* Header */}
+      <div className="px-4 pt-4 pb-2">
         <div className="flex items-center gap-2 flex-wrap">
-          <DirIcon className={clsx("h-5 w-5", style.text)} />
+          <Brain className={clsx("h-5 w-5", style.text)} />
           <span className={clsx("text-sm font-bold", style.text)}>
-            DSEX Forecast: {forecast.sentiment}
+            DSEX Market Forecast
           </span>
-          <span className={clsx("text-xs font-medium", style.text)}>
-            {forecast.expected_direction}
-          </span>
-          <span className="text-xs text-[var(--text-dim)]">
-            Support {forecast.support?.toFixed(0)} | Resistance {forecast.resistance?.toFixed(0)} | Confidence: {forecast.confidence}
+          <span className={clsx("text-xs px-2 py-0.5 rounded-full font-semibold border", style.bg, style.text)}>
+            {forecast.sentiment} — {forecast.expected_direction}
           </span>
         </div>
-
-        {/* Key factors — always visible */}
-        {forecast.key_factors && (
-          <p className="text-xs text-[var(--text-muted)] mt-2 leading-relaxed">{forecast.key_factors}</p>
-        )}
+        <div className="flex gap-3 mt-2 text-xs text-[var(--text-muted)]">
+          <span>Support: <strong className="text-green-400">{forecast.support?.toFixed(0)}</strong></span>
+          <span>Resistance: <strong className="text-red-400">{forecast.resistance?.toFixed(0)}</strong></span>
+          <span>Confidence: <strong className={style.text}>{forecast.confidence}</strong></span>
+        </div>
       </div>
 
-      {/* 5-day predictions — always visible */}
+      {/* Full analysis — always visible */}
+      {forecast.forecast && (
+        <div className="px-4 py-2">
+          <p className="text-xs text-[var(--text-muted)] leading-relaxed whitespace-pre-line">
+            {forecast.forecast}
+          </p>
+        </div>
+      )}
+
+      {/* Key factors */}
+      {forecast.key_factors && (
+        <div className="px-4 py-2 mx-4 mb-2 bg-[var(--surface)] rounded-lg border border-[var(--border)]">
+          <div className="flex items-center gap-1.5 mb-1">
+            <Lightbulb className="h-3.5 w-3.5 text-amber-400" />
+            <span className="text-[10px] font-bold uppercase text-amber-400">Key Factors</span>
+          </div>
+          <p className="text-xs text-[var(--text-muted)] leading-relaxed">{forecast.key_factors}</p>
+        </div>
+      )}
+
+      {/* 5-day predictions */}
       {days.length > 0 && (
         <div className="px-4 pb-3">
-          <div className="text-[10px] font-bold uppercase text-[var(--text-dim)] mb-2">Next 5 Trading Days</div>
+          <div className="flex items-center gap-1.5 mb-2">
+            <BarChart3 className="h-3.5 w-3.5 text-[var(--text-dim)]" />
+            <span className="text-[10px] font-bold uppercase text-[var(--text-dim)]">Next {days.length} Trading Days</span>
+          </div>
           <div className="grid grid-cols-5 gap-2">
             {days.map((d) => (
               <DayPredictionCard
@@ -283,46 +293,35 @@ function DsexForecastBanner({ forecast }: { forecast: DsexForecast }) {
         </div>
       )}
 
-      {/* Expand for full analysis + scenarios */}
-      <div className="border-t border-[var(--border)]">
-        <button
-          onClick={() => setShowDetails(!showDetails)}
-          className="w-full px-4 py-2 text-left flex items-center gap-1.5 text-xs text-[var(--text-dim)] hover:text-[var(--text)]"
-        >
-          <Brain className="h-3.5 w-3.5" />
-          <span className="font-medium">Full Analysis & Scenarios</span>
-          {showDetails ? <ChevronUp className="h-3.5 w-3.5 ml-auto" /> : <ChevronDown className="h-3.5 w-3.5 ml-auto" />}
-        </button>
-
-        {showDetails && (
-          <div className="px-4 pb-4 space-y-3">
-            <p className="text-xs text-[var(--text-muted)] leading-relaxed whitespace-pre-line">
-              {forecast.forecast}
-            </p>
-
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-              {forecast.scenario_base && (
-                <div className="bg-blue-500/5 border border-blue-500/15 rounded p-2">
-                  <div className="text-[10px] text-blue-400 font-medium mb-0.5">Most Likely (60%+)</div>
-                  <p className="text-xs text-blue-300/80 leading-relaxed">{forecast.scenario_base}</p>
-                </div>
-              )}
-              {forecast.scenario_bull && (
-                <div className="bg-green-500/5 border border-green-500/15 rounded p-2">
-                  <div className="text-[10px] text-green-400 font-medium mb-0.5">Bull Case</div>
-                  <p className="text-xs text-green-300/80 leading-relaxed">{forecast.scenario_bull}</p>
-                </div>
-              )}
-              {forecast.scenario_bear && (
-                <div className="bg-red-500/5 border border-red-500/15 rounded p-2">
-                  <div className="text-[10px] text-red-400 font-medium mb-0.5">Bear Case</div>
-                  <p className="text-xs text-red-300/80 leading-relaxed">{forecast.scenario_bear}</p>
-                </div>
-              )}
-            </div>
+      {/* Scenarios — always visible */}
+      {(forecast.scenario_base || forecast.scenario_bull || forecast.scenario_bear) && (
+        <div className="px-4 pb-4 pt-2 border-t border-[var(--border)]">
+          <div className="flex items-center gap-1.5 mb-2">
+            <DirIcon className={clsx("h-3.5 w-3.5", style.text)} />
+            <span className="text-[10px] font-bold uppercase text-[var(--text-dim)]">Scenarios</span>
           </div>
-        )}
-      </div>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+            {forecast.scenario_base && (
+              <div className="bg-blue-500/5 border border-blue-500/15 rounded-lg p-2.5">
+                <div className="text-[10px] text-blue-400 font-bold mb-1">Base Case (Most Likely)</div>
+                <p className="text-xs text-blue-300/80 leading-relaxed">{forecast.scenario_base}</p>
+              </div>
+            )}
+            {forecast.scenario_bull && (
+              <div className="bg-green-500/5 border border-green-500/15 rounded-lg p-2.5">
+                <div className="text-[10px] text-green-400 font-bold mb-1">Bull Case</div>
+                <p className="text-xs text-green-300/80 leading-relaxed">{forecast.scenario_bull}</p>
+              </div>
+            )}
+            {forecast.scenario_bear && (
+              <div className="bg-red-500/5 border border-red-500/15 rounded-lg p-2.5">
+                <div className="text-[10px] text-red-400 font-bold mb-1">Bear Case</div>
+                <p className="text-xs text-red-300/80 leading-relaxed">{forecast.scenario_bear}</p>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
