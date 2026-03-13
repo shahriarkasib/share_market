@@ -22,7 +22,6 @@ import {
   HelpCircle,
   DollarSign,
   BarChart3,
-  Eye,
 } from "lucide-react";
 import { fetchBuyRadar } from "../api/client.ts";
 import type { BuyRadarStock, BuyRadarResponse, RemovedRadarStock, MarketContext } from "../types/index.ts";
