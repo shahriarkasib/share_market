@@ -739,15 +739,23 @@ def build_llm_prompt(
                 f"+3%: ~{corr['scenario_p3']:+.1f}%\n"
             )
 
+        # Flag recent rally prominently
+        rally_warning = ""
+        if chg_5d > 5:
+            rally_warning = f"⚠️ ALREADY RALLIED {chg_5d:+.1f}% in 5 days — likely TOO_LATE unless it pulls back!\n"
+        elif chg_5d > 3:
+            rally_warning = f"⚠️ Recent move {chg_5d:+.1f}% in 5 days — be cautious, entry may not be ideal.\n"
+
         stock_lines.append(
             f"### {s['symbol']} ({s.get('sector', '?')})\n"
             f"LTP: {ltp:.1f} | Algo: {s['action']} (score {s.get('score', 0):.0f})\n"
-            f"RSI: {rsi:.1f} | StochRSI: {stoch:.1f} | MACD: {s.get('macd_status', '')} (hist {macd_h:+.2f})\n"
+            + rally_warning
+            + f"RSI: {rsi:.1f} | StochRSI: {stoch:.1f} | MACD: {s.get('macd_status', '')} (hist {macd_h:+.2f})\n"
             f"MFI: {mfi:.1f} | CMF: {cmf:+.3f} | Williams%R: {williams:.1f}\n"
             f"ADX: {adx:.1f} | +DI: {plus_di:.1f} | -DI: {minus_di:.1f}\n"
             f"BB%: {bb:.1f}% | VolRatio: {vol_r:.1f}x | Trend50d: {trend:+.1f}% | ATR%: {atr_p:.1f}%\n"
             f"EMA9: {ema9:.1f} | EMA21: {ema21:.1f} | SMA50: {sma50:.1f}\n"
-            f"Momentum: 3d {mom_3d:+.1f}% | 5d {mom_5d:+.1f}% | Chg: 5d {chg_5d:+.1f}% 10d {chg_10d:+.1f}% 20d {chg_20d:+.1f}%\n"
+            f"Chg: 5d {chg_5d:+.1f}% | 10d {chg_10d:+.1f}% | 20d {chg_20d:+.1f}% | Momentum: 3d {mom_3d:+.1f}% 5d {mom_5d:+.1f}%\n"
             f"Support: {s.get('support', 0):.1f} | Resistance: {s.get('resistance', 0):.1f}\n"
             + corr_line
             + (f"\nPrice History:\n```\n{ohlcv_csv}\n```\n" if ohlcv_csv else "")
@@ -798,18 +806,28 @@ Your audience is BEGINNERS who want to make money.
 - **T+2**: After buying, you CANNOT sell for 2 trading days. Factor this into every recommendation.
 - **DSE tick size**: 0.10 BDT. All prices in multiples of 0.10.
 
-## BUY RADAR STAGES — Assign one per stock
-Think of these as: "How close is this stock to giving me a profitable buy entry?"
+## CRITICAL: DETECT "ALREADY MOVED" STOCKS FIRST
+Before assigning any stage, ALWAYS check the price history:
+1. **Calculate the recent move**: Compare current price to the lowest price in the last 5-10 days.
+2. **If the stock rallied >7% in the last 5 days** → it has ALREADY MOVED. Stage = TOO_LATE or WATCHING (wait for pullback). Do NOT say READY or ENTRY_ZONE.
+3. **If price is near the HIGH of its recent range** (top 20% of 20-day range) → the easy money is gone. Be skeptical.
+4. **Entry price MUST be meaningfully below current price** (at least 2-3% lower). If you can't find a good entry below current price, the stock is NOT ready to buy — it's too late or needs a pullback.
+5. **Never set entry_high >= current price**. That means "buy at market" which is chasing.
 
-- **ENTRY_ZONE**: BUY TODAY. The best price is here NOW. Indicators aligned, money flowing in, price at support. If you wait, you'll pay more.
-- **READY**: BUY in 1-2 days. The upward move is coming. You just need ONE trigger — a small dip to support, a volume surge, or a MACD cross. Have your order ready.
-- **APPROACHING**: Setting up. 5-10 days out. The pieces are falling into place but it's not time yet. Watch it daily.
-- **BUILDING**: Early accumulation. 2-3 weeks. Smart money may be quietly entering. Too early to act.
-- **WATCHING**: Not a buy right now. Unclear or problematic.
-- **TOO_LATE**: Already moved. Buying now = chasing. Wait for the next pullback.
+Example: Stock was at 12.0 five days ago, now at 14.2. That's an 18% rally. This is NOT "READY" — it's "TOO_LATE, wait for pullback to 13.0-13.5 support." The buyer who catches the DIP profits. The buyer who chases the RALLY gets trapped.
+
+## BUY RADAR STAGES — Assign one per stock
+Think of these as: "How close is this stock to giving me a CHEAP, LOW-RISK buy entry?"
+
+- **ENTRY_ZONE**: BUY TODAY. Price is AT or NEAR the bottom of its range. Indicators oversold and turning. Smart money flowing in (CMF positive, MFI low). This is the DIP — buy before it bounces. Price must be in the LOWER 30% of its recent range.
+- **READY**: BUY in 1-2 days. Price is NEAR support, not at resistance. One more small dip or trigger and it's a buy. Entry price is 2-5% below current price. Stock has NOT already rallied — it's still cheap.
+- **APPROACHING**: Setting up, 5-10 days out. Indicators are turning but price hasn't dipped to entry yet. Watch it daily.
+- **BUILDING**: Early accumulation, 2-3 weeks. Smart money quietly entering. Too early to act.
+- **WATCHING**: Not a buy. Unclear, problematic, or no edge.
+- **TOO_LATE**: ALREADY MOVED. The rally happened. Buying now = chasing. Wait for the next pullback. Use this for ANY stock that rallied >7% in the last 5-10 days without pulling back.
 
 ## THE KEY QUESTION FOR EVERY STOCK
-"If I buy at [entry price] today/this week, what's my realistic profit in 1 week? 2 weeks? 1 month? And what's my downside risk?"
+"Is the price CHEAP right now, or has it ALREADY MOVED? Where is the next LOW-RISK entry where I buy the dip, not chase the rally?"
 
 ## Market Context
 - DSEX: {dsex:.1f} ({dsex_chg:+.2f}%)
@@ -867,15 +885,17 @@ Return a JSON array (NO markdown fences, ONLY valid JSON):
 ]
 
 Rules:
-1. Analyze ALL {len(stocks)} stocks
-2. entry_low/entry_high from actual support in the chart data
-3. Score 0-100: buying conviction (0=avoid, 100=strongest buy)
-4. expected_return fields: realistic % gain from entry_high price. Be conservative, not optimistic
+1. Analyze ALL {len(stocks)} stocks — one JSON object per stock
+2. entry_low/entry_high from ACTUAL support in the chart — repeated lows, bounce zones. Entry MUST be below current price
+3. Score 0-100: buying conviction. Stock already rallied >7%? Score ≤ 30 max. Stock at support with oversold indicators? Score 60+
+4. expected_return fields: realistic % gain from entry_high price. Be conservative
 5. downside_risk: % loss if stop loss is hit (negative number)
-6. T+2: buyer cannot sell for 2 days — if the stock peaks tomorrow, the buyer is TRAPPED
-7. DSE tick size 0.10 BDT
-8. This is a retail-dominated, low-liquidity market. Volume confirmation is everything
-9. Be honest. If a stock is not a good buy, say so. Don't force BUY recommendations
+6. T+2: buyer cannot sell for 2 days — if the stock peaks tomorrow, buyer is TRAPPED
+7. DSE tick size 0.10 BDT — all prices in multiples of 0.10
+8. Retail-dominated, low-liquidity market. Volume confirmation is everything
+9. Be BRUTALLY honest. Most stocks are NOT good buys. Don't force BUY recommendations. Use HOLD/WAIT, AVOID, or TOO_LATE freely
+10. NEVER mark a stock as READY or ENTRY_ZONE if it rallied >5% in the last 5 days — use TOO_LATE instead
+11. entry_high MUST be at least 2% below current LTP. If you can't find a good entry below LTP, the stock is TOO_LATE
 
 CRITICAL OUTPUT FORMAT: Your response must start with [ and end with ]. Return ONLY a valid JSON array. No markdown, no commentary, no explanation — ONLY the JSON array. If you include ANY text outside the JSON array, the system will crash."""
 
