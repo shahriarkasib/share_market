@@ -778,6 +778,7 @@ async def get_buy_radar(categories: str = "A", exclude_sectors: str = ""):
         overall = float(judge.get("score") or llm.get("score") or 0)
 
         # Stage comes directly from LLM
+        action_upper = ai_action.upper()
         llm_stage = (llm.get("stage") or "").upper().replace(" ", "_")
         valid_stages = {"ENTRY_ZONE", "READY", "APPROACHING", "BUILDING", "WATCHING", "TOO_LATE"}
 
@@ -806,7 +807,6 @@ async def get_buy_radar(categories: str = "A", exclude_sectors: str = ""):
                 stage = llm_stage
         else:
             # No valid stage from LLM — infer from action/score
-            action_upper = ai_action.upper()
             if overall >= 60 and "BUY" in action_upper:
                 stage = "ENTRY_ZONE"
             elif overall >= 45 and "BUY" in action_upper:
@@ -822,7 +822,6 @@ async def get_buy_radar(categories: str = "A", exclude_sectors: str = ""):
         red_flags = []
         if isinstance(ai_risk_factors, list):
             red_flags = ai_risk_factors[:5]
-        action_upper = ai_action.upper()
         if "SELL" in action_upper or "AVOID" in action_upper:
             red_flags.append(f"AI says {ai_action}")
 
