@@ -1554,9 +1554,9 @@ def run_dsex_forecast(date_str: str):
 
     market = load_market_context()
 
-    prompt = f"""You are a DSEX (Dhaka Stock Exchange Index) analyst. Analyze the 6-month DSEX history below and provide a detailed forecast.
+    prompt = f"""Analyze 6 months of DSEX (Dhaka Stock Exchange Index) data and forecast the next 5 trading days.
 
-## DSEX History (6 months)
+## DSEX History (6 months daily)
 ```
 {dsex_csv}
 ```
@@ -1565,35 +1565,45 @@ def run_dsex_forecast(date_str: str):
 - DSEX: {market.get('dsex_index', 0):.1f} ({market.get('dsex_change_pct', 0):+.2f}%)
 - Advances: {market.get('advances', 0)} | Declines: {market.get('declines', 0)}
 - Volume: {market.get('total_volume', 0):,} | Turnover: {market.get('total_value', 0):,.0f}
+- Bangladesh weekends: Friday + Saturday (market closed)
 
-## Your Task
-Analyze the DSEX chart like an expert technical analyst. Study:
-1. **Trend**: 5-day, 20-day, 60-day trends. Is DSEX trending up, down, or sideways?
-2. **Support/Resistance**: Where are the key levels? Where has DSEX bounced or been rejected?
-3. **Volume**: Is volume increasing or decreasing? What does it mean?
-4. **Momentum**: Is the rally/decline accelerating or fading?
-5. **Pattern**: Any recognizable patterns (double bottom, head & shoulders, channel)?
+Study the data: trends, support/resistance, volume patterns, momentum. Where has DSEX bounced? Where has it been rejected? Is volume increasing or drying up? Is the current move accelerating or fading?
 
-Then forecast:
-- **Tomorrow**: What will DSEX likely do? Up/Down/Flat? By how much?
-- **Next 3-5 trading days**: Direction and range
-- **Next 1-2 weeks**: Where is DSEX heading?
+Then forecast each of the next 5 trading days individually. Tomorrow should be the most accurate — use volume, turnover, breadth (advances vs declines), and recent momentum to estimate direction and magnitude. For further days, widen the range.
 
-Return JSON (NO markdown fences):
+Return ONLY this JSON object. Start with {{ end with }}. NO other text:
 {{
-    "forecast": "2-3 paragraph detailed analysis of DSEX direction with specific price levels and dates. Written for beginners — explain WHY the index will move that way.",
+    "forecast": "2-3 paragraph detailed analysis. Specific price levels, dates, and reasoning. Written clearly for a retail trader.",
     "sentiment": "BULLISH|BEARISH|NEUTRAL|CAUTIOUS",
     "support": 0.0,
     "resistance": 0.0,
     "expected_direction": "UP|DOWN|SIDEWAYS",
     "confidence": "HIGH|MEDIUM|LOW",
-    "key_factors": "Top 3 factors driving DSEX direction right now",
-    "scenario_bull": "Bull case: what happens if DSEX breaks above resistance. Expected move, target, timeline.",
-    "scenario_bear": "Bear case: what happens if DSEX breaks below support. Expected drop, floor, timeline.",
-    "scenario_base": "Most likely scenario (60%+ probability). What DSEX does in next 5 days and why."
-}}"""
+    "key_factors": "Top 3 factors driving DSEX right now",
+    "day1_direction": "UP|DOWN|FLAT",
+    "day1_range_low": 0.0,
+    "day1_range_high": 0.0,
+    "day1_reasoning": "Why tomorrow will move this way — cite volume, breadth, momentum",
+    "day2_direction": "UP|DOWN|FLAT",
+    "day2_range_low": 0.0,
+    "day2_range_high": 0.0,
+    "day3_direction": "UP|DOWN|FLAT",
+    "day3_range_low": 0.0,
+    "day3_range_high": 0.0,
+    "day4_direction": "UP|DOWN|FLAT",
+    "day4_range_low": 0.0,
+    "day4_range_high": 0.0,
+    "day5_direction": "UP|DOWN|FLAT",
+    "day5_range_low": 0.0,
+    "day5_range_high": 0.0,
+    "scenario_bull": "Bull case: DSEX breaks resistance — target, timeline, catalyst",
+    "scenario_bear": "Bear case: DSEX breaks support — floor, timeline, trigger",
+    "scenario_base": "Most likely path (60%+ probability) for next 5 days"
+}}
 
-    raw = call_claude(prompt, timeout=120)
+Start with {{ end with }}. ONLY JSON."""
+
+    raw = call_claude(prompt, timeout=300)
     if not raw:
         logger.error("DSEX forecast: no response")
         return
