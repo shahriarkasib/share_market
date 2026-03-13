@@ -979,7 +979,11 @@ def run_llm_analysis(date_str: str) -> list[dict]:
     total_batches = len(batches)
     logger.info(f"LLM analysis: {len(stocks)} stocks in {total_batches} batches (batch size {LLM_BATCH_SIZE})")
 
+    MAX_RETRIES = 2
+
     all_results = []
+    failed_batches = []  # (batch_index, batch_data) for retry
+
     for i, batch in enumerate(batches, 1):
         prompt = build_llm_prompt(
             batch, market, feedback, i, total_batches,
@@ -988,12 +992,14 @@ def run_llm_analysis(date_str: str) -> list[dict]:
         logger.info(f"Batch {i} prompt: {len(prompt)} chars")
         raw = call_claude(prompt)
         if not raw:
-            logger.error(f"Batch {i}: no response")
+            logger.error(f"Batch {i}: no response — queued for retry")
+            failed_batches.append((i, batch))
             continue
 
         parsed = parse_json_response(raw)
         if not parsed:
-            logger.error(f"Batch {i}: failed to parse")
+            logger.error(f"Batch {i}: failed to parse — queued for retry")
+            failed_batches.append((i, batch))
             continue
 
         if isinstance(parsed, dict):
@@ -1005,6 +1011,50 @@ def run_llm_analysis(date_str: str) -> list[dict]:
 
         if i < total_batches:
             time.sleep(5)
+
+    # Retry failed batches (up to MAX_RETRIES times)
+    for retry_round in range(1, MAX_RETRIES + 1):
+        if not failed_batches:
+            break
+        logger.info(f"Retry round {retry_round}: {len(failed_batches)} failed batches")
+        time.sleep(15)  # Wait before retrying
+
+        still_failed = []
+        for batch_idx, batch in failed_batches:
+            symbols = [s["symbol"] for s in batch]
+            logger.info(f"Retrying batch {batch_idx} ({symbols})...")
+            prompt = build_llm_prompt(
+                batch, market, feedback, batch_idx, total_batches,
+                ohlcv_map=ohlcv_map, dsex_csv=dsex_csv, dsex_corr=dsex_corr,
+            )
+            raw = call_claude(prompt)
+            if not raw:
+                logger.error(f"Retry {retry_round} batch {batch_idx}: still no response")
+                still_failed.append((batch_idx, batch))
+                time.sleep(10)
+                continue
+
+            parsed = parse_json_response(raw)
+            if not parsed:
+                logger.error(f"Retry {retry_round} batch {batch_idx}: still failed to parse")
+                still_failed.append((batch_idx, batch))
+                time.sleep(10)
+                continue
+
+            if isinstance(parsed, dict):
+                parsed = [parsed]
+
+            stored = store_llm_results(date_str, parsed, batch_idx, raw)
+            all_results.extend(parsed)
+            logger.info(f"Retry {retry_round} batch {batch_idx}: SUCCESS — {stored} stocks stored")
+            time.sleep(5)
+
+        failed_batches = still_failed
+
+    if failed_batches:
+        missed = [s["symbol"] for _, batch in failed_batches for s in batch]
+        logger.warning(f"PERMANENTLY FAILED {len(failed_batches)} batches after {MAX_RETRIES} retries. "
+                       f"Missed stocks: {missed}")
 
     logger.info(f"LLM analysis complete: {len(all_results)} total results")
     return all_results
