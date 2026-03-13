@@ -969,7 +969,7 @@ def run_llm_analysis(date_str: str) -> list[dict]:
     conn = get_conn()
     cur = conn.cursor()
     cur.execute("SELECT symbol FROM llm_daily_analysis WHERE date = %s", (date_str,))
-    already_done = {row[0] for row in cur.fetchall()}
+    already_done = {row["symbol"] for row in cur.fetchall()}
     conn.close()
     if already_done:
         original_count = len(stocks)
