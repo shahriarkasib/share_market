@@ -1660,6 +1660,13 @@ def precompute_radar(date_str: str):
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
     try:
+        # Delete old precomputed cache so get_buy_radar recomputes fresh
+        conn_del = get_conn()
+        cur_del = conn_del.cursor()
+        cur_del.execute("DELETE FROM radar_precomputed WHERE date = %s AND category = 'A'", (date_str,))
+        conn_del.commit()
+        conn_del.close()
+
         # Import the radar endpoint function and call its logic
         from api.routes_analysis import get_buy_radar
         import asyncio
