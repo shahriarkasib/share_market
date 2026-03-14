@@ -394,3 +394,78 @@ export function computeADX(
 
   return { adx, plusDI, minusDI };
 }
+
+/** Money Flow Index — volume-weighted RSI. MFI < 20 = oversold, > 80 = overbought. */
+export function computeMFI(
+  highs: number[],
+  lows: number[],
+  closes: number[],
+  volumes: number[],
+  period = 14,
+): (number | null)[] {
+  const len = closes.length;
+  const result: (number | null)[] = new Array(len).fill(null);
+  if (len < period + 1) return result;
+
+  const tp: number[] = [];
+  for (let i = 0; i < len; i++) tp.push((highs[i] + lows[i] + closes[i]) / 3);
+
+  for (let i = period; i < len; i++) {
+    let posFlow = 0, negFlow = 0;
+    for (let j = i - period + 1; j <= i; j++) {
+      const mf = tp[j] * volumes[j];
+      if (tp[j] > tp[j - 1]) posFlow += mf;
+      else if (tp[j] < tp[j - 1]) negFlow += mf;
+    }
+    result[i] = negFlow === 0 ? 100 : 100 - 100 / (1 + posFlow / negFlow);
+  }
+  return result;
+}
+
+/** Commodity Channel Index — measures deviation from average price. CCI > 100 = overbought, < -100 = oversold. */
+export function computeCCI(
+  highs: number[],
+  lows: number[],
+  closes: number[],
+  period = 20,
+): (number | null)[] {
+  const len = closes.length;
+  const result: (number | null)[] = new Array(len).fill(null);
+  if (len < period) return result;
+
+  const tp: number[] = [];
+  for (let i = 0; i < len; i++) tp.push((highs[i] + lows[i] + closes[i]) / 3);
+
+  for (let i = period - 1; i < len; i++) {
+    let sum = 0;
+    for (let j = i - period + 1; j <= i; j++) sum += tp[j];
+    const mean = sum / period;
+    let meanDev = 0;
+    for (let j = i - period + 1; j <= i; j++) meanDev += Math.abs(tp[j] - mean);
+    meanDev /= period;
+    result[i] = meanDev === 0 ? 0 : (tp[i] - mean) / (0.015 * meanDev);
+  }
+  return result;
+}
+
+/** Williams %R — momentum oscillator. -80 to -100 = oversold, 0 to -20 = overbought. */
+export function computeWilliamsR(
+  highs: number[],
+  lows: number[],
+  closes: number[],
+  period = 14,
+): (number | null)[] {
+  const len = closes.length;
+  const result: (number | null)[] = new Array(len).fill(null);
+  if (len < period) return result;
+
+  for (let i = period - 1; i < len; i++) {
+    let hh = -Infinity, ll = Infinity;
+    for (let j = i - period + 1; j <= i; j++) {
+      if (highs[j] > hh) hh = highs[j];
+      if (lows[j] < ll) ll = lows[j];
+    }
+    result[i] = hh === ll ? 0 : ((hh - closes[i]) / (hh - ll)) * -100;
+  }
+  return result;
+}

@@ -29,6 +29,9 @@ import {
   computeATR,
   computeOBV,
   computeADX,
+  computeMFI,
+  computeCCI,
+  computeWilliamsR,
 } from "./indicators.ts";
 
 type ChartType = "candlestick" | "line" | "area";
@@ -53,6 +56,9 @@ const SUB_PANE_DEFS = [
   { key: "macd", label: "MACD" },
   { key: "stoch", label: "Stoch" },
   { key: "stochrsi", label: "StochRSI" },
+  { key: "mfi", label: "MFI" },
+  { key: "cci", label: "CCI" },
+  { key: "willr", label: "%R" },
   { key: "atr", label: "ATR" },
   { key: "obv", label: "OBV" },
   { key: "adx", label: "ADX" },
@@ -63,6 +69,9 @@ const PANE_LABELS: Record<string, string> = {
   macd: "MACD (12, 26, close, 9)",
   stoch: "Stoch (14, 3)",
   stochrsi: "Stoch RSI (14, 14, 3, 3)",
+  mfi: "MFI (14)",
+  cci: "CCI (20)",
+  willr: "Williams %R (14)",
   atr: "ATR (14)",
   obv: "OBV",
   adx: "ADX (14)",
@@ -71,7 +80,7 @@ const PANE_LABELS: Record<string, string> = {
 /* Pane heights by indicator complexity (like LankaBangla — compact, fit in viewport) */
 const COMPLEX_PANE_HEIGHT = 80;  // RSI, MACD, StochRSI, Stoch (bands/histograms)
 const SIMPLE_PANE_HEIGHT = 50;   // ATR, OBV, ADX (single line)
-const COMPLEX_PANES = new Set(["rsi", "macd", "stoch", "stochrsi"]);
+const COMPLEX_PANES = new Set(["rsi", "macd", "stoch", "stochrsi", "mfi", "cci", "willr"]);
 const PANE_HEADER_HEIGHT = 14;
 
 /** Always use light/white chart colors — matches LankaBangla style */
@@ -200,6 +209,9 @@ export default function PriceChart({ symbol, signal, height: fixedHeight }: Prop
     const macd = computeMACD(closes); ind.macd_line = macd.macd; ind.macd_signal = macd.signal; ind.macd_hist = macd.histogram;
     const stoch = computeStochastic(highs, lows, closes); ind.stoch_k = stoch.k; ind.stoch_d = stoch.d;
     const stochrsi = computeStochRSI(closes); ind.stochrsi_k = stochrsi.k; ind.stochrsi_d = stochrsi.d;
+    ind.mfi = computeMFI(highs, lows, closes, vols);
+    ind.cci = computeCCI(highs, lows, closes);
+    ind.willr = computeWilliamsR(highs, lows, closes);
     ind.atr = computeATR(highs, lows, closes);
     ind.obv = computeOBV(closes, vols);
     const adx = computeADX(highs, lows, closes); ind.adx = adx.adx; ind.plusDI = adx.plusDI; ind.minusDI = adx.minusDI;
@@ -231,6 +243,9 @@ export default function PriceChart({ symbol, signal, height: fixedHeight }: Prop
       macd: `${f(ind.macd_line?.[idx], 4)} ${f(ind.macd_signal?.[idx], 4)} ${f(ind.macd_hist?.[idx], 4)}`,
       stoch: `%K ${f(ind.stoch_k?.[idx])} %D ${f(ind.stoch_d?.[idx])}`,
       stochrsi: `%K ${f(ind.stochrsi_k?.[idx])} %D ${f(ind.stochrsi_d?.[idx])}`,
+      mfi: f(ind.mfi?.[idx]),
+      cci: f(ind.cci?.[idx]),
+      willr: f(ind.willr?.[idx]),
       atr: f(ind.atr?.[idx]),
       obv: ind.obv?.[idx] != null ? (ind.obv[idx]! / 1000).toFixed(0) + "K" : "\u2014",
       adx: `ADX ${f(ind.adx?.[idx])} +DI ${f(ind.plusDI?.[idx])} -DI ${f(ind.minusDI?.[idx])}`,
@@ -302,16 +317,19 @@ export default function PriceChart({ symbol, signal, height: fixedHeight }: Prop
       timeScale: { borderColor: colors.border, timeVisible: false, visible: showTime },
     });
 
-    // Compact price formatter — max ~7 chars so all panes use same scale width
+    // Compact price formatter — right-padded to consistent width so all price scales match
     const compactFormat = (v: number) => {
       const a = Math.abs(v);
-      if (a >= 1e9) return (v / 1e9).toFixed(1) + "B";
-      if (a >= 1e6) return (v / 1e6).toFixed(1) + "M";
-      if (a >= 1e3) return (v / 1e3).toFixed(1) + "K";
-      if (a >= 10) return v.toFixed(1);
-      if (a >= 1) return v.toFixed(2);
-      if (a >= 0.001) return v.toFixed(3);
-      return v.toFixed(4);
+      let s: string;
+      if (a >= 1e9) s = (v / 1e9).toFixed(1) + "B";
+      else if (a >= 1e6) s = (v / 1e6).toFixed(1) + "M";
+      else if (a >= 1e3) s = (v / 1e3).toFixed(1) + "K";
+      else if (a >= 10) s = v.toFixed(1);
+      else if (a >= 1) s = v.toFixed(2);
+      else if (a >= 0.001) s = v.toFixed(3);
+      else s = v.toFixed(4);
+      // Pad to 8 chars so all price scales have identical width
+      return s.padStart(8);
     };
 
     // ──── MAIN CHART ────
@@ -322,24 +340,25 @@ export default function PriceChart({ symbol, signal, height: fixedHeight }: Prop
     });
     allChartsRef.current.push(mainChart);
 
-    // Main series
+    // Main series — use same compactFormat so price scale width matches sub-panes
+    const mainPriceFmt = { type: "custom" as const, formatter: compactFormat };
     if (chartType === "candlestick") {
       const s = mainChart.addSeries(CandlestickSeries, {
         upColor: "#22c55e", downColor: "#ef4444",
         borderUpColor: "#16a34a", borderDownColor: "#dc2626",
         wickUpColor: "#22c55e", wickDownColor: "#ef4444",
+        priceFormat: mainPriceFmt,
       });
       s.setData(bars.map((b) => ({ time: b.date as Time, open: b.open, high: b.high, low: b.low, close: b.close })));
       chartSeriesRef.current.set(mainChart, s as ISeriesApi<SeriesType>);
-      // S/R lines
       if (signal?.support_level) s.createPriceLine({ price: signal.support_level, color: "#22c55e80", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: true, title: "S" });
       if (signal?.resistance_level) s.createPriceLine({ price: signal.resistance_level, color: "#ef444480", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: true, title: "R" });
     } else if (chartType === "line") {
-      const s = mainChart.addSeries(LineSeries, { color: "#3b82f6", lineWidth: 2 });
+      const s = mainChart.addSeries(LineSeries, { color: "#3b82f6", lineWidth: 2, priceFormat: mainPriceFmt });
       s.setData(bars.map((b) => ({ time: b.date as Time, value: b.close })));
       chartSeriesRef.current.set(mainChart, s as ISeriesApi<SeriesType>);
     } else {
-      const s = mainChart.addSeries(AreaSeries, { topColor: "rgba(59,130,246,0.4)", bottomColor: "rgba(59,130,246,0.05)", lineColor: "#3b82f6", lineWidth: 2 });
+      const s = mainChart.addSeries(AreaSeries, { topColor: "rgba(59,130,246,0.4)", bottomColor: "rgba(59,130,246,0.05)", lineColor: "#3b82f6", lineWidth: 2, priceFormat: mainPriceFmt });
       s.setData(bars.map((b) => ({ time: b.date as Time, value: b.close })));
       chartSeriesRef.current.set(mainChart, s as ISeriesApi<SeriesType>);
     }
@@ -383,16 +402,11 @@ export default function PriceChart({ symbol, signal, height: fixedHeight }: Prop
       const isLast = pi === activeSubPanes.length - 1;
       const thisPaneH = getPaneHeight(key);
       const paneOpts = mkOpts(el, thisPaneH, isLast);
-      // Apply compact formatter to keep all price scale widths uniform
       paneOpts.rightPriceScale = {
         ...paneOpts.rightPriceScale,
         minimumWidth: PRICE_SCALE_WIDTH,
       };
       const pc = createChart(el, paneOpts);
-      // Override the default price format with compact labels
-      pc.priceScale("right").applyOptions({
-        minimumWidth: PRICE_SCALE_WIDTH,
-      });
       allChartsRef.current.push(pc);
 
       let firstSeriesStored = false;
@@ -464,6 +478,27 @@ export default function PriceChart({ symbol, signal, height: fixedHeight }: Prop
           addL(ind.stochrsi_k || [], "#3b82f6"); addL(ind.stochrsi_d || [], "#ef4444", 1);
           addRef(dates.map((t) => ({ time: t })), 80, "#9c27b050");
           addRef(dates.map((t) => ({ time: t })), 20, "#9c27b050");
+          break;
+        }
+        case "mfi": {
+          addBand(20, 80);
+          addL(ind.mfi || [], "#e91e63");
+          addRef(dates.map((t) => ({ time: t })), 80, "#9c27b050");
+          addRef(dates.map((t) => ({ time: t })), 20, "#9c27b050");
+          break;
+        }
+        case "cci": {
+          addBand(-100, 100);
+          addL(ind.cci || [], "#00bcd4");
+          addRef(dates.map((t) => ({ time: t })), 100, "#9c27b050");
+          addRef(dates.map((t) => ({ time: t })), -100, "#9c27b050");
+          break;
+        }
+        case "willr": {
+          addBand(-80, -20);
+          addL(ind.willr || [], "#9c27b0");
+          addRef(dates.map((t) => ({ time: t })), -20, "#9c27b050");
+          addRef(dates.map((t) => ({ time: t })), -80, "#9c27b050");
           break;
         }
         case "atr": { addL(ind.atr || [], "#f97316"); break; }
