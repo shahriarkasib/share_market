@@ -286,7 +286,8 @@ export default function PriceChart({ symbol, signal, height: fixedHeight }: Prop
     const hasSubPanes = activeSubPanes.length > 0;
 
     // Fixed price scale width across ALL charts so date columns align
-    const PRICE_SCALE_WIDTH = 70;
+    // Must be wide enough for the longest label (main chart prices like "1234.5")
+    const PRICE_SCALE_WIDTH = 85;
 
     const mkOpts = (el: HTMLElement, h: number, showTime: boolean) => ({
       width: el.clientWidth,
@@ -301,15 +302,15 @@ export default function PriceChart({ symbol, signal, height: fixedHeight }: Prop
       timeScale: { borderColor: colors.border, timeVisible: false, visible: showTime },
     });
 
-    // Compact price formatter — keeps axis labels short so all panes have same scale width
+    // Compact price formatter — max ~7 chars so all panes use same scale width
     const compactFormat = (v: number) => {
       const a = Math.abs(v);
       if (a >= 1e9) return (v / 1e9).toFixed(1) + "B";
       if (a >= 1e6) return (v / 1e6).toFixed(1) + "M";
-      if (a >= 1e4) return (v / 1e3).toFixed(0) + "K";
-      if (a >= 100) return v.toFixed(1);
+      if (a >= 1e3) return (v / 1e3).toFixed(1) + "K";
+      if (a >= 10) return v.toFixed(1);
       if (a >= 1) return v.toFixed(2);
-      if (a >= 0.01) return v.toFixed(3);
+      if (a >= 0.001) return v.toFixed(3);
       return v.toFixed(4);
     };
 
@@ -317,7 +318,7 @@ export default function PriceChart({ symbol, signal, height: fixedHeight }: Prop
     const mainEl = mainContainerRef.current;
     const mainChart = createChart(mainEl, {
       ...mkOpts(mainEl, mainH, !hasSubPanes),
-      rightPriceScale: { borderColor: colors.border, minimumWidth: 60, scaleMargins: { top: 0.05, bottom: 0.18 } },
+      rightPriceScale: { borderColor: colors.border, minimumWidth: PRICE_SCALE_WIDTH, scaleMargins: { top: 0.05, bottom: 0.18 } },
     });
     allChartsRef.current.push(mainChart);
 
