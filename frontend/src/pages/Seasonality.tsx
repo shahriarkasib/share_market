@@ -63,8 +63,8 @@ function upPctBg(pct: number): string {
   return "rgba(239,68,68,0.30)";
 }
 
-function fmtPct(v: number): string {
-  return v.toFixed(1) + "%";
+export function fmtPct(v: number | null | undefined): string {
+  return v != null ? v.toFixed(1) + "%" : "—";
 }
 
 /* ------------------------------------------------------------------ */
@@ -93,7 +93,7 @@ function ErrorState({ message }: { message: string }) {
 /*  Tab 1: Monthly Sector Heatmap                                      */
 /* ------------------------------------------------------------------ */
 
-function YearSelector({ years, selected, onChange }: {
+export function YearSelector({ years, selected, onChange }: {
   years: number[]; selected: number; onChange: (y: number) => void;
 }) {
   return (
@@ -608,11 +608,11 @@ function StockPatternsTab() {
   );
 }
 
-function SortableHeader({
+export function SortableHeader({
   label,
   sortKey,
   current,
-  asc,
+  asc: _asc,
   onClick,
   sticky,
   highlight,
