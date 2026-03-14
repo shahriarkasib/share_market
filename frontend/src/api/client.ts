@@ -486,4 +486,284 @@ export async function fetchBuyRadar(categories = "A"): Promise<BuyRadarResponse>
   return data;
 }
 
+/* ========================== News & Events ========================== */
+
+export interface NewsItem {
+  id: number;
+  category: string;
+  title: string;
+  url: string;
+  date: string;
+  source: string;
+  content?: string;
+  symbols_mentioned?: string[];
+  impact?: string;        // HIGH, MEDIUM, LOW, NOISE
+  sentiment?: string;     // BULLISH, BEARISH, NEUTRAL, MIXED
+  market_impact?: string; // STOCK_SPECIFIC, SECTOR_WIDE, DSEX_MOVING, MACRO, DIVIDEND, NOISE
+  affected_symbols?: string[];
+  summary?: string;
+}
+
+export interface CorporateEvent {
+  id: number;
+  symbol: string;
+  date: string;
+  event_type: string;
+  title: string;
+  details: string;
+  source: string;
+}
+
+export interface UpcomingDividend {
+  symbol: string;
+  record_date: string;
+  dividend_type: string;
+  cash_pct: number;
+  stock_pct: number;
+  year: string;
+}
+
+export interface MarketHoliday {
+  id: number;
+  date: string;
+  name: string;
+}
+
+export async function fetchMarketNews(params?: {
+  category?: string;
+  impact?: string;
+  page?: number;
+  per_page?: number;
+}): Promise<{ items: NewsItem[]; total: number; page: number; per_page: number; categories: string[]; impact_levels?: string[] }> {
+  const { data } = await api.get("/events/news", { params });
+  return data;
+}
+
+export async function fetchCorporateEvents(params?: {
+  symbol?: string;
+  event_type?: string;
+  days?: number;
+  page?: number;
+  per_page?: number;
+}): Promise<{ items: CorporateEvent[]; total: number; page: number; per_page: number }> {
+  const { data } = await api.get("/events", { params });
+  return data;
+}
+
+export async function fetchStockEvents(symbol: string): Promise<{ symbol: string; events: CorporateEvent[] }> {
+  const { data } = await api.get(`/events/stock/${symbol}`);
+  return data;
+}
+
+export async function fetchUpcomingDividends(): Promise<{ upcoming: UpcomingDividend[] }> {
+  const { data } = await api.get("/events/dividends/upcoming");
+  return data;
+}
+
+export async function fetchDividendCalendar(month?: string): Promise<{ month: string; events: Record<string, UpcomingDividend[]> }> {
+  const { data } = await api.get("/events/dividends/calendar", { params: month ? { month } : undefined });
+  return data;
+}
+
+export async function fetchMarketHolidays(): Promise<{ holidays: MarketHoliday[] }> {
+  const { data } = await api.get("/events/holidays");
+  return data;
+}
+
+/* ========================== Seasonality ========================== */
+
+export interface MonthData {
+  month: number;
+  avg_return: number;
+  win_rate: number;
+  sample_size: number;
+}
+
+export interface SectorSeasonality {
+  name: string;
+  months: MonthData[];
+}
+
+export interface StockSeasonality {
+  symbol: string;
+  sector: string;
+  months: { month: number; avg_return: number; up_pct: number; years_up: number; years_total: number }[];
+}
+
+export interface WeekPerformance {
+  week_start: string;
+  week_end: string;
+  dsex_return: number;
+  sectors: { name: string; return_pct: number; top_stocks: string[] }[];
+}
+
+export interface SeasonalOutlook {
+  month: number;
+  month_name: string;
+  top_sectors: { sector: string; avg_return: number; win_rate: number; sample_size: number }[];
+  bottom_sectors: { sector: string; avg_return: number; win_rate: number; sample_size: number }[];
+  top_stocks: { symbol: string; avg_return: number; win_rate: number; sample_size: number; sector: string }[];
+  bottom_stocks: { symbol: string; avg_return: number; win_rate: number; sample_size: number; sector: string }[];
+  yearly: { year: number; avg_return: number; stocks_up: number; stocks_down: number; total_stocks: number }[];
+}
+
+export async function fetchMonthlySectorSeasonality(year?: number): Promise<{ sectors: SectorSeasonality[]; years: number[] }> {
+  const params: Record<string, number> = {};
+  if (year) params.year = year;
+  const { data } = await api.get("/seasonality/monthly/sectors", { params, timeout: 30000 });
+  return data;
+}
+
+export async function fetchMonthlyStockSeasonality(
+  category = "A", year?: number, sector?: string
+): Promise<{ stocks: StockSeasonality[]; sectors: string[]; years: number[] }> {
+  const params: Record<string, string | number> = { category };
+  if (year) params.year = year;
+  if (sector) params.sector = sector;
+  const { data } = await api.get("/seasonality/monthly/stocks", { params, timeout: 30000 });
+  return data;
+}
+
+export interface SectorYearlyDetail {
+  sectors: Record<string, Record<string, Record<string, number>>>;  // sector -> year -> month -> return
+  years: number[];
+}
+
+export async function fetchSectorYearlyDetail(): Promise<SectorYearlyDetail> {
+  const { data } = await api.get("/seasonality/monthly/sectors/yearly", { timeout: 30000 });
+  return data;
+}
+
+export interface StockYearlyDetail {
+  stocks: Record<string, Record<string, Record<string, number>>>;  // symbol -> year -> month -> return
+  years: number[];
+}
+
+export async function fetchStockYearlyDetail(category = "A"): Promise<StockYearlyDetail> {
+  const { data } = await api.get("/seasonality/monthly/stocks/yearly", { params: { category }, timeout: 30000 });
+  return data;
+}
+
+export async function fetchWeeklyPerformance(weeks = 12): Promise<{ weeks: WeekPerformance[] }> {
+  const { data } = await api.get("/seasonality/weekly", { params: { weeks }, timeout: 30000 });
+  return data;
+}
+
+export async function fetchSeasonalOutlook(month?: number): Promise<SeasonalOutlook> {
+  const params = month ? { month } : {};
+  const { data } = await api.get("/seasonality/outlook", { params, timeout: 30000 });
+  return data;
+}
+
+export interface RecordDateImpact {
+  symbol: string;
+  events: {
+    record_date: string;
+    dividend_pct: number;
+    pre_close: number;
+    ex_close: number;
+    ex_drop_pct: number;
+    expected_drop_pct: number;
+    excess_drop_pct: number | null;
+    bottom_day: number;
+    bottom_price: number;
+    bottom_drop_pct: number;
+    day_7_pct: number | null;
+    day_14_pct: number | null;
+    day_20_pct: number | null;
+  }[];
+  averages: {
+    avg_ex_drop_pct: number | null;
+    avg_bottom_day: number | null;
+    avg_bottom_drop_pct: number | null;
+    avg_day_7_pct: number | null;
+    avg_day_14_pct: number | null;
+    avg_day_20_pct: number | null;
+    event_count: number;
+  };
+}
+
+export async function fetchRecordDateImpact(symbol: string): Promise<RecordDateImpact> {
+  const { data } = await api.get(`/dividends/impact/${symbol}`);
+  return data;
+}
+
+export interface PostDividendOpportunity {
+  symbol: string;
+  record_date: string;
+  days_since: number;
+  drop_pct: number;
+  expected_drop: number;
+  excess_drop: number;
+  current_price: number;
+  volume_ratio: number;
+  rsi: number;
+}
+
+export async function fetchPostDividendOpportunities(days = 7): Promise<{ opportunities: PostDividendOpportunity[] }> {
+  const { data } = await api.get("/dividends/opportunities", { params: { days } });
+  return data;
+}
+
+export interface UpcomingRecordDate {
+  symbol: string;
+  record_date: string;
+  days_until: number;
+  current_price: number | null;
+  expected_ex_price: number | null;
+  dividend_pct: number;
+  title: string;
+  avg_historical_ex_drop_pct: number | null;
+  avg_historical_bottom_day: number | null;
+  historical_events: number;
+}
+
+export async function fetchUpcomingRecordDates(days = 30): Promise<{ upcoming: UpcomingRecordDate[] }> {
+  const { data } = await api.get("/dividends/upcoming", { params: { days } });
+  return data;
+}
+
+/* ========================== Floor Detection ========================== */
+
+export interface FloorStock {
+  symbol: string;
+  sector: string | null;
+  ltp: number;
+  rsi: number;
+  stoch_rsi: number;
+  macd_hist: number;
+  rsi_floor: number;
+  stoch_floor: number;
+  macd_floor: number;
+  rsi_high: number;
+  stoch_high: number;
+  rsi_proximity: number;
+  stoch_proximity: number;
+  rsi_pace: number;
+  stoch_pace: number;
+  macd_pace: number;
+  rsi_days_to_floor: number | null;
+  stoch_days_to_floor: number | null;
+  macd_days_to_floor: number | null;
+  rsi_approaching: boolean;
+  stoch_approaching: boolean;
+  macd_approaching: boolean;
+  approaching_count: number;
+  score: number;
+}
+
+export async function fetchFloorTable(
+  months = 6, asOf?: string
+): Promise<{ stocks: FloorStock[]; lookback_months: number; as_of: string | null }> {
+  const params: Record<string, string | number> = { months };
+  if (asOf) params.as_of = asOf;
+  const { data } = await api.get("/floor", { params, timeout: 30000 });
+  return data;
+}
+
+export async function fetchFloorDates(): Promise<{ dates: string[] }> {
+  const { data } = await api.get("/floor/dates", { timeout: 15000 });
+  return data;
+}
+
 export default api;

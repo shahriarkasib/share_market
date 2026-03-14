@@ -190,35 +190,6 @@ def init_database():
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )""",
 
-        """CREATE TABLE IF NOT EXISTS signals (
-            id SERIAL PRIMARY KEY,
-            symbol TEXT NOT NULL,
-            company_name TEXT,
-            ltp DOUBLE PRECISION,
-            change_pct DOUBLE PRECISION,
-            signal_type TEXT NOT NULL,
-            confidence DOUBLE PRECISION,
-            short_term_score DOUBLE PRECISION,
-            long_term_score DOUBLE PRECISION,
-            rsi DOUBLE PRECISION,
-            macd_signal TEXT,
-            bb_position TEXT,
-            ema_crossover TEXT,
-            volume_signal TEXT,
-            support_level DOUBLE PRECISION,
-            resistance_level DOUBLE PRECISION,
-            pattern TEXT,
-            target_price DOUBLE PRECISION,
-            stop_loss DOUBLE PRECISION,
-            risk_reward_ratio DOUBLE PRECISION,
-            reasoning TEXT,
-            timing TEXT,
-            prediction_json TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )""",
-        "CREATE INDEX IF NOT EXISTS idx_signals_symbol ON signals(symbol)",
-        "CREATE INDEX IF NOT EXISTS idx_signals_type ON signals(signal_type)",
-
         """CREATE TABLE IF NOT EXISTS fundamentals (
             symbol TEXT PRIMARY KEY,
             company_name TEXT,
@@ -282,35 +253,6 @@ def init_database():
             total_value DOUBLE PRECISION,
             total_trade INTEGER
         )""",
-
-        """CREATE TABLE IF NOT EXISTS signal_history (
-            id SERIAL PRIMARY KEY,
-            symbol TEXT NOT NULL,
-            date DATE NOT NULL,
-            signal_type TEXT NOT NULL,
-            ltp DOUBLE PRECISION,
-            target_price DOUBLE PRECISION,
-            stop_loss DOUBLE PRECISION,
-            confidence DOUBLE PRECISION,
-            short_term_score DOUBLE PRECISION,
-            predicted_day2 DOUBLE PRECISION,
-            predicted_day3 DOUBLE PRECISION,
-            predicted_day5 DOUBLE PRECISION,
-            predicted_day7 DOUBLE PRECISION,
-            expected_return_pct DOUBLE PRECISION,
-            reasoning TEXT,
-            actual_day2 DOUBLE PRECISION,
-            actual_day3 DOUBLE PRECISION,
-            actual_day5 DOUBLE PRECISION,
-            actual_day7 DOUBLE PRECISION,
-            target_hit INTEGER DEFAULT 0,
-            stop_hit INTEGER DEFAULT 0,
-            actual_return_pct DOUBLE PRECISION,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE(symbol, date)
-        )""",
-        "CREATE INDEX IF NOT EXISTS idx_signal_history_symbol ON signal_history(symbol)",
-        "CREATE INDEX IF NOT EXISTS idx_signal_history_date ON signal_history(date)",
 
         """CREATE TABLE IF NOT EXISTS sectors (
             id SERIAL PRIMARY KEY,
@@ -380,23 +322,6 @@ def init_database():
             UNIQUE(date, symbol)
         )""",
         "CREATE INDEX IF NOT EXISTS idx_daily_analysis_date ON daily_analysis(date)",
-
-        """CREATE TABLE IF NOT EXISTS llm_scan_results (
-            id SERIAL PRIMARY KEY,
-            date DATE NOT NULL,
-            scan_time TIMESTAMP NOT NULL,
-            analysis_type TEXT NOT NULL,
-            symbol TEXT,
-            recommendation TEXT,
-            confidence TEXT,
-            reasoning TEXT,
-            key_insights TEXT,
-            risk_factors TEXT,
-            raw_response TEXT,
-            created_at TIMESTAMP DEFAULT NOW(),
-            UNIQUE(date, scan_time, analysis_type, symbol)
-        )""",
-        "CREATE INDEX IF NOT EXISTS idx_llm_scan_date ON llm_scan_results(date)",
 
         """CREATE TABLE IF NOT EXISTS scan_decisions (
             id SERIAL PRIMARY KEY,

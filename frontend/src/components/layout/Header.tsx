@@ -1,6 +1,6 @@
 import { NavLink } from "react-router-dom";
 import { useState, useEffect } from "react";
-import { Activity, BarChart3, Search, Eye, Briefcase, Grid3X3, PieChart, Table2, Menu, X, LineChart, TrendingUp, Target } from "lucide-react";
+import { Activity, BarChart3, Grid3X3, Table2, Menu, X, LineChart, TrendingUp, Target, Newspaper, Calendar, Percent, ShieldAlert } from "lucide-react";
 import { clsx } from "clsx";
 import { useMarketStore } from "../../store/marketStore.ts";
 import SymbolSearch from "../search/SymbolSearch.tsx";
@@ -8,14 +8,14 @@ import SymbolSearch from "../search/SymbolSearch.tsx";
 const links = [
   { to: "/", label: "Dashboard", icon: BarChart3 },
   { to: "/heatmap", label: "Heatmap", icon: Grid3X3 },
-  { to: "/sectors", label: "Sectors", icon: PieChart },
   { to: "/matrix", label: "Matrix", icon: Table2 },
-  { to: "/screener", label: "Screener", icon: Search },
-  { to: "/portfolio", label: "Portfolio", icon: Briefcase },
-  { to: "/watchlist", label: "Watchlist", icon: Eye },
+  { to: "/news", label: "News", icon: Newspaper },
   { to: "/chart", label: "Chart", icon: LineChart },
   { to: "/radar", label: "Radar", icon: Target },
   { to: "/analysis", label: "Analysis", icon: TrendingUp },
+  { to: "/dividends", label: "Dividends", icon: Percent },
+  { to: "/seasonality", label: "Seasonal", icon: Calendar },
+  { to: "/floor", label: "Floor", icon: ShieldAlert },
 ] as const;
 
 export default function Header() {

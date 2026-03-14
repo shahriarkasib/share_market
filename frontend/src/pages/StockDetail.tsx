@@ -141,8 +141,10 @@ export default function StockDetail() {
         )}
       </div>
 
-      {/* Price chart */}
-      <PriceChart symbol={symbol!} signal={signal} />
+      {/* Price chart — same viewport height as chart page, scrollable below */}
+      <div style={{ height: 'calc(100vh - 12rem)' }}>
+        <PriceChart symbol={symbol!} signal={signal} />
+      </div>
 
       {/* Technical summary gauges */}
       {signal && <TechnicalSummary signal={signal} />}

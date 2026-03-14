@@ -307,6 +307,92 @@ def load_accuracy_feedback() -> str:
     return "\n".join(lines) + "\n"
 
 
+def load_corporate_events(date_str: str, symbols: list[str]) -> dict[str, str]:
+    """Load recent corporate events for each symbol to inject into LLM prompt."""
+    conn = get_conn()
+    cur = conn.cursor()
+
+    # Get events from last 30 days for relevant symbols
+    placeholders = ",".join(["%s"] * len(symbols))
+    cur.execute(f"""
+        SELECT symbol, date, event_type, title, details
+        FROM corporate_events
+        WHERE symbol IN ({placeholders})
+          AND date >= (%s::date - INTERVAL '30 days')
+          AND date <= %s::date
+        ORDER BY symbol, date DESC
+    """, symbols + [date_str, date_str])
+
+    events_by_sym: dict[str, list[str]] = {}
+    for row in cur.fetchall():
+        sym = row["symbol"]
+        if sym not in events_by_sym:
+            events_by_sym[sym] = []
+        line = f"  {row['date']} | {row['event_type']} | {row['title'] or ''}"
+        if row['details']:
+            line += f" | {str(row['details'])[:100]}"
+        events_by_sym[sym].append(line)
+
+    # Get upcoming record dates (next 30 days)
+    cur.execute(f"""
+        SELECT symbol, date, event_type, title, details
+        FROM corporate_events
+        WHERE symbol IN ({placeholders})
+          AND date > %s::date
+          AND date <= (%s::date + INTERVAL '30 days')
+          AND event_type IN ('RECORD_DATE', 'AGM', 'EGM', 'DIVIDEND')
+        ORDER BY date ASC
+    """, symbols + [date_str, date_str])
+
+    upcoming: dict[str, list[str]] = {}
+    for row in cur.fetchall():
+        sym = row["symbol"]
+        if sym not in upcoming:
+            upcoming[sym] = []
+        upcoming[sym].append(f"  UPCOMING {row['date']} | {row['event_type']} | {row['title'] or ''}")
+
+    conn.close()
+
+    # Build per-symbol event strings
+    result: dict[str, str] = {}
+    for sym in symbols:
+        lines = []
+        if sym in events_by_sym:
+            lines.append("Recent Events (last 30 days):")
+            lines.extend(events_by_sym[sym][:10])  # Max 10 recent events
+        if sym in upcoming:
+            lines.append("Upcoming Events:")
+            lines.extend(upcoming[sym])
+        if lines:
+            result[sym] = "\n".join(lines)
+
+    return result
+
+
+def load_market_news_summary(date_str: str) -> str:
+    """Load recent market news headlines for prompt context."""
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT date, title, category
+        FROM market_news
+        WHERE date >= (%s::date - INTERVAL '7 days')
+          AND date <= %s::date
+        ORDER BY date DESC
+        LIMIT 20
+    """, (date_str, date_str))
+    rows = cur.fetchall()
+    conn.close()
+
+    if not rows:
+        return ""
+
+    lines = ["## Recent Market News (last 7 days)"]
+    for r in rows:
+        lines.append(f"- [{r['date']}] ({r['category'] or 'General'}) {r['title']}")
+    return "\n".join(lines)
+
+
 def load_ohlcv_history(symbols: list[str], daily_days: int = 130, weekly_weeks: int = 52) -> dict[str, str]:
     """Load OHLCV history: 6-month daily + 1-year weekly candles per symbol."""
     conn = get_conn()
@@ -701,6 +787,7 @@ def build_llm_prompt(
     stocks: list[dict], market: dict, feedback: str, batch_num: int, total_batches: int,
     ohlcv_map: dict[str, str] = None, dsex_csv: str = "",
     dsex_corr: dict[str, dict] = None,
+    events_map: dict[str, str] = None, market_news: str = "",
 ) -> str:
     """Build prompt for a batch of stocks — minimal rules, let AI think."""
     dsex = market.get("dsex_index", 0)
@@ -795,6 +882,9 @@ def build_llm_prompt(
             stock_block += f"Last 5 days: {last5}\n"
         if ohlcv_csv:
             stock_block += f"\nPrice History (daily + weekly):\n```\n{ohlcv_csv}\n```\n"
+        event_text = (events_map or {}).get(s["symbol"], "")
+        if event_text:
+            stock_block += f"\nCorporate Events:\n{event_text}\n"
 
         stock_lines.append(stock_block)
 
@@ -854,6 +944,7 @@ For each stock you receive:
 - Volume: {market.get('total_volume', 0):,} | Turnover: {market.get('total_value', 0):,.0f}
 {dsex_block}
 {feedback}
+{market_news}
 ## Stocks (batch {batch_num}/{total_batches})
 
 {chr(10).join(stock_lines)}
@@ -1034,6 +1125,11 @@ def run_llm_analysis(date_str: str) -> list[dict]:
     dsex_corr = compute_dsex_correlations(all_symbols, days=130)
     logger.info(f"Computed DSEX correlations for {len(dsex_corr)} stocks")
 
+    # Load corporate events and news for all symbols
+    events_map = load_corporate_events(date_str, all_symbols)
+    market_news = load_market_news_summary(date_str)
+    logger.info(f"Loaded events for {len(events_map)} stocks, {len(market_news)} chars of news")
+
     batches = [stocks[i:i + LLM_BATCH_SIZE] for i in range(0, len(stocks), LLM_BATCH_SIZE)]
     total_batches = len(batches)
     logger.info(f"LLM analysis: {len(stocks)} stocks in {total_batches} batches (batch size {LLM_BATCH_SIZE})")
@@ -1051,6 +1147,7 @@ def run_llm_analysis(date_str: str) -> list[dict]:
         prompt = build_llm_prompt(
             batch, market, feedback, i, total_batches,
             ohlcv_map=ohlcv_map, dsex_csv=dsex_csv, dsex_corr=dsex_corr,
+            events_map=events_map, market_news=market_news,
         )
         logger.info(f"Batch {i} prompt: {len(prompt)} chars")
         raw = call_claude(prompt)
@@ -1099,6 +1196,7 @@ def run_llm_analysis(date_str: str) -> list[dict]:
             prompt = build_llm_prompt(
                 batch, market, feedback, batch_idx, total_batches,
                 ohlcv_map=ohlcv_map, dsex_csv=dsex_csv, dsex_corr=dsex_corr,
+                events_map=events_map, market_news=market_news,
             )
             raw = call_claude(prompt)
             if not raw:
@@ -1154,7 +1252,8 @@ def run_llm_analysis(date_str: str) -> list[dict]:
 
 
 def build_judge_prompt(
-    pairs: list[dict], market: dict, batch_num: int, total_batches: int
+    pairs: list[dict], market: dict, batch_num: int, total_batches: int,
+    events_map: dict[str, str] = None,
 ) -> str:
     """Build prompt for judge comparing algo vs LLM."""
     dsex = market.get("dsex_index", 0)
@@ -1179,6 +1278,9 @@ def build_judge_prompt(
             f"  Entry: {llm.get('entry_low', 0)}-{llm.get('entry_high', 0)} | "
             f"SL: {llm.get('sl', 0)} | T1: {llm.get('t1', 0)} | T2: {llm.get('t2', 0)}"
         )
+        event_text = (events_map or {}).get(p["symbol"], "")
+        if event_text:
+            stock_lines[-1] += f"\n**Events:**\n{event_text}"
 
     return f"""You have two analyses for each DSE stock — one from an algorithm (math-based) and one from an LLM (context-based). Produce a FINAL verdict.
 
@@ -1290,13 +1392,19 @@ def run_judge_analysis(date_str: str, llm_results: list[dict]) -> int:
         return 0
 
     market = load_market_context()
+
+    # Load corporate events for judge context
+    all_judge_symbols = [p["symbol"] for p in pairs]
+    events_map = load_corporate_events(date_str, all_judge_symbols)
+    logger.info(f"Judge: loaded events for {len(events_map)} stocks")
+
     batches = [pairs[i:i + JUDGE_BATCH_SIZE] for i in range(0, len(pairs), JUDGE_BATCH_SIZE)]
     total = len(batches)
     logger.info(f"Judge analysis: {len(pairs)} pairs in {total} batches")
 
     consecutive_fails = 0
     for i, batch in enumerate(batches, 1):
-        prompt = build_judge_prompt(batch, market, i, total)
+        prompt = build_judge_prompt(batch, market, i, total, events_map=events_map)
         raw = call_claude(prompt)
         if not raw:
             consecutive_fails += 1
@@ -1869,10 +1977,7 @@ def run():
     # Stage 5: DSEX forecast (dedicated analysis)
     run_dsex_forecast(date_str)
 
-    # Stage 6: Pre-compute Buy Radar (store for instant API loading)
-    precompute_radar(date_str)
-
-    # Stage 7: Email notification
+    # Stage 6: Email notification
     send_completion_email(date_str, len(llm_results), judge_count, override_count)
 
     logger.info("=== LLM Daily Analyzer complete ===")

@@ -366,122 +366,6 @@ async def trigger_live_scan():
     return {"status": "started", "message": "Live scan triggered"}
 
 
-@router.get("/llm-scan")
-async def get_llm_scan(
-    date: str = Query(default=None, description="Date YYYY-MM-DD (default: today)"),
-):
-    """Get latest LLM analysis results."""
-    if not date:
-        date = datetime.now(DSE_TZ).strftime("%Y-%m-%d")
-
-    conn = get_connection()
-
-    # Get the latest scan_time for this date
-    ts_row = conn.execute(
-        "SELECT MAX(scan_time) as latest FROM llm_scan_results WHERE date = %s",
-        (date,),
-    ).fetchone()
-
-    if not ts_row or not ts_row["latest"]:
-        conn.close()
-        return {
-            "date": date,
-            "scan_time": None,
-            "market_outlook": None,
-            "top_picks": [],
-            "message": "No LLM analysis for this date. Run the scanner on the GCP VM.",
-        }
-
-    latest = ts_row["latest"]
-
-    # Load market overview
-    overview_row = conn.execute(
-        """SELECT recommendation, reasoning, key_insights, risk_factors
-           FROM llm_scan_results
-           WHERE date = %s AND scan_time = %s AND analysis_type = 'market_overview'
-           LIMIT 1""",
-        (date, latest),
-    ).fetchone()
-
-    market_outlook = None
-    if overview_row:
-        market_outlook = {
-            "sentiment": overview_row["recommendation"],
-            "summary": overview_row["reasoning"],
-            "key_insights": json.loads(overview_row["key_insights"]) if overview_row["key_insights"] else {},
-            "key_risks": json.loads(overview_row["risk_factors"]) if overview_row["risk_factors"] else [],
-        }
-
-    # Load stock picks
-    pick_rows = conn.execute(
-        """SELECT symbol, recommendation, confidence, reasoning, key_insights, risk_factors
-           FROM llm_scan_results
-           WHERE date = %s AND scan_time = %s AND analysis_type = 'stock_pick'
-           ORDER BY
-             CASE confidence
-               WHEN 'HIGH' THEN 0
-               WHEN 'MEDIUM' THEN 1
-               WHEN 'LOW' THEN 2
-               ELSE 3
-             END""",
-        (date, latest),
-    ).fetchall()
-
-    top_picks = []
-    for r in pick_rows:
-        insights = json.loads(r["key_insights"]) if r["key_insights"] else {}
-        risks = json.loads(r["risk_factors"]) if r["risk_factors"] else []
-        top_picks.append({
-            "symbol": r["symbol"],
-            "recommendation": r["recommendation"],
-            "confidence": r["confidence"],
-            "reasoning": r["reasoning"],
-            "entry_strategy": insights.get("entry_strategy", ""),
-            "risk_note": risks[0] if risks else "",
-        })
-
-    # Check how many scans today
-    count_row = conn.execute(
-        """SELECT COUNT(DISTINCT scan_time) as cnt FROM llm_scan_results
-           WHERE date = %s AND analysis_type = 'market_overview'""",
-        (date,),
-    ).fetchone()
-
-    conn.close()
-
-    return {
-        "date": date,
-        "scan_time": str(latest),
-        "scan_count": count_row["cnt"] if count_row else 0,
-        "market_outlook": market_outlook,
-        "top_picks": top_picks,
-    }
-
-
-@router.get("/llm-scan/history")
-async def get_llm_scan_history(
-    date: str = Query(default=None, description="Date YYYY-MM-DD"),
-):
-    """Get all LLM scan times for a date (to see how analysis evolved)."""
-    if not date:
-        date = datetime.now(DSE_TZ).strftime("%Y-%m-%d")
-
-    conn = get_connection()
-    rows = conn.execute(
-        """SELECT DISTINCT scan_time, recommendation as sentiment
-           FROM llm_scan_results
-           WHERE date = %s AND analysis_type = 'market_overview'
-           ORDER BY scan_time DESC""",
-        (date,),
-    ).fetchall()
-    conn.close()
-
-    return {
-        "date": date,
-        "scans": [{"time": str(r["scan_time"]), "sentiment": r["sentiment"]} for r in rows],
-    }
-
-
 @router.get("/decision-accuracy")
 async def get_decision_accuracy_api(
     days: int = Query(default=30, description="Look back N days"),
@@ -509,30 +393,10 @@ async def get_buy_radar(categories: str = "A", exclude_sectors: str = ""):
       categories: comma-separated list of categories (default "A", options: A,B,Z,ALL)
       exclude_sectors: comma-separated sector keywords to exclude (e.g. "bank,insurance")
     """
-    import pandas as pd
-    from analysis.indicators import TechnicalIndicators
-
     cache_key = f"buy_radar_{categories}_{exclude_sectors}"
     cached = cache.get(cache_key)
     if cached:
         return cached
-
-    # Try pre-computed radar first (instant load)
-    if categories.strip().upper() == "A" and not exclude_sectors:
-        try:
-            precomp_conn = get_connection()
-            row = precomp_conn.execute(
-                "SELECT data_json FROM radar_precomputed "
-                "WHERE category = 'A' ORDER BY date DESC LIMIT 1"
-            ).fetchone()
-            precomp_conn.close()
-            if row and row["data_json"]:
-                import json as _json
-                result = _json.loads(row["data_json"])
-                cache.set(cache_key, result, ttl=1800)
-                return result
-        except Exception:
-            pass  # Fall through to live computation
 
     conn = get_connection()
 
@@ -703,54 +567,53 @@ async def get_buy_radar(categories: str = "A", exclude_sectors: str = ""):
     logger.info(f"Radar market context: DSEX RSI={market_ctx['dsex_rsi']}, "
                 f"regime={market_ctx['regime']}, adj={market_ctx['adjustment']}")
 
-    # Load price history for all stocks (batch)
-    price_rows = conn.execute(
-        "SELECT symbol, date, open, high, low, close, volume "
-        "FROM daily_prices ORDER BY symbol, date"
-    ).fetchall()
+    # Load indicators from daily_analysis (already computed, no need to recompute)
+    da_rows = conn.execute(
+        "SELECT symbol, ltp, rsi, stoch_rsi, macd_hist, mfi, cmf, "
+        "bb_pct, vol_ratio, avg_vol, turnover "
+        "FROM daily_analysis WHERE date = ?", (latest_date,)
+    ).fetchall() if latest_date else []
+    indicator_map = {r["symbol"]: dict(r) for r in da_rows}
+
+    # Get 5-day returns efficiently (only 2 prices per symbol needed)
+    ret5d_map: dict[str, float] = {}
+    if latest_date:
+        ret_rows = conn.execute(
+            "SELECT symbol, close FROM daily_prices "
+            "WHERE date = (SELECT MAX(date) FROM daily_prices WHERE date <= ?)", (latest_date,)
+        ).fetchall()
+        current_prices = {r["symbol"]: float(r["close"] or 0) for r in ret_rows}
+
+        ret_rows_5d = conn.execute(
+            "SELECT dp.symbol, dp.close FROM daily_prices dp "
+            "WHERE dp.date = ("
+            "  SELECT date FROM (SELECT DISTINCT date FROM daily_prices WHERE date <= ? ORDER BY date DESC LIMIT 6) sub ORDER BY date ASC LIMIT 1"
+            ")", (latest_date,)
+        ).fetchall()
+        prices_5d = {r["symbol"]: float(r["close"] or 0) for r in ret_rows_5d}
+        for sym, p5 in prices_5d.items():
+            if p5 > 0 and sym in current_prices:
+                ret5d_map[sym] = round((current_prices[sym] / p5 - 1) * 100, 1)
+
     conn.close()
 
-    if not price_rows:
-        return {"date": latest_date, "count": 0, "stages": {}, "stocks": []}
-
-    # Group by symbol
-    all_df = pd.DataFrame([dict(r) for r in price_rows])
-    for col in ["open", "high", "low", "close", "volume"]:
-        all_df[col] = pd.to_numeric(all_df[col], errors="coerce")
-
     stocks = []
-    for sym, group in all_df.groupby("symbol"):
-        if sym not in filtered or len(group) < 30:
+    for sym in filtered:
+        ind = indicator_map.get(sym)
+        if not ind:
             continue
 
-        df = group.sort_values("date").reset_index(drop=True)
-        df = df.tail(60).reset_index(drop=True)
+        close = float(ind.get("ltp") or 0)
+        vol_ratio = float(ind.get("vol_ratio") or 1.0)
+        avg_vol = float(ind.get("avg_vol") or 0)
+        volume = int(avg_vol * vol_ratio) if avg_vol else 0
 
-        try:
-            ti = TechnicalIndicators(df)
-            full_df = ti.compute_all()
-            if len(full_df) < 5:
-                continue
-            ind = ti.get_latest_indicators()
-        except Exception:
-            continue
-
-        close = ind.get("close") or 0
-        volume = ind.get("volume") or 0
-        vol_sma = ind.get("volume_sma_20") or 1
-
-        # ── Extract indicators for display only ──
-        rsi = ind.get("rsi_14") or 50
-        mfi = ind.get("mfi_14") or 50
-        cmf = ind.get("cmf_20") or 0
-        macd_hist = ind.get("macd_histogram") or 0
-        stoch_k = ind.get("stoch_k") or 50
-        bb_upper = ind.get("bb_upper") or 0
-        bb_lower = ind.get("bb_lower") or 0
-        vol_ratio = ind.get("volume_ratio") or 0
-
-        bb_range = bb_upper - bb_lower
-        bb_pct = ((close - bb_lower) / bb_range * 100) if bb_range > 0 else 50
+        rsi = float(ind.get("rsi") or 50)
+        mfi = float(ind.get("mfi") or 50)
+        cmf = float(ind.get("cmf") or 0)
+        macd_hist = float(ind.get("macd_hist") or 0)
+        stoch_k = float(ind.get("stoch_rsi") or 50)
+        bb_pct = float(ind.get("bb_pct") or 50)
 
         # ════════════════════════════════════════
         #  LLM-POWERED RADAR
@@ -781,14 +644,6 @@ async def get_buy_radar(categories: str = "A", exclude_sectors: str = ""):
         action_upper = ai_action.upper()
         llm_stage = (llm.get("stage") or "").upper().replace(" ", "_")
         valid_stages = {"ENTRY_ZONE", "READY", "APPROACHING", "BUILDING", "WATCHING", "TOO_LATE"}
-
-        # Check recent rally from price history (for ret_5d display)
-        prices_close = df["close"].tolist()
-        ret_5d_pct = 0
-        if len(prices_close) >= 6:
-            p5 = prices_close[-6]
-            if p5 > 0:
-                ret_5d_pct = (close / p5 - 1) * 100
 
         if llm_stage in valid_stages:
             stage = "WATCHING" if llm_stage == "TOO_LATE" else llm_stage
@@ -830,7 +685,7 @@ async def get_buy_radar(categories: str = "A", exclude_sectors: str = ""):
         ] if v)
 
         # ── Build response object ──
-        ret_5d = round(ret_5d_pct, 1)
+        ret_5d = ret5d_map.get(sym, 0.0)
 
         a = analysis_map.get(sym, {})
 

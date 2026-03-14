@@ -601,6 +601,57 @@ async def verify_scan_decisions():
         logger.error(f"Decision verification failed: {e}")
 
 
+async def scrape_daily_news():
+    """Scrape latest news & announcements from LankaBD (quick mode)."""
+    try:
+        logger.info("Starting daily LankaBD news scrape...")
+
+        def _scrape():
+            from scripts.lankabd_news_scraper import (
+                create_session, create_tables,
+                scrape_announcements, scrape_declarations, scrape_news,
+                get_conn,
+            )
+            from datetime import date, timedelta
+            import time as _time
+
+            create_tables()
+
+            # Load known symbols
+            conn = get_conn()
+            cur = conn.cursor()
+            cur.execute("SELECT symbol FROM fundamentals")
+            known_symbols = {r["symbol"] for r in cur.fetchall()}
+            conn.close()
+
+            session, _ = create_session()
+
+            # Last 3 days of announcements
+            start = (date.today() - timedelta(days=3)).isoformat()
+            ann = scrape_announcements(session, start)
+            _time.sleep(1)
+            decl = scrape_declarations(session)
+            _time.sleep(1)
+            # Last 7 days of news, max 5 pages per category
+            news_from = (date.today() - timedelta(days=7)).isoformat()
+            news = scrape_news(session, known_symbols, from_date=news_from, max_pages=5)
+
+            logger.info(f"Daily news scrape done: {ann} announcements, {decl} declarations, {news} news")
+
+            # Classify new news with AI
+            try:
+                from scripts.classify_news import classify_news
+                classified = classify_news(days=3)
+                logger.info(f"Classified {classified} news items")
+            except Exception as ce:
+                logger.warning(f"News classification failed: {ce}")
+
+        thread = threading.Thread(target=_scrape, daemon=True)
+        thread.start()
+    except Exception as e:
+        logger.error(f"Daily news scrape failed: {e}")
+
+
 async def cleanup_intraday_snapshots():
     """Delete intraday snapshots older than 7 days."""
     try:
@@ -718,6 +769,18 @@ def setup_scheduler() -> AsyncIOScheduler:
         ),
         id="verify_decisions",
         name="Verify past scan decisions",
+        replace_existing=True,
+    )
+
+    # Daily news scrape (after market, 16:00 BST)
+    scheduler.add_job(
+        scrape_daily_news,
+        trigger=CronTrigger(
+            day_of_week="sun,mon,tue,wed,thu",
+            hour=16, minute=0, timezone="Asia/Dhaka",
+        ),
+        id="daily_news_scrape",
+        name="Scrape LankaBD news & events",
         replace_existing=True,
     )
 

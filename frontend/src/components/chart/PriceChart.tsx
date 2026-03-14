@@ -10,6 +10,8 @@ import {
   type ISeriesApi,
   type SeriesType,
   type Time,
+  type LogicalRange,
+  type MouseEventParams,
 } from "lightweight-charts";
 import { clsx } from "clsx";
 import { Loader2 } from "lucide-react";
@@ -58,438 +60,543 @@ const SUB_PANE_DEFS = [
 
 const PANE_LABELS: Record<string, string> = {
   rsi: "RSI (14)",
-  macd: "MACD (12, 26, 9)",
+  macd: "MACD (12, 26, close, 9)",
   stoch: "Stoch (14, 3)",
-  stochrsi: "StochRSI (14, 14, 3, 3)",
+  stochrsi: "Stoch RSI (14, 14, 3, 3)",
   atr: "ATR (14)",
   obv: "OBV",
   adx: "ADX (14)",
 };
 
-/** Read current CSS variable values for chart theming. */
+/* Pane heights by indicator complexity (like LankaBangla — compact, fit in viewport) */
+const COMPLEX_PANE_HEIGHT = 80;  // RSI, MACD, StochRSI, Stoch (bands/histograms)
+const SIMPLE_PANE_HEIGHT = 50;   // ATR, OBV, ADX (single line)
+const COMPLEX_PANES = new Set(["rsi", "macd", "stoch", "stochrsi"]);
+const PANE_HEADER_HEIGHT = 14;
+
+/** Always use light/white chart colors — matches LankaBangla style */
 function getChartColors() {
-  const s = getComputedStyle(document.documentElement);
   return {
-    bg: s.getPropertyValue("--chart-bg").trim() || "#ffffff",
-    text: s.getPropertyValue("--chart-text").trim() || "#475569",
-    grid: s.getPropertyValue("--chart-grid").trim() || "#e2e8f020",
-    crosshair: s.getPropertyValue("--chart-crosshair").trim() || "#94a3b8",
-    crosshairLabel: s.getPropertyValue("--chart-crosshair-label").trim() || "#e2e8f0",
-    border: s.getPropertyValue("--chart-border").trim() || "#e2e8f0",
+    bg: "#ffffff",
+    text: "#475569",
+    grid: "#e2e8f030",
+    crosshair: "#94a3b8",
+    crosshairLabel: "#334155",
+    border: "#e2e8f0",
   };
 }
 
 interface Props {
   symbol: string;
   signal?: StockSignal | null;
-  height?: number;
+  height?: number; // optional override; if omitted, fills parent
 }
 
-export default function PriceChart({ symbol, signal, height: baseHeight = 420 }: Props) {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const chartRef = useRef<IChartApi | null>(null);
-  const seriesRefs = useRef<Map<string, ISeriesApi<SeriesType>>>(new Map());
+/* ─── OHLCV Legend ─── */
+function OHLCVLegend({ bar, overlayValues }: {
+  bar: OHLCVBar | null;
+  overlayValues: { label: string; value: number | null; color: string }[];
+}) {
+  if (!bar) return null;
+  const isUp = bar.close >= bar.open;
+  const clr = isUp ? "text-green-600" : "text-red-600";
+  return (
+    <div className="flex items-center gap-3 flex-wrap text-[10px] font-mono leading-none">
+      <span className="text-slate-500">O <span className={clr}>{bar.open.toFixed(1)}</span></span>
+      <span className="text-slate-500">H <span className={clr}>{bar.high.toFixed(1)}</span></span>
+      <span className="text-slate-500">L <span className={clr}>{bar.low.toFixed(1)}</span></span>
+      <span className="text-slate-500">C <span className={clr}>{bar.close.toFixed(1)}</span></span>
+      <span className="text-slate-500">V <span className="text-slate-700">{(bar.volume / 1000).toFixed(0)}K</span></span>
+      {overlayValues.map((ov) =>
+        ov.value != null ? (
+          <span key={ov.label} style={{ color: ov.color }} className="font-medium">
+            {ov.label} {ov.value.toFixed(2)}
+          </span>
+        ) : null,
+      )}
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════
+ * Main PriceChart — fills parent height, no scrolling
+ * ═══════════════════════════════════════════════════════════ */
+export default function PriceChart({ symbol, signal, height: fixedHeight }: Props) {
+  const wrapperRef = useRef<HTMLDivElement>(null);
+  const mainContainerRef = useRef<HTMLDivElement>(null);
+  const paneContainerRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+  const allChartsRef = useRef<IChartApi[]>([]);
+  const chartSeriesRef = useRef<Map<IChartApi, ISeriesApi<SeriesType>>>(new Map());
+  const syncingRef = useRef(false);
 
   const [chartType, setChartType] = useState<ChartType>("candlestick");
-  const [period, setPeriod] = useState("3m");
   const [overlays, setOverlays] = useState<Set<string>>(() => new Set(["ema9", "ema21"]));
-  const [subPanes, setSubPanes] = useState<Set<string>>(() => new Set());
+  const [subPanes, setSubPanes] = useState<Set<string>>(() => new Set(["macd"]));
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [bars, setBars] = useState<OHLCVBar[]>([]);
 
+  const [legendBar, setLegendBar] = useState<OHLCVBar | null>(null);
+  const [legendOverlays, setLegendOverlays] = useState<{ label: string; value: number | null; color: string }[]>([]);
+  const [paneValues, setPaneValues] = useState<Record<string, string>>({});
+
+  const indicatorDataRef = useRef<Record<string, (number | null)[]>>({});
+  const overlayDataRef = useRef<Record<string, { values: (number | null)[]; color: string }>>({});
+
   const toggleOverlay = useCallback((key: string) => {
-    setOverlays((prev) => {
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return next;
-    });
+    setOverlays((prev) => { const n = new Set(prev); n.has(key) ? n.delete(key) : n.add(key); return n; });
   }, []);
-
   const toggleSubPane = useCallback((key: string) => {
-    setSubPanes((prev) => {
-      const n = new Set(prev);
-      if (n.has(key)) n.delete(key);
-      else n.add(key);
-      return n;
-    });
+    setSubPanes((prev) => { const n = new Set(prev); n.has(key) ? n.delete(key) : n.add(key); return n; });
   }, []);
 
-  // Fetch OHLCV data
+  // Period buttons control visible range (not data fetch)
+  const PERIOD_BARS: Record<string, number> = {
+    "1w": 5, "2w": 10, "1m": 22, "3m": 65, "6m": 130, "1y": 252, "2y": 504, "all": 9999,
+  };
+  const setVisiblePeriod = useCallback((p: string) => {
+    const total = bars.length;
+    if (total === 0) return;
+    const count = Math.min(PERIOD_BARS[p] || 65, total);
+    const range = { from: total - count - 2, to: total + 5 };
+    for (const c of allChartsRef.current) {
+      c.timeScale().setVisibleLogicalRange(range);
+    }
+  }, [bars]);
+
+  // ── Fetch all OHLCV data once (3y), view range controlled by period buttons ──
   useEffect(() => {
     let cancelled = false;
-    setLoading(true);
-    setError(null);
-    setBars([]);
-
-    fetchOHLCV(symbol, period)
-      .then((data) => {
-        if (cancelled) return;
-        setBars(data);
-        if (data.length === 0) setError("No historical data");
-      })
-      .catch((err) => {
-        if (!cancelled) setError(err instanceof Error ? err.message : "Failed to load");
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-
+    setLoading(true); setError(null); setBars([]);
+    fetchOHLCV(symbol, "3y")
+      .then((data) => { if (!cancelled) { setBars(data); if (data.length === 0) setError("No historical data"); } })
+      .catch((err) => { if (!cancelled) setError(err instanceof Error ? err.message : "Failed to load"); })
+      .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [symbol, period]);
+  }, [symbol]);
 
-  // Render main chart (candlestick/line/area + overlays + volume + S/R)
+  // ── Pre-compute indicators ──
   useEffect(() => {
-    if (!containerRef.current || bars.length === 0) return;
+    if (bars.length === 0) return;
+    const closes = bars.map((b) => b.close);
+    const highs = bars.map((b) => b.high);
+    const lows = bars.map((b) => b.low);
+    const vols = bars.map((b) => b.volume);
 
-    const container = containerRef.current;
+    const ov: Record<string, { values: (number | null)[]; color: string }> = {};
+    ov.ema9 = { values: computeEMA(closes, 9), color: "#3b82f6" };
+    ov.ema21 = { values: computeEMA(closes, 21), color: "#f97316" };
+    ov.sma50 = { values: computeSMA(closes, 50), color: "#a855f7" };
+    ov.sma200 = { values: computeSMA(closes, 200), color: "#dc2626" };
+    const bb = computeBollingerBands(closes);
+    ov.bb_upper = { values: bb.upper, color: "#64748b" };
+    ov.bb_middle = { values: bb.middle, color: "#64748b" };
+    ov.bb_lower = { values: bb.lower, color: "#64748b" };
+    ov.vwap = { values: computeVWAP(highs, lows, closes, vols), color: "#eab308" };
+    overlayDataRef.current = ov;
+
+    const ind: Record<string, (number | null)[]> = {};
+    const rsi = computeRSI(closes); ind.rsi = rsi;
+    const macd = computeMACD(closes); ind.macd_line = macd.macd; ind.macd_signal = macd.signal; ind.macd_hist = macd.histogram;
+    const stoch = computeStochastic(highs, lows, closes); ind.stoch_k = stoch.k; ind.stoch_d = stoch.d;
+    const stochrsi = computeStochRSI(closes); ind.stochrsi_k = stochrsi.k; ind.stochrsi_d = stochrsi.d;
+    ind.atr = computeATR(highs, lows, closes);
+    ind.obv = computeOBV(closes, vols);
+    const adx = computeADX(highs, lows, closes); ind.adx = adx.adx; ind.plusDI = adx.plusDI; ind.minusDI = adx.minusDI;
+    indicatorDataRef.current = ind;
+
+    setLegendBar(bars[bars.length - 1]);
+    updateLegendForIndex(bars.length - 1, ov);
+    updatePaneValuesForIndex(bars.length - 1, ind);
+  }, [bars]);
+
+  function updateLegendForIndex(idx: number, ov: Record<string, { values: (number | null)[]; color: string }>) {
+    const out: { label: string; value: number | null; color: string }[] = [];
+    for (const def of OVERLAY_DEFS) {
+      if (!overlays.has(def.key)) continue;
+      if (def.key === "bb") {
+        out.push({ label: "BB\u2191", value: ov.bb_upper?.values[idx] ?? null, color: "#64748b" });
+        out.push({ label: "BB\u2193", value: ov.bb_lower?.values[idx] ?? null, color: "#64748b" });
+      } else {
+        out.push({ label: def.label, value: ov[def.key]?.values[idx] ?? null, color: def.color });
+      }
+    }
+    setLegendOverlays(out);
+  }
+
+  function updatePaneValuesForIndex(idx: number, ind: Record<string, (number | null)[]>) {
+    const f = (v: number | null | undefined, d = 2) => v != null ? v.toFixed(d) : "\u2014";
+    setPaneValues({
+      rsi: f(ind.rsi?.[idx]),
+      macd: `${f(ind.macd_line?.[idx], 4)} ${f(ind.macd_signal?.[idx], 4)} ${f(ind.macd_hist?.[idx], 4)}`,
+      stoch: `%K ${f(ind.stoch_k?.[idx])} %D ${f(ind.stoch_d?.[idx])}`,
+      stochrsi: `%K ${f(ind.stochrsi_k?.[idx])} %D ${f(ind.stochrsi_d?.[idx])}`,
+      atr: f(ind.atr?.[idx]),
+      obv: ind.obv?.[idx] != null ? (ind.obv[idx]! / 1000).toFixed(0) + "K" : "\u2014",
+      adx: `ADX ${f(ind.adx?.[idx])} +DI ${f(ind.plusDI?.[idx])} -DI ${f(ind.minusDI?.[idx])}`,
+    });
+  }
+
+  // ── Crosshair sync ──
+  function syncCrosshair(src: IChartApi, time: Time | undefined) {
+    if (syncingRef.current) return;
+    syncingRef.current = true;
+    for (const c of allChartsRef.current) {
+      if (c !== src) {
+        const series = chartSeriesRef.current.get(c);
+        if (time && series) c.setCrosshairPosition(NaN, time, series);
+        else c.clearCrosshairPosition();
+      }
+    }
+    syncingRef.current = false;
+  }
+  function syncTimeScale(src: IChartApi, range: LogicalRange | null) {
+    if (syncingRef.current || !range) return;
+    syncingRef.current = true;
+    for (const c of allChartsRef.current) { if (c !== src) c.timeScale().setVisibleLogicalRange(range); }
+    syncingRef.current = false;
+  }
+
+  // ── Compute heights — panes get fixed compact sizes, main chart fills the rest ──
+  const activeSubPanes = SUB_PANE_DEFS.filter((d) => subPanes.has(d.key)).map((d) => d.key);
+
+  function getPaneHeight(key: string) {
+    return COMPLEX_PANES.has(key) ? COMPLEX_PANE_HEIGHT : SIMPLE_PANE_HEIGHT;
+  }
+  function getMainHeight(containerH: number) {
+    // Toolbar ~28px
+    const toolbarH = 28;
+    const totalPaneH = activeSubPanes.reduce((sum, k) => sum + getPaneHeight(k) + PANE_HEADER_HEIGHT, 0);
+    return Math.max(200, containerH - toolbarH - totalPaneH);
+  }
+
+  // ── Render all charts ──
+  useEffect(() => {
+    if (!mainContainerRef.current || !wrapperRef.current || bars.length === 0) return;
+
+    for (const c of allChartsRef.current) { try { c.remove(); } catch { /* ok */ } }
+    allChartsRef.current = [];
+    chartSeriesRef.current.clear();
+
     const colors = getChartColors();
-    const chart = createChart(container, {
-      width: container.clientWidth,
-      height: baseHeight,
+    const dates = bars.map((b) => b.date as Time);
+
+    const containerH = fixedHeight || wrapperRef.current.clientHeight || 600;
+    const mainH = getMainHeight(containerH);
+    const hasSubPanes = activeSubPanes.length > 0;
+
+    // Fixed price scale width across ALL charts so date columns align
+    const PRICE_SCALE_WIDTH = 70;
+
+    const mkOpts = (el: HTMLElement, h: number, showTime: boolean) => ({
+      width: el.clientWidth,
+      height: h,
       layout: { background: { color: colors.bg }, textColor: colors.text, fontSize: 11 },
       grid: { vertLines: { color: colors.grid }, horzLines: { color: colors.grid } },
       crosshair: {
-        vertLine: { color: colors.crosshair, width: 1, style: LineStyle.Dashed, labelBackgroundColor: colors.crosshairLabel },
-        horzLine: { color: colors.crosshair, width: 1, style: LineStyle.Dashed, labelBackgroundColor: colors.crosshairLabel },
+        vertLine: { color: colors.crosshair, width: 1 as const, style: LineStyle.Dashed, labelBackgroundColor: colors.crosshairLabel },
+        horzLine: { color: colors.crosshair, width: 1 as const, style: LineStyle.Dashed, labelBackgroundColor: colors.crosshairLabel },
       },
-      rightPriceScale: { borderColor: colors.border, scaleMargins: { top: 0.1, bottom: 0.25 } },
-      timeScale: { borderColor: colors.border, timeVisible: false },
+      rightPriceScale: { borderColor: colors.border, minimumWidth: PRICE_SCALE_WIDTH },
+      timeScale: { borderColor: colors.border, timeVisible: false, visible: showTime },
     });
-    chartRef.current = chart;
 
-    const closes = bars.map((b) => b.close);
-    const dates = bars.map((b) => b.date as Time);
-    const refs = seriesRefs.current;
+    // Compact price formatter — keeps axis labels short so all panes have same scale width
+    const compactFormat = (v: number) => {
+      const a = Math.abs(v);
+      if (a >= 1e9) return (v / 1e9).toFixed(1) + "B";
+      if (a >= 1e6) return (v / 1e6).toFixed(1) + "M";
+      if (a >= 1e4) return (v / 1e3).toFixed(0) + "K";
+      if (a >= 100) return v.toFixed(1);
+      if (a >= 1) return v.toFixed(2);
+      if (a >= 0.01) return v.toFixed(3);
+      return v.toFixed(4);
+    };
 
-    // ---- Main series ----
+    // ──── MAIN CHART ────
+    const mainEl = mainContainerRef.current;
+    const mainChart = createChart(mainEl, {
+      ...mkOpts(mainEl, mainH, !hasSubPanes),
+      rightPriceScale: { borderColor: colors.border, minimumWidth: 60, scaleMargins: { top: 0.05, bottom: 0.18 } },
+    });
+    allChartsRef.current.push(mainChart);
+
+    // Main series
     if (chartType === "candlestick") {
-      const series = chart.addSeries(CandlestickSeries, {
+      const s = mainChart.addSeries(CandlestickSeries, {
         upColor: "#22c55e", downColor: "#ef4444",
         borderUpColor: "#16a34a", borderDownColor: "#dc2626",
         wickUpColor: "#22c55e", wickDownColor: "#ef4444",
       });
-      series.setData(bars.map((b) => ({ time: b.date as Time, open: b.open, high: b.high, low: b.low, close: b.close })));
-      refs.set("main", series);
+      s.setData(bars.map((b) => ({ time: b.date as Time, open: b.open, high: b.high, low: b.low, close: b.close })));
+      chartSeriesRef.current.set(mainChart, s as ISeriesApi<SeriesType>);
+      // S/R lines
+      if (signal?.support_level) s.createPriceLine({ price: signal.support_level, color: "#22c55e80", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: true, title: "S" });
+      if (signal?.resistance_level) s.createPriceLine({ price: signal.resistance_level, color: "#ef444480", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: true, title: "R" });
     } else if (chartType === "line") {
-      const series = chart.addSeries(LineSeries, { color: "#3b82f6", lineWidth: 2 });
-      series.setData(bars.map((b) => ({ time: b.date as Time, value: b.close })));
-      refs.set("main", series);
+      const s = mainChart.addSeries(LineSeries, { color: "#3b82f6", lineWidth: 2 });
+      s.setData(bars.map((b) => ({ time: b.date as Time, value: b.close })));
+      chartSeriesRef.current.set(mainChart, s as ISeriesApi<SeriesType>);
     } else {
-      const series = chart.addSeries(AreaSeries, {
-        topColor: "rgba(59,130,246,0.4)", bottomColor: "rgba(59,130,246,0.05)",
-        lineColor: "#3b82f6", lineWidth: 2,
-      });
-      series.setData(bars.map((b) => ({ time: b.date as Time, value: b.close })));
-      refs.set("main", series);
+      const s = mainChart.addSeries(AreaSeries, { topColor: "rgba(59,130,246,0.4)", bottomColor: "rgba(59,130,246,0.05)", lineColor: "#3b82f6", lineWidth: 2 });
+      s.setData(bars.map((b) => ({ time: b.date as Time, value: b.close })));
+      chartSeriesRef.current.set(mainChart, s as ISeriesApi<SeriesType>);
     }
 
-    // ---- Volume histogram ----
-    const volSeries = chart.addSeries(HistogramSeries, { priceFormat: { type: "volume" }, priceScaleId: "vol" });
-    chart.priceScale("vol").applyOptions({ scaleMargins: { top: 0.8, bottom: 0 } });
-    volSeries.setData(bars.map((b) => ({
-      time: b.date as Time, value: b.volume,
-      color: b.close >= b.open ? "#22c55e40" : "#ef444440",
-    })));
+    // Volume (colored histogram + SMA 20 line, like LankaBangla)
+    const volS = mainChart.addSeries(HistogramSeries, { priceFormat: { type: "volume" }, priceScaleId: "vol" });
+    mainChart.priceScale("vol").applyOptions({ scaleMargins: { top: 0.65, bottom: 0 } });
+    volS.setData(bars.map((b) => ({ time: b.date as Time, value: b.volume, color: b.close >= b.open ? "rgba(38,166,154,0.6)" : "rgba(239,83,80,0.6)" })));
+    // Volume SMA(20) line
+    const volSma = computeSMA(bars.map((b) => b.volume), 20);
+    const volSmaS = mainChart.addSeries(LineSeries, { color: "#ff6d00", lineWidth: 1, priceScaleId: "vol", crosshairMarkerVisible: false, lastValueVisible: false, priceLineVisible: false });
+    const volSmaD: { time: Time; value: number }[] = [];
+    for (let i = 0; i < dates.length; i++) if (volSma[i] != null) volSmaD.push({ time: dates[i], value: volSma[i]! });
+    volSmaS.setData(volSmaD);
 
-    // ---- Overlays ----
-    if (overlays.has("ema9")) addOverlay(chart, dates, computeEMA(closes, 9), "#3b82f6");
-    if (overlays.has("ema21")) addOverlay(chart, dates, computeEMA(closes, 21), "#f97316");
-    if (overlays.has("sma50")) addOverlay(chart, dates, computeSMA(closes, 50), "#a855f7");
-    if (overlays.has("sma200")) addOverlay(chart, dates, computeSMA(closes, 200), "#dc2626");
+    // Overlays
+    const addOv = (vals: (number | null)[], color: string, w = 1, ls = LineStyle.Solid) => {
+      const s = mainChart.addSeries(LineSeries, { color, lineWidth: w as any, lineStyle: ls, crosshairMarkerVisible: false, lastValueVisible: false, priceLineVisible: false });
+      const d: { time: Time; value: number }[] = [];
+      for (let i = 0; i < dates.length; i++) if (vals[i] != null) d.push({ time: dates[i], value: vals[i]! });
+      s.setData(d);
+    };
+    const ov = overlayDataRef.current;
+    if (overlays.has("ema9") && ov.ema9) addOv(ov.ema9.values, "#3b82f6");
+    if (overlays.has("ema21") && ov.ema21) addOv(ov.ema21.values, "#f97316");
+    if (overlays.has("sma50") && ov.sma50) addOv(ov.sma50.values, "#a855f7");
+    if (overlays.has("sma200") && ov.sma200) addOv(ov.sma200.values, "#dc2626");
     if (overlays.has("bb")) {
-      const bb = computeBollingerBands(closes);
-      addOverlay(chart, dates, bb.upper, "#64748b", 1, LineStyle.Dashed);
-      addOverlay(chart, dates, bb.middle, "#64748b", 1, LineStyle.Dotted);
-      addOverlay(chart, dates, bb.lower, "#64748b", 1, LineStyle.Dashed);
+      if (ov.bb_upper) addOv(ov.bb_upper.values, "#64748b", 1, LineStyle.Dashed);
+      if (ov.bb_middle) addOv(ov.bb_middle.values, "#64748b", 1, LineStyle.Dotted);
+      if (ov.bb_lower) addOv(ov.bb_lower.values, "#64748b", 1, LineStyle.Dashed);
     }
-    if (overlays.has("vwap")) {
-      addOverlay(chart, dates, computeVWAP(bars.map((b) => b.high), bars.map((b) => b.low), closes, bars.map((b) => b.volume)), "#eab308", 2);
+    if (overlays.has("vwap") && ov.vwap) addOv(ov.vwap.values, "#eab308", 2);
+
+    // ──── SUB-PANES ────
+    const ind = indicatorDataRef.current;
+    for (let pi = 0; pi < activeSubPanes.length; pi++) {
+      const key = activeSubPanes[pi];
+      const el = paneContainerRefs.current.get(key);
+      if (!el) continue;
+      const isLast = pi === activeSubPanes.length - 1;
+      const thisPaneH = getPaneHeight(key);
+      const paneOpts = mkOpts(el, thisPaneH, isLast);
+      // Apply compact formatter to keep all price scale widths uniform
+      paneOpts.rightPriceScale = {
+        ...paneOpts.rightPriceScale,
+        minimumWidth: PRICE_SCALE_WIDTH,
+      };
+      const pc = createChart(el, paneOpts);
+      // Override the default price format with compact labels
+      pc.priceScale("right").applyOptions({
+        minimumWidth: PRICE_SCALE_WIDTH,
+      });
+      allChartsRef.current.push(pc);
+
+      let firstSeriesStored = false;
+      const priceFmt = { type: "custom" as const, formatter: compactFormat };
+      const addL = (vals: (number | null)[], color: string, w = 2, ls = LineStyle.Solid) => {
+        const s = pc.addSeries(LineSeries, { color, lineWidth: w as any, lineStyle: ls, priceFormat: priceFmt, crosshairMarkerVisible: false, lastValueVisible: false, priceLineVisible: false });
+        const d: { time: Time; value: number }[] = [];
+        for (let i = 0; i < dates.length; i++) if (vals[i] != null) d.push({ time: dates[i], value: vals[i]! });
+        s.setData(d);
+        if (!firstSeriesStored) { chartSeriesRef.current.set(pc, s as ISeriesApi<SeriesType>); firstSeriesStored = true; }
+        return d;
+      };
+      const addRef = (rd: { time: Time }[], v: number, c: string) => {
+        if (!rd.length) return;
+        const s = pc.addSeries(LineSeries, { color: c, lineWidth: 1, lineStyle: LineStyle.Dashed, priceFormat: priceFmt, crosshairMarkerVisible: false, lastValueVisible: false, priceLineVisible: false });
+        s.setData(rd.map((x) => ({ time: x.time, value: v })));
+      };
+      // Purple shaded band (like LankaBangla) — add BEFORE indicator lines so lines render on top
+      const addBand = (lo: number, hi: number) => {
+        // Need dates array for the band — use the full date range
+        const bandDates = dates.map((t) => ({ time: t }));
+        if (!bandDates.length) return;
+        const bandS = pc.addSeries(AreaSeries, {
+          topColor: "rgba(206, 147, 216, 0.25)",
+          bottomColor: "rgba(206, 147, 216, 0.25)",
+          lineColor: "rgba(156, 39, 176, 0.12)",
+          lineWidth: 1, priceFormat: priceFmt,
+          crosshairMarkerVisible: false, lastValueVisible: false, priceLineVisible: false,
+        });
+        bandS.setData(bandDates.map((x) => ({ time: x.time, value: hi })));
+        const bandLo = pc.addSeries(AreaSeries, {
+          topColor: "#ffffff",
+          bottomColor: "#ffffff",
+          lineColor: "rgba(156, 39, 176, 0.12)",
+          lineWidth: 1, priceFormat: priceFmt,
+          crosshairMarkerVisible: false, lastValueVisible: false, priceLineVisible: false,
+        });
+        bandLo.setData(bandDates.map((x) => ({ time: x.time, value: lo })));
+      };
+
+      switch (key) {
+        case "rsi": {
+          addBand(30, 70);
+          addL(ind.rsi || [], "#8b5cf6");
+          addRef(dates.map((t) => ({ time: t })), 70, "#9c27b050");
+          addRef(dates.map((t) => ({ time: t })), 30, "#9c27b050");
+          break;
+        }
+        case "macd": {
+          // Histogram first (behind lines)
+          const hs = pc.addSeries(HistogramSeries, { priceFormat: priceFmt, lastValueVisible: false, priceLineVisible: false });
+          if (!firstSeriesStored) { chartSeriesRef.current.set(pc, hs as ISeriesApi<SeriesType>); firstSeriesStored = true; }
+          const hd: { time: Time; value: number; color: string }[] = [];
+          const hist = ind.macd_hist || [];
+          for (let i = 0; i < dates.length; i++) if (hist[i] != null) hd.push({ time: dates[i], value: hist[i]!, color: hist[i]! >= 0 ? "#26a69acc" : "#ef5350cc" });
+          hs.setData(hd);
+          addL(ind.macd_line || [], "#3b82f6"); addL(ind.macd_signal || [], "#ef4444", 1);
+          break;
+        }
+        case "stoch": {
+          addBand(20, 80);
+          addL(ind.stoch_k || [], "#3b82f6"); addL(ind.stoch_d || [], "#ef4444", 1);
+          addRef(dates.map((t) => ({ time: t })), 80, "#9c27b050");
+          addRef(dates.map((t) => ({ time: t })), 20, "#9c27b050");
+          break;
+        }
+        case "stochrsi": {
+          addBand(20, 80);
+          addL(ind.stochrsi_k || [], "#3b82f6"); addL(ind.stochrsi_d || [], "#ef4444", 1);
+          addRef(dates.map((t) => ({ time: t })), 80, "#9c27b050");
+          addRef(dates.map((t) => ({ time: t })), 20, "#9c27b050");
+          break;
+        }
+        case "atr": { addL(ind.atr || [], "#f97316"); break; }
+        case "obv": { addL(ind.obv || [], "#06b6d4"); break; }
+        case "adx": { const d = addL(ind.adx || [], "#eab308"); addL(ind.plusDI || [], "#22c55e", 1); addL(ind.minusDI || [], "#ef4444", 1); addRef(d, 25, "#94a3b840"); break; }
+      }
     }
 
-    // ---- Support / Resistance price lines ----
-    const mainSeries = refs.get("main");
-    if (mainSeries && signal?.support_level) {
-      mainSeries.createPriceLine({ price: signal.support_level, color: "#22c55e80", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: true, title: "S" });
-    }
-    if (mainSeries && signal?.resistance_level) {
-      mainSeries.createPriceLine({ price: signal.resistance_level, color: "#ef444480", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: true, title: "R" });
+    // ──── SET DEFAULT VIEW on ALL charts: last 3 months ────
+    const totalBars = bars.length;
+    const barsFor3m = Math.min(65, totalBars);
+    const defaultRange = { from: totalBars - barsFor3m - 2, to: totalBars + 5 };
+    for (const c of allChartsRef.current) {
+      c.timeScale().setVisibleLogicalRange(defaultRange);
     }
 
-    chart.timeScale().fitContent();
+    // ──── CROSSHAIR SYNC ────
+    const dateToIdx = new Map<string, number>();
+    bars.forEach((b, i) => dateToIdx.set(String(b.date), i));
 
+    function onCrosshair(params: MouseEventParams, src: IChartApi) {
+      const t = params.time as Time | undefined;
+      syncCrosshair(src, t);
+      if (t) {
+        const idx = dateToIdx.get(String(t));
+        if (idx != null) {
+          setLegendBar(bars[idx]);
+          updateLegendForIndex(idx, overlayDataRef.current);
+          updatePaneValuesForIndex(idx, indicatorDataRef.current);
+        }
+      }
+    }
+    for (const c of allChartsRef.current) {
+      c.subscribeCrosshairMove((p) => onCrosshair(p, c));
+      c.timeScale().subscribeVisibleLogicalRangeChange((r: LogicalRange | null) => syncTimeScale(c, r));
+    }
+
+    // ──── RESIZE ────
     const ro = new ResizeObserver(() => {
-      const w = container.clientWidth;
-      if (w > 0) chart.resize(w, baseHeight);
+      if (!wrapperRef.current) return;
+      const newContainerH = fixedHeight || wrapperRef.current.clientHeight || 600;
+      const mh = getMainHeight(newContainerH);
+      const w = mainEl.clientWidth;
+      if (w <= 0) return;
+      allChartsRef.current[0]?.resize(w, mh);
+      for (let i = 1; i < allChartsRef.current.length; i++) {
+        const key = activeSubPanes[i - 1];
+        if (key) allChartsRef.current[i]?.resize(w, getPaneHeight(key));
+      }
     });
-    ro.observe(container);
+    ro.observe(wrapperRef.current);
 
     return () => {
       ro.disconnect();
-      chart.remove();
-      chartRef.current = null;
-      seriesRefs.current.clear();
+      for (const c of allChartsRef.current) { try { c.remove(); } catch { /* ok */ } }
+      allChartsRef.current = [];
+      chartSeriesRef.current.clear();
     };
-  }, [bars, chartType, overlays, baseHeight, signal]);
-
-  // Ordered list of active sub-panes (preserve definition order)
-  const activeSubPanes = SUB_PANE_DEFS.filter((d) => subPanes.has(d.key)).map((d) => d.key);
+  }, [bars, chartType, overlays, subPanes, fixedHeight, signal]);
 
   return (
-    <div className="bg-[var(--surface)] border border-[var(--border)] rounded-lg p-4">
-      {/* Controls */}
-      <div className="flex items-center justify-between gap-3 mb-3 flex-wrap">
-        {/* Chart type toggles */}
-        <div className="flex items-center gap-1">
+    <div ref={wrapperRef} className="flex flex-col flex-1 min-h-0 h-full bg-white border border-slate-200 rounded overflow-hidden">
+      {/* ── Toolbar ── */}
+      <div className="flex-shrink-0 flex items-center gap-1.5 px-2 py-0.5 border-b border-slate-200 bg-slate-50 flex-wrap">
+        <div className="flex items-center gap-0.5">
           {(["candlestick", "line", "area"] as ChartType[]).map((t) => (
-            <button
-              key={t}
-              onClick={() => setChartType(t)}
-              className={clsx(
-                "px-2.5 py-1 rounded text-[11px] font-medium transition-colors capitalize",
-                chartType === t
-                  ? "bg-blue-600 text-white"
-                  : "bg-[var(--surface-active)] text-[var(--text-muted)] hover:text-[var(--text)]",
-              )}
-            >
+            <button key={t} onClick={() => setChartType(t)}
+              className={clsx("px-2 py-0.5 rounded text-[10px] font-medium capitalize",
+                chartType === t ? "bg-blue-600 text-white" : "text-slate-500 hover:text-slate-800")}>
               {t}
             </button>
           ))}
         </div>
-
-        {/* Overlay toggles */}
-        <div className="flex items-center gap-1">
+        <div className="w-px h-4 bg-slate-300" />
+        <div className="flex items-center gap-0.5">
+          {([...PERIODS, "all"] as const).map((p) => (
+            <button key={p} onClick={() => setVisiblePeriod(p)}
+              className="px-1.5 py-0.5 rounded text-[10px] font-medium tabular-nums text-slate-500 hover:text-slate-800 hover:bg-slate-200">
+              {p === "all" ? "All" : PERIOD_LABELS[p as keyof typeof PERIOD_LABELS]}
+            </button>
+          ))}
+        </div>
+        <div className="w-px h-4 bg-slate-300" />
+        <div className="flex items-center gap-0.5">
           {OVERLAY_DEFS.map((o) => (
-            <button
-              key={o.key}
-              onClick={() => toggleOverlay(o.key)}
-              className={clsx(
-                "px-2 py-1 rounded text-[10px] font-medium transition-colors border",
-                overlays.has(o.key)
-                  ? "border-current text-opacity-100"
-                  : "border-[var(--border)] text-[var(--text-dim)] hover:text-[var(--text-muted)]",
-              )}
-              style={overlays.has(o.key) ? { color: o.color, borderColor: o.color + "60" } : undefined}
-            >
+            <button key={o.key} onClick={() => toggleOverlay(o.key)}
+              className={clsx("px-1.5 py-0.5 rounded text-[10px] font-medium",
+                overlays.has(o.key) ? "font-bold" : "text-slate-400 hover:text-slate-600")}
+              style={overlays.has(o.key) ? { color: o.color } : undefined}>
               {o.label}
             </button>
           ))}
         </div>
-
-        {/* Sub-pane indicators */}
-        <div className="flex items-center gap-1">
+        <div className="w-px h-4 bg-slate-300" />
+        <div className="flex items-center gap-0.5">
           {SUB_PANE_DEFS.map((sp) => (
-            <button
-              key={sp.key}
-              onClick={() => toggleSubPane(sp.key)}
-              className={clsx(
-                "px-2 py-1 rounded text-[10px] font-medium transition-colors border",
-                subPanes.has(sp.key)
-                  ? "bg-blue-600/20 text-blue-400 border-blue-500/40"
-                  : "border-[var(--border)] text-[var(--text-dim)] hover:text-[var(--text-muted)]",
-              )}
-            >
+            <button key={sp.key} onClick={() => toggleSubPane(sp.key)}
+              className={clsx("px-1.5 py-0.5 rounded text-[10px] font-medium",
+                subPanes.has(sp.key) ? "bg-blue-100 text-blue-600 font-bold" : "text-slate-400 hover:text-slate-600")}>
               {sp.label}
             </button>
           ))}
         </div>
       </div>
 
-      {/* Period selector */}
-      <div className="flex items-center gap-1 mb-3">
-        {PERIODS.map((p) => (
-          <button
-            key={p}
-            onClick={() => setPeriod(p)}
-            className={clsx(
-              "px-2 py-0.5 rounded text-[10px] font-medium transition-colors tabular-nums",
-              period === p
-                ? "bg-[var(--surface-elevated)] text-[var(--text)]"
-                : "text-[var(--text-muted)] hover:text-[var(--text)]",
-            )}
-          >
-            {PERIOD_LABELS[p]}
-          </button>
-        ))}
-      </div>
-
-      {/* Main chart container */}
-      <div className="relative">
-        <div ref={containerRef} className="rounded-md overflow-hidden" />
+      {/* ── Main Chart (flexes to fill remaining space) ── */}
+      <div className="flex-1 min-h-0 relative">
+        {/* OHLCV legend overlaid on chart like LankaBangla */}
+        <div className="absolute top-1 left-2 z-10 pointer-events-none">
+          <OHLCVLegend bar={legendBar} overlayValues={legendOverlays} />
+        </div>
+        <div ref={mainContainerRef} className="w-full h-full" />
         {loading && (
-          <div className="absolute inset-0 flex items-center justify-center bg-black/60 rounded-md">
+          <div className="absolute inset-0 flex items-center justify-center bg-black/60">
             <Loader2 className="h-5 w-5 animate-spin text-blue-500" />
           </div>
         )}
         {error && !loading && (
-          <div className="absolute inset-0 flex items-center justify-center bg-black/60 rounded-md">
+          <div className="absolute inset-0 flex items-center justify-center bg-black/60">
             <span className="text-xs text-red-400">{error}</span>
           </div>
         )}
       </div>
 
-      {/* Indicator sub-panes — each is a separate chart instance */}
+      {/* ── Sub-Panes (fixed size, below main chart) ── */}
       {bars.length > 0 && activeSubPanes.map((key) => (
-        <IndicatorPane key={`${key}-${symbol}-${period}`} paneKey={key} bars={bars} />
+        <div key={key} className="flex-shrink-0">
+          <div className="flex items-center gap-2 px-2 py-0 border-t border-slate-200 bg-white">
+            <span className="text-[10px] text-slate-500 font-medium">{PANE_LABELS[key] ?? key}</span>
+            <span className="text-[10px] font-mono text-blue-600">{paneValues[key] ?? ""}</span>
+          </div>
+          <div ref={(el) => { if (el) paneContainerRefs.current.set(key, el); else paneContainerRefs.current.delete(key); }} className="w-full" />
+        </div>
       ))}
     </div>
   );
-}
-
-/* ─── Indicator Sub-Pane (self-contained chart) ─── */
-
-const PANE_HEIGHT = 130;
-
-function IndicatorPane({ paneKey, bars }: { paneKey: string; bars: OHLCVBar[] }) {
-  const ref = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!ref.current || bars.length === 0) return;
-    const container = ref.current;
-    const colors = getChartColors();
-
-    const chart = createChart(container, {
-      width: container.clientWidth,
-      height: PANE_HEIGHT,
-      layout: { background: { color: colors.bg }, textColor: colors.text, fontSize: 10 },
-      grid: { vertLines: { color: colors.grid }, horzLines: { color: colors.grid } },
-      rightPriceScale: { borderColor: colors.border },
-      timeScale: { borderColor: colors.border, timeVisible: false, visible: false },
-      crosshair: {
-        vertLine: { color: colors.crosshair, width: 1, style: LineStyle.Dashed, labelBackgroundColor: colors.crosshairLabel },
-        horzLine: { color: colors.crosshair, width: 1, style: LineStyle.Dashed, labelBackgroundColor: colors.crosshairLabel },
-      },
-    });
-
-    const closes = bars.map((b) => b.close);
-    const dates = bars.map((b) => b.date as Time);
-    const highs = bars.map((b) => b.high);
-    const lows = bars.map((b) => b.low);
-    const vols = bars.map((b) => b.volume);
-
-    const addLine = (values: (number | null)[], color: string, width = 2, style = LineStyle.Solid) => {
-      const series = chart.addSeries(LineSeries, {
-        color, lineWidth: width as any, lineStyle: style,
-        crosshairMarkerVisible: false, lastValueVisible: false, priceLineVisible: false,
-      });
-      const data: { time: Time; value: number }[] = [];
-      for (let i = 0; i < dates.length; i++) {
-        if (values[i] != null) data.push({ time: dates[i], value: values[i]! });
-      }
-      series.setData(data);
-      return data;
-    };
-
-    const addRef = (refDates: { time: Time }[], value: number, color: string) => {
-      if (refDates.length === 0) return;
-      const series = chart.addSeries(LineSeries, {
-        color, lineWidth: 1, lineStyle: LineStyle.Dashed,
-        crosshairMarkerVisible: false, lastValueVisible: false, priceLineVisible: false,
-      });
-      series.setData(refDates.map((d) => ({ time: d.time, value })));
-    };
-
-    switch (paneKey) {
-      case "rsi": {
-        const vals = computeRSI(closes);
-        const data = addLine(vals, "#8b5cf6");
-        addRef(data, 70, "#ef4444");
-        addRef(data, 30, "#22c55e");
-        break;
-      }
-      case "macd": {
-        const m = computeMACD(closes);
-        addLine(m.macd, "#3b82f6");
-        addLine(m.signal, "#ef4444", 1);
-        const histSeries = chart.addSeries(HistogramSeries, {
-          priceFormat: { type: "price", precision: 4, minMove: 0.0001 },
-          lastValueVisible: false, priceLineVisible: false,
-        });
-        const hd: { time: Time; value: number; color: string }[] = [];
-        for (let i = 0; i < dates.length; i++) {
-          if (m.histogram[i] != null) {
-            hd.push({ time: dates[i], value: m.histogram[i]!, color: m.histogram[i]! >= 0 ? "#22c55e80" : "#ef444480" });
-          }
-        }
-        histSeries.setData(hd);
-        break;
-      }
-      case "stoch": {
-        const st = computeStochastic(highs, lows, closes);
-        const data = addLine(st.k, "#3b82f6");
-        addLine(st.d, "#ef4444", 1);
-        addRef(data, 80, "#ef4444");
-        addRef(data, 20, "#22c55e");
-        break;
-      }
-      case "stochrsi": {
-        const sr = computeStochRSI(closes);
-        const data = addLine(sr.k, "#3b82f6");
-        addLine(sr.d, "#ef4444", 1);
-        addRef(data, 80, "#ef4444");
-        addRef(data, 20, "#22c55e");
-        break;
-      }
-      case "atr": {
-        addLine(computeATR(highs, lows, closes), "#f97316");
-        break;
-      }
-      case "obv": {
-        addLine(computeOBV(closes, vols), "#06b6d4");
-        break;
-      }
-      case "adx": {
-        const a = computeADX(highs, lows, closes);
-        const data = addLine(a.adx, "#eab308");
-        addLine(a.plusDI, "#22c55e", 1);
-        addLine(a.minusDI, "#ef4444", 1);
-        addRef(data, 25, "#ffffff40");
-        break;
-      }
-    }
-
-    chart.timeScale().fitContent();
-
-    const ro = new ResizeObserver(() => {
-      const w = container.clientWidth;
-      if (w > 0) chart.resize(w, PANE_HEIGHT);
-    });
-    ro.observe(container);
-
-    return () => {
-      ro.disconnect();
-      chart.remove();
-    };
-  }, [paneKey, bars]);
-
-  return (
-    <div className="mt-2">
-      <span className="text-[10px] text-[var(--text-muted)] font-medium px-1">
-        {PANE_LABELS[paneKey] ?? paneKey}
-      </span>
-      <div ref={ref} className="rounded-sm overflow-hidden" />
-    </div>
-  );
-}
-
-/* ─── Helpers ─── */
-
-function addOverlay(
-  chart: IChartApi,
-  dates: Time[],
-  values: (number | null)[],
-  color: string,
-  lineWidth = 1,
-  lineStyle = LineStyle.Solid,
-) {
-  const series = chart.addSeries(LineSeries, {
-    color, lineWidth: lineWidth as any, lineStyle,
-    crosshairMarkerVisible: false, lastValueVisible: false, priceLineVisible: false,
-  });
-  const data: { time: Time; value: number }[] = [];
-  for (let i = 0; i < dates.length; i++) {
-    if (values[i] != null) data.push({ time: dates[i], value: values[i]! });
-  }
-  series.setData(data);
 }

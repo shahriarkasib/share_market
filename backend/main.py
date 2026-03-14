@@ -259,6 +259,14 @@ def _run_background_init():
                 except Exception as e:
                     logger.error(f"Category scraping failed: {e}")
 
+            # 4. Precompute seasonality table (fast reads for API)
+            try:
+                from analysis.seasonality import precompute_seasonality
+                logger.info("Background: precomputing seasonality...")
+                precompute_seasonality()
+            except Exception as e:
+                logger.error(f"Seasonality precompute failed: {e}")
+
             logger.info("Background initialization complete")
         except Exception as e:
             logger.error(f"Background init error: {e}", exc_info=True)
@@ -320,6 +328,10 @@ from api.routes_watchlist import router as watchlist_router
 from api.routes_portfolio import router as portfolio_router
 from api.routes_analysis import router as analysis_router
 from api.routes_predictions import router as predictions_router
+from api.routes_events import router as events_router
+from api.routes_dividends import router as dividends_router
+from api.routes_seasonality import router as seasonality_router
+from api.routes_floor import router as floor_router
 
 app.include_router(market_router, prefix=f"{API_PREFIX}/market", tags=["Market"])
 app.include_router(stock_router, prefix=f"{API_PREFIX}/stock", tags=["Stock"])
@@ -329,6 +341,10 @@ app.include_router(watchlist_router, prefix=f"{API_PREFIX}/watchlist", tags=["Wa
 app.include_router(portfolio_router, prefix=f"{API_PREFIX}/portfolio", tags=["Portfolio"])
 app.include_router(analysis_router, prefix=f"{API_PREFIX}/analysis", tags=["Analysis"])
 app.include_router(predictions_router, prefix=f"{API_PREFIX}/predictions", tags=["Predictions"])
+app.include_router(events_router, prefix=f"{API_PREFIX}/events", tags=["Events"])
+app.include_router(dividends_router, prefix=f"{API_PREFIX}/dividends", tags=["Dividends"])
+app.include_router(seasonality_router, prefix=f"{API_PREFIX}/seasonality", tags=["Seasonality"])
+app.include_router(floor_router, prefix=f"{API_PREFIX}/floor", tags=["Floor Detection"])
 
 
 @app.get("/")
