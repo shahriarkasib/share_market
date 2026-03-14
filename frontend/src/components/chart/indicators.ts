@@ -448,6 +448,33 @@ export function computeCCI(
   return result;
 }
 
+/** Chaikin Money Flow — measures buying/selling pressure over a period. CMF > 0 = accumulation, < 0 = distribution. */
+export function computeCMF(
+  highs: number[],
+  lows: number[],
+  closes: number[],
+  volumes: number[],
+  period = 20,
+): (number | null)[] {
+  const len = closes.length;
+  const result: (number | null)[] = new Array(len).fill(null);
+  if (len < period) return result;
+
+  // Money Flow Multiplier = ((close - low) - (high - close)) / (high - low)
+  // Money Flow Volume = MFM * volume
+  for (let i = period - 1; i < len; i++) {
+    let mfvSum = 0, volSum = 0;
+    for (let j = i - period + 1; j <= i; j++) {
+      const hl = highs[j] - lows[j];
+      const mfm = hl === 0 ? 0 : ((closes[j] - lows[j]) - (highs[j] - closes[j])) / hl;
+      mfvSum += mfm * volumes[j];
+      volSum += volumes[j];
+    }
+    result[i] = volSum === 0 ? 0 : mfvSum / volSum;
+  }
+  return result;
+}
+
 /** Williams %R — momentum oscillator. -80 to -100 = oversold, 0 to -20 = overbought. */
 export function computeWilliamsR(
   highs: number[],

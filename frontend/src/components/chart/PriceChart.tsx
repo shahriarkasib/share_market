@@ -30,6 +30,7 @@ import {
   computeOBV,
   computeADX,
   computeMFI,
+  computeCMF,
   computeCCI,
   computeWilliamsR,
 } from "./indicators.ts";
@@ -57,6 +58,7 @@ const SUB_PANE_DEFS = [
   { key: "stoch", label: "Stoch" },
   { key: "stochrsi", label: "StochRSI" },
   { key: "mfi", label: "MFI" },
+  { key: "cmf", label: "CMF" },
   { key: "cci", label: "CCI" },
   { key: "willr", label: "%R" },
   { key: "atr", label: "ATR" },
@@ -70,6 +72,7 @@ const PANE_LABELS: Record<string, string> = {
   stoch: "Stoch (14, 3)",
   stochrsi: "Stoch RSI (14, 14, 3, 3)",
   mfi: "MFI (14)",
+  cmf: "CMF (20)",
   cci: "CCI (20)",
   willr: "Williams %R (14)",
   atr: "ATR (14)",
@@ -210,6 +213,7 @@ export default function PriceChart({ symbol, signal, height: fixedHeight }: Prop
     const stoch = computeStochastic(highs, lows, closes); ind.stoch_k = stoch.k; ind.stoch_d = stoch.d;
     const stochrsi = computeStochRSI(closes); ind.stochrsi_k = stochrsi.k; ind.stochrsi_d = stochrsi.d;
     ind.mfi = computeMFI(highs, lows, closes, vols);
+    ind.cmf = computeCMF(highs, lows, closes, vols);
     ind.cci = computeCCI(highs, lows, closes);
     ind.willr = computeWilliamsR(highs, lows, closes);
     ind.atr = computeATR(highs, lows, closes);
@@ -244,6 +248,7 @@ export default function PriceChart({ symbol, signal, height: fixedHeight }: Prop
       stoch: `%K ${f(ind.stoch_k?.[idx])} %D ${f(ind.stoch_d?.[idx])}`,
       stochrsi: `%K ${f(ind.stochrsi_k?.[idx])} %D ${f(ind.stochrsi_d?.[idx])}`,
       mfi: f(ind.mfi?.[idx]),
+      cmf: f(ind.cmf?.[idx], 4),
       cci: f(ind.cci?.[idx]),
       willr: f(ind.willr?.[idx]),
       atr: f(ind.atr?.[idx]),
@@ -485,6 +490,11 @@ export default function PriceChart({ symbol, signal, height: fixedHeight }: Prop
           addL(ind.mfi || [], "#e91e63");
           addRef(dates.map((t) => ({ time: t })), 80, "#9c27b050");
           addRef(dates.map((t) => ({ time: t })), 20, "#9c27b050");
+          break;
+        }
+        case "cmf": {
+          addL(ind.cmf || [], "#00897b");
+          addRef(dates.map((t) => ({ time: t })), 0, "#94a3b850");
           break;
         }
         case "cci": {
