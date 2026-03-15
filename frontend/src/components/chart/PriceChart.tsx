@@ -44,12 +44,12 @@ const PERIOD_LABELS: Record<string, string> = {
 };
 
 const OVERLAY_DEFS = [
-  { key: "ema9", label: "EMA 9", color: "#3b82f6" },
-  { key: "ema21", label: "EMA 21", color: "#f97316" },
-  { key: "sma50", label: "SMA 50", color: "#a855f7" },
-  { key: "sma200", label: "SMA 200", color: "#dc2626" },
-  { key: "bb", label: "BB", color: "#64748b" },
-  { key: "vwap", label: "VWAP", color: "#eab308" },
+  { key: "ema9", label: "EMA 9", color: "#3b82f6", tip: "9-day Exponential MA — fast-moving average, tracks short-term trend. Price above = bullish, below = bearish." },
+  { key: "ema21", label: "EMA 21", color: "#f97316", tip: "21-day Exponential MA — medium-term trend. EMA9 crossing above EMA21 = 'golden cross' (buy signal)." },
+  { key: "sma50", label: "SMA 50", color: "#a855f7", tip: "50-day Simple MA — institutional trend indicator. Price above = uptrend confirmed. Acts as dynamic support." },
+  { key: "sma200", label: "SMA 200", color: "#dc2626", tip: "200-day Simple MA — long-term trend. Price above = bull market. SMA50 crossing above SMA200 = major bullish signal." },
+  { key: "bb", label: "BB", color: "#64748b", tip: "Bollinger Bands — price at lower band = oversold, upper band = overbought. Band squeeze = big move coming." },
+  { key: "vwap", label: "VWAP", color: "#eab308", tip: "Volume Weighted Avg Price — fair value based on volume. Price below VWAP = undervalued today. Institutional benchmark." },
 ] as const;
 
 const SUB_PANE_DEFS = [
@@ -78,6 +78,20 @@ const PANE_LABELS: Record<string, string> = {
   atr: "ATR (14)",
   obv: "OBV",
   adx: "ADX (14)",
+};
+
+const PANE_TIPS: Record<string, string> = {
+  rsi: "Relative Strength Index — <30 oversold (bounce likely), >70 overbought (risky). Measures seller/buyer exhaustion.",
+  macd: "Moving Average Convergence Divergence — histogram crossing 0 upward = momentum shifting bullish. Signal line cross = buy/sell signal.",
+  stoch: "Stochastic Oscillator — <20 oversold, >80 overbought. %K crossing above %D in oversold = buy signal.",
+  stochrsi: "Stochastic RSI — faster RSI variant. <0.2 deeply oversold (strong bounce). K crossing above D = early buy.",
+  mfi: "Money Flow Index — like RSI but includes volume. <20 sellers exhausted + volume confirms. Stronger than RSI alone.",
+  cmf: "Chaikin Money Flow — positive = money flowing in (accumulation), negative = money flowing out. >0.05 = buying pressure.",
+  cci: "Commodity Channel Index — <-100 oversold, >+100 overbought. Crossing back from extreme = reversal signal.",
+  willr: "Williams %R — <-80 oversold (near bottom of range), >-20 overbought. <-90 = extreme oversold.",
+  atr: "Average True Range — measures volatility (not direction). Higher = more volatile. Useful for setting stop-loss distance.",
+  obv: "On-Balance Volume — rising OBV on flat price = smart money accumulating. Divergence from price = early trend signal.",
+  adx: "Average Directional Index — measures trend strength (not direction). >25 strong trend, <20 no trend. Use with +DI/-DI for direction.",
 };
 
 /* Pane heights by indicator complexity (like LankaBangla — compact, fit in viewport) */
@@ -595,6 +609,7 @@ export default function PriceChart({ symbol, signal, height: fixedHeight }: Prop
         <div className="flex items-center gap-0.5">
           {OVERLAY_DEFS.map((o) => (
             <button key={o.key} onClick={() => toggleOverlay(o.key)}
+              title={o.tip}
               className={clsx("px-1.5 py-0.5 rounded text-[10px] font-medium",
                 overlays.has(o.key) ? "font-bold" : "text-slate-400 hover:text-slate-600")}
               style={overlays.has(o.key) ? { color: o.color } : undefined}>
@@ -606,6 +621,7 @@ export default function PriceChart({ symbol, signal, height: fixedHeight }: Prop
         <div className="flex items-center gap-0.5">
           {SUB_PANE_DEFS.map((sp) => (
             <button key={sp.key} onClick={() => toggleSubPane(sp.key)}
+              title={PANE_TIPS[sp.key] ?? ""}
               className={clsx("px-1.5 py-0.5 rounded text-[10px] font-medium",
                 subPanes.has(sp.key) ? "bg-blue-100 text-blue-600 font-bold" : "text-slate-400 hover:text-slate-600")}>
               {sp.label}
@@ -637,7 +653,7 @@ export default function PriceChart({ symbol, signal, height: fixedHeight }: Prop
       {bars.length > 0 && activeSubPanes.map((key) => (
         <div key={key} className="flex-shrink-0">
           <div className="flex items-center gap-2 px-2 py-0 border-t border-slate-200 bg-white">
-            <span className="text-[10px] text-slate-500 font-medium">{PANE_LABELS[key] ?? key}</span>
+            <span className="text-[10px] text-slate-500 font-medium cursor-help" title={PANE_TIPS[key] ?? ""}>{PANE_LABELS[key] ?? key}</span>
             <span className="text-[10px] font-mono text-blue-600">{paneValues[key] ?? ""}</span>
           </div>
           <div ref={(el) => { if (el) paneContainerRefs.current.set(key, el); else paneContainerRefs.current.delete(key); }} className="w-full" />

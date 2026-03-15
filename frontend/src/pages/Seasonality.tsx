@@ -8,7 +8,7 @@
  */
 
 import React, { useEffect, useState, useMemo, useCallback } from "react";
-import { Calendar, Loader2, AlertCircle, ArrowUpDown, Search, Plus, Minus } from "lucide-react";
+import { Calendar, Loader2, AlertCircle, ArrowUpDown, Search, Plus, Minus, HelpCircle, ChevronUp, ChevronDown } from "lucide-react";
 import { clsx } from "clsx";
 import {
   fetchMonthlySectorSeasonality,
@@ -38,6 +38,167 @@ const TABS = ["Sector Heatmap", "Stock Patterns", "This Month"] as const;
 type TabId = (typeof TABS)[number];
 
 const CURRENT_MONTH = new Date().getMonth() + 1; // 1-based
+
+/* ------------------------------------------------------------------ */
+/*  Metric selector                                                    */
+/* ------------------------------------------------------------------ */
+
+type MetricKey = "avg_return" | "median_return" | "trimmed_mean" | "win_rate" | "cohens_d" | "volatility";
+
+const METRIC_OPTIONS: { key: MetricKey; label: string; description: string }[] = [
+  { key: "avg_return", label: "Avg Return", description: "Simple mean return" },
+  { key: "median_return", label: "Median Return", description: "Median — robust to outliers" },
+  { key: "trimmed_mean", label: "Trimmed Mean", description: "Mean after removing top/bottom 10%" },
+  { key: "win_rate", label: "Win Rate", description: "% of years with positive return" },
+  { key: "cohens_d", label: "Effect Size", description: "Cohen's d — standardized effect magnitude" },
+  { key: "volatility", label: "Volatility", description: "Standard deviation of returns" },
+];
+
+function MetricSelector({ value, onChange }: { value: MetricKey; onChange: (k: MetricKey) => void }) {
+  return (
+    <div className="flex items-center gap-1.5">
+      <span className="text-[var(--text-muted)] text-xs">Metric:</span>
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value as MetricKey)}
+        className="px-2 py-1 text-xs rounded-md border border-[var(--border)] bg-[var(--bg)] text-[var(--text)] focus:outline-none focus:ring-1 focus:ring-blue-500"
+        title={METRIC_OPTIONS.find((m) => m.key === value)?.description}
+      >
+        {METRIC_OPTIONS.map((m) => (
+          <option key={m.key} value={m.key}>{m.label}</option>
+        ))}
+      </select>
+    </div>
+  );
+}
+
+function metricShortLabel(key: MetricKey): string {
+  switch (key) {
+    case "avg_return": return "Avg";
+    case "median_return": return "Med";
+    case "trimmed_mean": return "Trim";
+    case "win_rate": return "Win%";
+    case "cohens_d": return "d";
+    case "volatility": return "Vol";
+  }
+}
+
+const SEASONALITY_HELP = [
+  {
+    name: "Avg Return",
+    what: "Simple average of monthly returns across all years. Can be distorted by a single extreme year.",
+    action: "Use as a quick overview, but don't trust alone. One 40% crash year can make a normally good month look bad.",
+  },
+  {
+    name: "Median Return",
+    what: "The middle value when all yearly returns are sorted. Not affected by outliers — shows what 'typically' happens.",
+    action: "More reliable than average for decision-making. If median is positive but average is negative, the month is usually good but had one bad crash year.",
+  },
+  {
+    name: "Trimmed Mean",
+    what: "Average after removing the top & bottom 10% of returns. Best of both worlds — uses more data than median but ignores extremes.",
+    action: "Best single metric for seasonal entry decisions. Positive trimmed mean with good win rate = consistent seasonal pattern.",
+  },
+  {
+    name: "Win Rate",
+    what: "Percentage of years where the stock went up during this month. 70% means it went up in 7 out of 10 years.",
+    action: ">65% = reliable seasonal pattern. >75% = very strong. <40% = usually a bad month to hold. Win rate + positive median = high conviction.",
+  },
+  {
+    name: "Effect Size (d)",
+    what: "Cohen's d — measures how large the seasonal effect is relative to its volatility. Comparable across stocks with different prices.",
+    action: "d > 0.5 = medium effect (worth acting on). d > 0.8 = large effect (strong seasonal pattern). d < 0.2 = negligible, probably noise.",
+  },
+  {
+    name: "Bootstrap p-value",
+    what: "Statistical significance — probability the seasonal pattern is just random luck. Computed by resampling 5000 times.",
+    action: "p < 0.05 = statistically significant (95% confidence it's real). p < 0.10 = suggestive. p > 0.20 = likely just noise, don't rely on it.",
+  },
+  {
+    name: "Volatility",
+    what: "Standard deviation of returns — how much the month's return varies year to year. High volatility = unpredictable.",
+    action: "Low volatility + positive return = safe seasonal play. High volatility = risky even if average is good. Use for position sizing — smaller positions in volatile months.",
+  },
+  {
+    name: "Yearly Columns",
+    what: "Actual return for each individual year. Shows the raw data behind the statistics.",
+    action: "Check if the pattern is consistent or driven by one outlier year. Green = positive, Red = negative. Recent years matter more than old ones.",
+  },
+] as const;
+
+function SeasonalityHelp() {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="mb-1">
+      <button
+        onClick={() => setOpen(!open)}
+        className="flex items-center gap-1.5 text-xs text-[var(--text-dim)] hover:text-[var(--text)] transition-colors"
+      >
+        <HelpCircle className="h-4 w-4" />
+        <span className="font-medium">What do these metrics mean & how to act?</span>
+        {open ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+      </button>
+      {open && (
+        <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-2.5">
+          {SEASONALITY_HELP.map(({ name, what, action }) => (
+            <div key={name} className="rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 py-2.5">
+              <div className="text-xs font-bold text-[var(--text)] mb-1">{name}</div>
+              <div className="text-[11px] text-[var(--text-muted)] mb-1.5">{what}</div>
+              <div className="text-[11px] text-blue-400 flex gap-1">
+                <span className="shrink-0 font-medium">How to act:</span>
+                <span>{action}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Get display value and format string for a metric cell. */
+function getMetricDisplay(value: number, metric: MetricKey): { text: string; raw: number } {
+  if (metric === "win_rate") {
+    return { text: (value * 100).toFixed(0) + "%", raw: value * 100 };
+  }
+  if (metric === "cohens_d") {
+    return { text: value.toFixed(2), raw: value };
+  }
+  if (metric === "volatility") {
+    return { text: (value * 100).toFixed(1) + "%", raw: value * 100 };
+  }
+  // Return-based metrics
+  const pct = value * 100;
+  return { text: (pct >= 0 ? "+" : "") + pct.toFixed(1) + "%", raw: pct };
+}
+
+/** Color scale per metric type. */
+function metricBg(raw: number, metric: MetricKey): string {
+  if (metric === "win_rate") {
+    // 0-100 scale, green above 50
+    if (raw >= 70) return "rgba(34,197,94,0.30)";
+    if (raw >= 50) return "rgba(34,197,94,0.12)";
+    if (raw >= 30) return "rgba(239,68,68,0.12)";
+    return "rgba(239,68,68,0.30)";
+  }
+  if (metric === "cohens_d") {
+    // Effect size: |d| > 0.8 large, 0.5 medium, 0.2 small
+    if (raw >= 0.5) return "rgba(34,197,94,0.30)";
+    if (raw >= 0.2) return "rgba(34,197,94,0.12)";
+    if (raw >= -0.2) return "transparent";
+    if (raw >= -0.5) return "rgba(239,68,68,0.12)";
+    return "rgba(239,68,68,0.30)";
+  }
+  if (metric === "volatility") {
+    // Lower is better for volatility
+    if (raw <= 3) return "rgba(34,197,94,0.18)";
+    if (raw <= 8) return "rgba(34,197,94,0.08)";
+    if (raw <= 15) return "rgba(239,68,68,0.08)";
+    return "rgba(239,68,68,0.25)";
+  }
+  // Return-based: use returnBg
+  return returnBg(raw);
+}
 
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
@@ -135,6 +296,7 @@ function SectorHeatmapTab() {
   const [error, setError] = useState<string | null>(null);
   const [expandedMonths, setExpandedMonths] = useState<Set<number>>(new Set());
   const [expandYears, setExpandYears] = useState(5);
+  const [metric, setMetric] = useState<MetricKey>("avg_return");
 
   // Load both overall + yearly detail in parallel
   useEffect(() => {
@@ -174,6 +336,8 @@ function SectorHeatmapTab() {
     <div className="space-y-3">
       {/* Controls */}
       <div className="flex items-center gap-3 flex-wrap text-xs">
+        <MetricSelector value={metric} onChange={setMetric} />
+        <span className="text-[var(--text-dim)]">|</span>
         <span className="text-[var(--text-muted)]">Click month headers to expand yearly breakdown</span>
         <span className="text-[var(--text-dim)]">|</span>
         <label className="flex items-center gap-1.5 text-[var(--text-muted)]">
@@ -236,13 +400,13 @@ function SectorHeatmapTab() {
                 {MONTH_LABELS.map((_, i) => {
                   const month = i + 1;
                   if (!expandedMonths.has(month)) {
-                    return <th key={i} className="text-[10px] text-[var(--text-dim)] px-1 py-0.5">Avg</th>;
+                    return <th key={i} className="text-[10px] text-[var(--text-dim)] px-1 py-0.5">{metricShortLabel(metric)}</th>;
                   }
                   return (
                     <React.Fragment key={i}>
-                      <th className="text-[10px] text-[var(--text-dim)] px-1 py-0.5">Avg</th>
+                      <th className="text-[10px] text-[var(--text-dim)] px-1 py-0.5">{metricShortLabel(metric)}</th>
                       {visibleYears.map((y) => (
-                        <th key={`${i}-${y}`} className="text-[10px] text-[var(--text-dim)] px-1 py-0.5 min-w-[48px]">
+                        <th key={`${i}-${y}`} className="text-[10px] text-[var(--text-dim)] px-1 py-0.5 min-w-[48px]" title="Actual return for this year">
                           {String(y).slice(2)}
                         </th>
                       ))}
@@ -267,8 +431,10 @@ function SectorHeatmapTab() {
                     const md = monthMap.get(month);
                     const isExpanded = expandedMonths.has(month);
 
-                    // Overall avg cell
-                    const avgCell = !md ? (
+                    // Overall metric cell
+                    const metricVal = md ? (md as Record<string, number>)[metric] ?? 0 : 0;
+                    const disp = md ? getMetricDisplay(metricVal, metric) : null;
+                    const avgCell = !md || !disp ? (
                       <td key={i} className="px-1 py-1.5 text-center text-[var(--text-dim)]">--</td>
                     ) : (
                       <td
@@ -277,16 +443,16 @@ function SectorHeatmapTab() {
                           "px-1 py-1.5 text-center tabular-nums",
                           month === CURRENT_MONTH && !isExpanded && "ring-1 ring-blue-500/40 rounded",
                         )}
-                        style={{ background: returnBg(md.avg_return * 100) }}
-                        title={`Win: ${(md.win_rate * 100).toFixed(0)}% | Samples: ${md.sample_size}`}
+                        style={{ background: metricBg(disp.raw, metric) }}
+                        title={`Win: ${(md.win_rate * 100).toFixed(0)}% | p=${(md as Record<string, number>).bootstrap_p?.toFixed(3) ?? "?"} | d=${(md as Record<string, number>).cohens_d?.toFixed(2) ?? "?"} | Samples: ${md.sample_size}`}
                       >
-                        {md.avg_return >= 0 ? "+" : ""}{(md.avg_return * 100).toFixed(1)}%
+                        {disp.text}
                       </td>
                     );
 
                     if (!isExpanded) return avgCell;
 
-                    // Expanded: avg + per-year cells
+                    // Expanded: metric + per-year cells
                     return (
                       <React.Fragment key={`exp-${i}`}>
                         {avgCell}
@@ -341,6 +507,7 @@ function StockPatternsTab() {
   const [sortAsc, setSortAsc] = useState(true);
   const [expandedMonths, setExpandedMonths] = useState<Set<number>>(new Set());
   const [expandYears, setExpandYears] = useState(5);
+  const [metric, setMetric] = useState<MetricKey>("avg_return");
 
   useEffect(() => {
     let cancelled = false;
@@ -399,10 +566,12 @@ function StockPatternsTab() {
       // month number
       const aMonth = a.months.find((m) => m.month === sortKey);
       const bMonth = b.months.find((m) => m.month === sortKey);
-      return (aMonth?.up_pct ?? 0) - (bMonth?.up_pct ?? 0);
+      const aVal = (aMonth as Record<string, number> | undefined)?.[metric] ?? 0;
+      const bVal = (bMonth as Record<string, number> | undefined)?.[metric] ?? 0;
+      return aVal - bVal;
     });
     return sortAsc ? sorted : sorted.reverse();
-  }, [stocks, search, sortKey, sortAsc]);
+  }, [stocks, search, sortKey, sortAsc, metric]);
 
   if (loading && !stocks.length) return <LoadingState />;
   if (error) return <ErrorState message={error} />;
@@ -412,8 +581,11 @@ function StockPatternsTab() {
 
   return (
     <div className="space-y-3">
-      {/* Sector filter + search + expand controls */}
+      {/* Sector filter + search + metric + expand controls */}
       <div className="flex items-center gap-3 flex-wrap">
+        <MetricSelector value={metric} onChange={setMetric} />
+        <span className="text-[var(--text-dim)] text-xs">|</span>
+
         <select
           value={selectedSector}
           onChange={(e) => setSelectedSector(e.target.value)}
@@ -518,13 +690,13 @@ function StockPatternsTab() {
                 {MONTH_LABELS.map((_, i) => {
                   const month = i + 1;
                   if (!expandedMonths.has(month)) {
-                    return <th key={i} className="text-[10px] text-[var(--text-dim)] px-1 py-0.5">Avg</th>;
+                    return <th key={i} className="text-[10px] text-[var(--text-dim)] px-1 py-0.5">{metricShortLabel(metric)}</th>;
                   }
                   return (
                     <React.Fragment key={i}>
-                      <th className="text-[10px] text-[var(--text-dim)] px-1 py-0.5">Avg</th>
+                      <th className="text-[10px] text-[var(--text-dim)] px-1 py-0.5">{metricShortLabel(metric)}</th>
                       {visibleYears.map((y) => (
-                        <th key={`${i}-${y}`} className="text-[10px] text-[var(--text-dim)] px-1 py-0.5 min-w-[48px]">
+                        <th key={`${i}-${y}`} className="text-[10px] text-[var(--text-dim)] px-1 py-0.5 min-w-[48px]" title="Actual return for this year">
                           {String(y).slice(2)}
                         </th>
                       ))}
@@ -552,8 +724,10 @@ function StockPatternsTab() {
                     const md = monthMap.get(month);
                     const isExpanded = expandedMonths.has(month);
 
-                    // Overall avg cell (up_pct)
-                    const avgCell = !md ? (
+                    // Overall metric cell
+                    const metricVal = md ? (md as Record<string, number>)[metric] ?? 0 : 0;
+                    const disp = md ? getMetricDisplay(metricVal, metric) : null;
+                    const avgCell = !md || !disp ? (
                       <td key={i} className="px-1 py-1.5 text-center text-[var(--text-dim)]">--</td>
                     ) : (
                       <td
@@ -562,16 +736,16 @@ function StockPatternsTab() {
                           "px-1 py-1.5 text-center tabular-nums",
                           month === CURRENT_MONTH && !isExpanded && "ring-1 ring-blue-500/40 rounded",
                         )}
-                        style={{ background: upPctBg(md.up_pct * 100) }}
-                        title={`Up ${md.years_up}/${md.years_total} years | Avg return: ${(md.avg_return * 100).toFixed(1)}%`}
+                        style={{ background: metricBg(disp.raw, metric) }}
+                        title={`Up ${md.years_up}/${md.years_total} yrs | Avg: ${(md.avg_return * 100).toFixed(1)}% | Med: ${(md.median_return * 100).toFixed(1)}% | p=${md.bootstrap_p?.toFixed(3) ?? "?"} | d=${md.cohens_d?.toFixed(2) ?? "?"}`}
                       >
-                        {(md.up_pct * 100).toFixed(0)}%
+                        {disp.text}
                       </td>
                     );
 
                     if (!isExpanded) return avgCell;
 
-                    // Expanded: avg + per-year cells
+                    // Expanded: metric + per-year cells
                     return (
                       <React.Fragment key={`exp-${i}`}>
                         {avgCell}
@@ -661,6 +835,7 @@ function OutlookTab() {
   const [outlook, setOutlook] = useState<SeasonalOutlook | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [metric, setMetric] = useState<MetricKey>("avg_return");
 
   useEffect(() => {
     let cancelled = false;
@@ -685,7 +860,7 @@ function OutlookTab() {
 
   return (
     <div className="space-y-5">
-      {/* Month selector */}
+      {/* Month selector + metric */}
       <div className="flex items-center gap-2 flex-wrap">
         <button
           onClick={() => setSelectedMonth(thisMonth)}
@@ -718,6 +893,8 @@ function OutlookTab() {
             <option key={i} value={i + 1}>{m}</option>
           ))}
         </select>
+        <span className="text-[var(--text-dim)] text-xs">|</span>
+        <MetricSelector value={metric} onChange={setMetric} />
       </div>
 
       <h2 className="text-sm font-semibold text-[var(--text)]">
@@ -762,18 +939,27 @@ function OutlookTab() {
           <p className="text-xs text-[var(--text-dim)]">No strong sectors identified</p>
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
-            {topSectors.map((s) => (
-              <div
-                key={s.sector}
-                className="rounded-lg border border-green-500/20 bg-green-500/5 px-3 py-2"
-              >
-                <div className="text-xs font-medium text-[var(--text)]">{s.sector}</div>
-                <div className="flex items-center gap-3 mt-1 text-[10px]">
-                  <span className="text-green-400">Avg: +{(s.avg_return * 100).toFixed(1)}%</span>
-                  <span className="text-[var(--text-muted)]">Win: {(s.win_rate * 100).toFixed(0)}%</span>
+            {topSectors.map((s) => {
+              const d = getMetricDisplay((s as Record<string, number>)[metric] ?? 0, metric);
+              return (
+                <div
+                  key={s.sector}
+                  className="rounded-lg border border-green-500/20 bg-green-500/5 px-3 py-2"
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-medium text-[var(--text)]">{s.sector}</span>
+                    <span className="text-xs font-bold text-green-400 tabular-nums">{d.text}</span>
+                  </div>
+                  <div className="flex items-center gap-3 mt-1 text-[10px] text-[var(--text-muted)]">
+                    <span>Avg: {(s.avg_return * 100).toFixed(1)}%</span>
+                    <span>Med: {(s.median_return * 100).toFixed(1)}%</span>
+                    <span>Win: {(s.win_rate * 100).toFixed(0)}%</span>
+                    <span>d={s.cohens_d.toFixed(2)}</span>
+                    {s.bootstrap_p < 0.1 && <span className="text-yellow-400">p={s.bootstrap_p.toFixed(3)}</span>}
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </Section>
@@ -784,18 +970,27 @@ function OutlookTab() {
           <p className="text-xs text-[var(--text-dim)]">No weak sectors identified</p>
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
-            {bottomSectors.map((s) => (
-              <div
-                key={s.sector}
-                className="rounded-lg border border-red-500/20 bg-red-500/5 px-3 py-2"
-              >
-                <div className="text-xs font-medium text-[var(--text)]">{s.sector}</div>
-                <div className="flex items-center gap-3 mt-1 text-[10px]">
-                  <span className="text-red-400">Avg: {(s.avg_return * 100).toFixed(1)}%</span>
-                  <span className="text-[var(--text-muted)]">Win: {(s.win_rate * 100).toFixed(0)}%</span>
+            {bottomSectors.map((s) => {
+              const d = getMetricDisplay((s as Record<string, number>)[metric] ?? 0, metric);
+              return (
+                <div
+                  key={s.sector}
+                  className="rounded-lg border border-red-500/20 bg-red-500/5 px-3 py-2"
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-medium text-[var(--text)]">{s.sector}</span>
+                    <span className="text-xs font-bold text-red-400 tabular-nums">{d.text}</span>
+                  </div>
+                  <div className="flex items-center gap-3 mt-1 text-[10px] text-[var(--text-muted)]">
+                    <span>Avg: {(s.avg_return * 100).toFixed(1)}%</span>
+                    <span>Med: {(s.median_return * 100).toFixed(1)}%</span>
+                    <span>Win: {(s.win_rate * 100).toFixed(0)}%</span>
+                    <span>d={s.cohens_d.toFixed(2)}</span>
+                    {s.bootstrap_p < 0.1 && <span className="text-yellow-400">p={s.bootstrap_p.toFixed(3)}</span>}
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </Section>
@@ -812,9 +1007,14 @@ function OutlookTab() {
                   <th className="text-left px-2 py-1.5 font-medium">#</th>
                   <th className="text-left px-2 py-1.5 font-medium">Symbol</th>
                   <th className="text-left px-2 py-1.5 font-medium">Sector</th>
-                  <th className="text-right px-2 py-1.5 font-medium">Avg Return</th>
-                  <th className="text-right px-2 py-1.5 font-medium">Win %</th>
-                  <th className="text-right px-2 py-1.5 font-medium">Years</th>
+                  <th className="text-right px-2 py-1.5 font-medium cursor-help" title="Simple mean return across all years">Avg</th>
+                  <th className="text-right px-2 py-1.5 font-medium cursor-help" title="Middle value of returns — robust to outliers">Median</th>
+                  <th className="text-right px-2 py-1.5 font-medium cursor-help" title="Mean after removing top/bottom 10% — best single metric">Trimmed</th>
+                  <th className="text-right px-2 py-1.5 font-medium cursor-help" title="% of years with positive return — >65% = reliable pattern">Win %</th>
+                  <th className="text-right px-2 py-1.5 font-medium cursor-help" title="Cohen's d effect size — >0.5 medium, >0.8 large">d</th>
+                  <th className="text-right px-2 py-1.5 font-medium cursor-help" title="Bootstrap p-value — <0.05 = statistically significant (real pattern)">p</th>
+                  <th className="text-right px-2 py-1.5 font-medium cursor-help" title="Volatility — std dev of returns. Lower = more predictable">Vol</th>
+                  <th className="text-right px-2 py-1.5 font-medium cursor-help" title="Number of years of data">Yrs</th>
                 </tr>
               </thead>
               <tbody>
@@ -827,7 +1027,22 @@ function OutlookTab() {
                       +{(s.avg_return * 100).toFixed(1)}%
                     </td>
                     <td className="px-2 py-1.5 text-right tabular-nums text-[var(--text-muted)]">
+                      {(s.median_return * 100).toFixed(1)}%
+                    </td>
+                    <td className="px-2 py-1.5 text-right tabular-nums text-[var(--text-muted)]">
+                      {(s.trimmed_mean * 100).toFixed(1)}%
+                    </td>
+                    <td className="px-2 py-1.5 text-right tabular-nums text-[var(--text-muted)]">
                       {(s.win_rate * 100).toFixed(0)}%
+                    </td>
+                    <td className="px-2 py-1.5 text-right tabular-nums text-[var(--text-muted)]">
+                      {s.cohens_d.toFixed(2)}
+                    </td>
+                    <td className={clsx("px-2 py-1.5 text-right tabular-nums", s.bootstrap_p < 0.05 ? "text-yellow-400" : "text-[var(--text-dim)]")}>
+                      {s.bootstrap_p.toFixed(3)}
+                    </td>
+                    <td className="px-2 py-1.5 text-right tabular-nums text-[var(--text-dim)]">
+                      {(s.volatility * 100).toFixed(1)}%
                     </td>
                     <td className="px-2 py-1.5 text-right tabular-nums text-[var(--text-dim)]">
                       {s.sample_size}
@@ -852,9 +1067,14 @@ function OutlookTab() {
                   <th className="text-left px-2 py-1.5 font-medium">#</th>
                   <th className="text-left px-2 py-1.5 font-medium">Symbol</th>
                   <th className="text-left px-2 py-1.5 font-medium">Sector</th>
-                  <th className="text-right px-2 py-1.5 font-medium">Avg Return</th>
-                  <th className="text-right px-2 py-1.5 font-medium">Win %</th>
-                  <th className="text-right px-2 py-1.5 font-medium">Years</th>
+                  <th className="text-right px-2 py-1.5 font-medium cursor-help" title="Simple mean return across all years">Avg</th>
+                  <th className="text-right px-2 py-1.5 font-medium cursor-help" title="Middle value of returns — robust to outliers">Median</th>
+                  <th className="text-right px-2 py-1.5 font-medium cursor-help" title="Mean after removing top/bottom 10% — best single metric">Trimmed</th>
+                  <th className="text-right px-2 py-1.5 font-medium cursor-help" title="% of years with positive return — >65% = reliable pattern">Win %</th>
+                  <th className="text-right px-2 py-1.5 font-medium cursor-help" title="Cohen's d effect size — >0.5 medium, >0.8 large">d</th>
+                  <th className="text-right px-2 py-1.5 font-medium cursor-help" title="Bootstrap p-value — <0.05 = statistically significant (real pattern)">p</th>
+                  <th className="text-right px-2 py-1.5 font-medium cursor-help" title="Volatility — std dev of returns. Lower = more predictable">Vol</th>
+                  <th className="text-right px-2 py-1.5 font-medium cursor-help" title="Number of years of data">Yrs</th>
                 </tr>
               </thead>
               <tbody>
@@ -867,7 +1087,22 @@ function OutlookTab() {
                       {(s.avg_return * 100).toFixed(1)}%
                     </td>
                     <td className="px-2 py-1.5 text-right tabular-nums text-[var(--text-muted)]">
+                      {(s.median_return * 100).toFixed(1)}%
+                    </td>
+                    <td className="px-2 py-1.5 text-right tabular-nums text-[var(--text-muted)]">
+                      {(s.trimmed_mean * 100).toFixed(1)}%
+                    </td>
+                    <td className="px-2 py-1.5 text-right tabular-nums text-[var(--text-muted)]">
                       {(s.win_rate * 100).toFixed(0)}%
+                    </td>
+                    <td className="px-2 py-1.5 text-right tabular-nums text-[var(--text-muted)]">
+                      {s.cohens_d.toFixed(2)}
+                    </td>
+                    <td className={clsx("px-2 py-1.5 text-right tabular-nums", s.bootstrap_p < 0.05 ? "text-yellow-400" : "text-[var(--text-dim)]")}>
+                      {s.bootstrap_p.toFixed(3)}
+                    </td>
+                    <td className="px-2 py-1.5 text-right tabular-nums text-[var(--text-dim)]">
+                      {(s.volatility * 100).toFixed(1)}%
                     </td>
                     <td className="px-2 py-1.5 text-right tabular-nums text-[var(--text-dim)]">
                       {s.sample_size}
@@ -923,6 +1158,7 @@ export default function Seasonality() {
           Seasonality Dashboard
         </h1>
       </div>
+      <SeasonalityHelp />
 
       {/* Tabs */}
       <div className="flex items-center gap-1 border-b border-[var(--border)] pb-px">

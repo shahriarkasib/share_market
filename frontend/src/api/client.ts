@@ -575,8 +575,13 @@ export async function fetchMarketHolidays(): Promise<{ holidays: MarketHoliday[]
 export interface MonthData {
   month: number;
   avg_return: number;
+  median_return: number;
+  trimmed_mean: number;
   win_rate: number;
   sample_size: number;
+  bootstrap_p: number;
+  cohens_d: number;
+  volatility: number;
 }
 
 export interface SectorSeasonality {
@@ -587,7 +592,11 @@ export interface SectorSeasonality {
 export interface StockSeasonality {
   symbol: string;
   sector: string;
-  months: { month: number; avg_return: number; up_pct: number; years_up: number; years_total: number }[];
+  months: {
+    month: number; avg_return: number; up_pct: number; years_up: number; years_total: number;
+    median_return: number; trimmed_mean: number; bootstrap_p: number; cohens_d: number;
+    best_return: number; worst_return: number; volatility: number;
+  }[];
 }
 
 export interface WeekPerformance {
@@ -600,10 +609,10 @@ export interface WeekPerformance {
 export interface SeasonalOutlook {
   month: number;
   month_name: string;
-  top_sectors: { sector: string; avg_return: number; win_rate: number; sample_size: number }[];
-  bottom_sectors: { sector: string; avg_return: number; win_rate: number; sample_size: number }[];
-  top_stocks: { symbol: string; avg_return: number; win_rate: number; sample_size: number; sector: string }[];
-  bottom_stocks: { symbol: string; avg_return: number; win_rate: number; sample_size: number; sector: string }[];
+  top_sectors: { sector: string; avg_return: number; median_return: number; trimmed_mean: number; win_rate: number; sample_size: number; bootstrap_p: number; cohens_d: number; volatility: number }[];
+  bottom_sectors: { sector: string; avg_return: number; median_return: number; trimmed_mean: number; win_rate: number; sample_size: number; bootstrap_p: number; cohens_d: number; volatility: number }[];
+  top_stocks: { symbol: string; avg_return: number; median_return: number; trimmed_mean: number; win_rate: number; sample_size: number; sector: string; bootstrap_p: number; cohens_d: number; volatility: number }[];
+  bottom_stocks: { symbol: string; avg_return: number; median_return: number; trimmed_mean: number; win_rate: number; sample_size: number; sector: string; bootstrap_p: number; cohens_d: number; volatility: number }[];
   yearly: { year: number; avg_return: number; stocks_up: number; stocks_down: number; total_stocks: number }[];
 }
 

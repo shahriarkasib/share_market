@@ -577,9 +577,10 @@ function SignalPanel({ signal }: { signal: StockSignal }) {
 function IndicatorsPanel({ signal }: { signal: StockSignal }) {
   const { indicators } = signal;
 
-  const rows: { label: string; value: string | null; color?: string }[] = [
+  const rows: { label: string; tip: string; value: string | null; color?: string }[] = [
     {
       label: "RSI (14)",
+      tip: "<30 oversold (bounce likely), >70 overbought (risky). Measures seller/buyer exhaustion.",
       value: indicators.rsi != null ? indicators.rsi.toFixed(1) : null,
       color:
         indicators.rsi != null
@@ -592,6 +593,7 @@ function IndicatorsPanel({ signal }: { signal: StockSignal }) {
     },
     {
       label: "MACD Signal",
+      tip: "Bullish = momentum turning up (buy), Bearish = momentum turning down (sell/avoid).",
       value: indicators.macd_signal ?? null,
       color: indicators.macd_signal?.toLowerCase().includes("bull")
         ? "text-green-400"
@@ -599,10 +601,12 @@ function IndicatorsPanel({ signal }: { signal: StockSignal }) {
     },
     {
       label: "BB Position",
+      tip: "Where price sits in Bollinger Bands. Near lower = oversold, near upper = overbought, squeeze = big move coming.",
       value: indicators.bb_position ?? null,
     },
     {
       label: "EMA Crossover",
+      tip: "Bullish = short-term EMA crossed above long-term (uptrend starting). Bearish = opposite.",
       value: indicators.ema_crossover ?? null,
       color: indicators.ema_crossover?.toLowerCase().includes("bull")
         ? "text-green-400"
@@ -610,11 +614,13 @@ function IndicatorsPanel({ signal }: { signal: StockSignal }) {
     },
     {
       label: "Volume Signal",
+      tip: "High volume on up-move = strong conviction. Low volume on down-move = weak selling (may reverse).",
       value: indicators.volume_signal ?? null,
       color: "text-blue-400",
     },
     {
       label: "3D Momentum",
+      tip: "Price change over last 3 days. Positive = gaining speed, Negative = losing speed. Helps catch turning points.",
       value:
         indicators.momentum_3d != null
           ? `${indicators.momentum_3d > 0 ? "+" : ""}${indicators.momentum_3d.toFixed(2)}%`
@@ -628,6 +634,7 @@ function IndicatorsPanel({ signal }: { signal: StockSignal }) {
     },
     {
       label: "Stochastic %K",
+      tip: "<20 oversold (buy zone), >80 overbought (sell zone). %K crossing above %D from below 20 = strong buy.",
       value:
         indicators.stoch_k != null ? indicators.stoch_k.toFixed(1) : null,
       color:
@@ -654,7 +661,7 @@ function IndicatorsPanel({ signal }: { signal: StockSignal }) {
             key={row.label}
             className="flex items-center justify-between py-2 border-b border-[var(--border)] last:border-0"
           >
-            <span className="text-xs text-[var(--text-muted)]">{row.label}</span>
+            <span className="text-xs text-[var(--text-muted)] cursor-help" title={row.tip}>{row.label}</span>
             <span
               className={clsx(
                 "text-xs font-medium tabular-nums",

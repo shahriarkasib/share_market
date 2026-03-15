@@ -19,7 +19,7 @@ function RSIGauge({ value }: { value: number | null | undefined }) {
   return (
     <div className="bg-[var(--bg)] rounded-md p-2.5">
       <div className="flex items-center justify-between mb-1.5">
-        <span className="text-[10px] text-[var(--text-dim)] uppercase tracking-wider">RSI</span>
+        <span className="text-[10px] text-[var(--text-dim)] uppercase tracking-wider cursor-help" title="Relative Strength Index — <30 oversold (bounce likely), >70 overbought (risky). Measures seller/buyer exhaustion.">RSI</span>
         <span className={clsx("text-xs font-bold tabular-nums", zoneColor)}>{pct.toFixed(1)}</span>
       </div>
       {/* Track with three zones */}
@@ -50,7 +50,7 @@ function MACDDirection({ value }: { value: string | undefined }) {
 
   return (
     <div className="bg-[var(--bg)] rounded-md p-2.5 flex flex-col items-center justify-center gap-1">
-      <span className="text-[10px] text-[var(--text-dim)] uppercase tracking-wider">MACD</span>
+      <span className="text-[10px] text-[var(--text-dim)] uppercase tracking-wider cursor-help" title="Moving Average Convergence Divergence — Bullish = momentum turning up, Bearish = momentum fading. Histogram crossing 0 = trend change.">MACD</span>
       <Icon className={clsx("h-5 w-5", color)} />
       <span className={clsx("text-[10px] font-medium", color)}>{value}</span>
     </div>
@@ -83,7 +83,7 @@ function TrendMeter({ value }: { value: string | undefined }) {
   return (
     <div className="bg-[var(--bg)] rounded-md p-2.5">
       <div className="text-[10px] text-[var(--text-dim)] uppercase tracking-wider mb-1.5 text-center">
-        Trend
+        <span className="cursor-help" title="Overall price trend direction — based on moving average alignment and price action. Strong Up = confirmed uptrend, Strong Down = confirmed downtrend.">Trend</span>
       </div>
       <div className="flex gap-0.5 mb-1">
         {trendSegments.map((seg) => (
@@ -115,7 +115,7 @@ function VolumeMeter({ value }: { value: string | undefined }) {
 
   return (
     <div className="bg-[var(--bg)] rounded-md p-2.5 flex flex-col items-center justify-center gap-1">
-      <span className="text-[10px] text-[var(--text-dim)] uppercase tracking-wider">Volume</span>
+      <span className="text-[10px] text-[var(--text-dim)] uppercase tracking-wider cursor-help" title="Volume relative to 20-day average. High volume on up-move = strong conviction. Low volume on down-move = weak selling.">Volume</span>
       <Volume2 className={clsx("h-4 w-4", color)} />
       <span className={clsx("text-[10px] font-medium", color)}>{value}</span>
     </div>

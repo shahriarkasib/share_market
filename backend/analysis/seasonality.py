@@ -9,8 +9,11 @@ Two modes:
 
 import calendar
 import logging
+import math
 import os
+import random
 from datetime import datetime, timedelta
+from statistics import median
 
 import psycopg2
 import psycopg2.extras
@@ -40,14 +43,21 @@ def _get_conn():
 
 DDL = """
 CREATE TABLE IF NOT EXISTS seasonality_monthly (
-    symbol      TEXT NOT NULL,
-    sector      TEXT,
-    category    TEXT,
-    month       INT  NOT NULL,
-    avg_return  NUMERIC(10,6),
-    win_rate    NUMERIC(6,4),
-    years_up    INT,
-    years_total INT,
+    symbol        TEXT NOT NULL,
+    sector        TEXT,
+    category      TEXT,
+    month         INT  NOT NULL,
+    avg_return    NUMERIC(10,6),
+    median_return NUMERIC(10,6),
+    trimmed_mean  NUMERIC(10,6),
+    win_rate      NUMERIC(6,4),
+    years_up      INT,
+    years_total   INT,
+    bootstrap_p   NUMERIC(6,4),
+    cohens_d      NUMERIC(8,4),
+    best_return   NUMERIC(10,6),
+    worst_return  NUMERIC(10,6),
+    volatility    NUMERIC(10,6),
     PRIMARY KEY (symbol, month)
 );
 
@@ -63,70 +73,77 @@ CREATE TABLE IF NOT EXISTS seasonality_yearly (
 """
 
 
+def _trimmed_mean(vals: list[float], trim_pct: float = 0.1) -> float:
+    """Mean after removing top/bottom trim_pct of values."""
+    if len(vals) < 3:
+        return sum(vals) / len(vals) if vals else 0.0
+    s = sorted(vals)
+    cut = max(1, int(len(s) * trim_pct))
+    trimmed = s[cut:-cut] if cut < len(s) // 2 else s
+    return sum(trimmed) / len(trimmed) if trimmed else 0.0
+
+
+def _bootstrap_p(vals: list[float], n_iter: int = 5000) -> float:
+    """Bootstrap p-value: probability that mean return is different from zero.
+    Returns p-value (low = statistically significant seasonal effect)."""
+    if len(vals) < 3:
+        return 1.0
+    n = len(vals)
+    obs_mean = sum(vals) / n
+    count_extreme = 0
+    for _ in range(n_iter):
+        sample = [random.choice(vals) for _ in range(n)]
+        boot_mean = sum(sample) / n
+        # Two-tailed: count if bootstrap mean is as extreme as observed
+        if abs(boot_mean) >= abs(obs_mean):
+            count_extreme += 1
+    # p-value under null hypothesis (mean = 0): fraction of resampled centered means >= observed
+    # Actually: resample from centered distribution
+    centered = [v - obs_mean for v in vals]
+    count_extreme = 0
+    for _ in range(n_iter):
+        sample = [random.choice(centered) for _ in range(n)]
+        boot_mean = sum(sample) / n
+        if abs(boot_mean + obs_mean) >= abs(obs_mean):
+            count_extreme += 1
+    return count_extreme / n_iter
+
+
+def _cohens_d(vals: list[float]) -> float:
+    """Cohen's d effect size: mean / stdev. Measures how large the effect is."""
+    if len(vals) < 2:
+        return 0.0
+    mean = sum(vals) / len(vals)
+    var = sum((v - mean) ** 2 for v in vals) / (len(vals) - 1)
+    sd = math.sqrt(var) if var > 0 else 1e-9
+    return mean / sd
+
+
 def precompute_seasonality():
-    """Heavy CTE: compute monthly seasonality for every stock, write to table."""
+    """Heavy computation: monthly seasonality with advanced statistics for every stock."""
     conn = _get_conn()
     cur = conn.cursor()
+
+    # Add new columns if they don't exist (for existing tables)
+    for col, dtype in [
+        ("median_return", "NUMERIC(10,6)"),
+        ("trimmed_mean", "NUMERIC(10,6)"),
+        ("bootstrap_p", "NUMERIC(6,4)"),
+        ("cohens_d", "NUMERIC(8,4)"),
+        ("best_return", "NUMERIC(10,6)"),
+        ("worst_return", "NUMERIC(10,6)"),
+        ("volatility", "NUMERIC(10,6)"),
+    ]:
+        try:
+            cur.execute(f"ALTER TABLE seasonality_monthly ADD COLUMN IF NOT EXISTS {col} {dtype}")
+        except Exception:
+            conn.rollback()
+    conn.commit()
 
     cur.execute(DDL)
     conn.commit()
 
-    sql = """
-    WITH monthly_bounds AS (
-        SELECT
-            dp.symbol,
-            f.sector,
-            UPPER(COALESCE(f.category, 'A')) AS cat,
-            EXTRACT(YEAR  FROM dp.date)::int AS yr,
-            EXTRACT(MONTH FROM dp.date)::int AS mo,
-            (ARRAY_AGG(dp.open  ORDER BY dp.date ASC))[1]  AS first_open,
-            (ARRAY_AGG(dp.close ORDER BY dp.date DESC))[1] AS last_close
-        FROM daily_prices dp
-        JOIN fundamentals f ON f.symbol = dp.symbol
-        WHERE dp.open > 0 AND dp.close > 0
-        GROUP BY dp.symbol, f.sector, cat, yr, mo
-    ),
-    monthly_returns AS (
-        SELECT
-            symbol, sector, cat, mo,
-            CASE WHEN (last_close / NULLIF(first_open, 0) - 1) > 0
-                 THEN 1 ELSE 0 END AS is_up,
-            (last_close / NULLIF(first_open, 0)) - 1 AS ret
-        FROM monthly_bounds
-        WHERE first_open > 0
-    )
-    SELECT
-        symbol, sector, cat,
-        mo                                              AS month,
-        ROUND(AVG(ret)::numeric, 6)                     AS avg_return,
-        ROUND(
-            SUM(is_up)::numeric / NULLIF(COUNT(*), 0), 4
-        )                                               AS win_rate,
-        SUM(is_up)::int                                 AS years_up,
-        COUNT(*)::int                                   AS years_total
-    FROM monthly_returns
-    GROUP BY symbol, sector, cat, mo;
-    """
-    cur.execute(sql)
-    rows = cur.fetchall()
-    logger.info("precompute_seasonality: computed %d rows", len(rows))
-
-    # Truncate and reload
-    cur.execute("DELETE FROM seasonality_monthly")
-    if rows:
-        insert_sql = """
-            INSERT INTO seasonality_monthly
-                (symbol, sector, category, month, avg_return, win_rate, years_up, years_total)
-            VALUES %s
-        """
-        values = [
-            (r["symbol"], r["sector"], r["cat"], r["month"],
-             r["avg_return"], r["win_rate"], r["years_up"], r["years_total"])
-            for r in rows
-        ]
-        psycopg2.extras.execute_values(cur, insert_sql, values, page_size=500)
-
-    # Also precompute per-year data for expandable views
+    # Step 1: Get per-year returns for all (symbol, month) pairs
     yearly_sql = """
     WITH monthly_bounds AS (
         SELECT
@@ -142,28 +159,86 @@ def precompute_seasonality():
         WHERE dp.open > 0 AND dp.close > 0
         GROUP BY dp.symbol, f.sector, cat, yr, mo
     )
-    SELECT symbol, sector, cat, yr AS year, mo AS month,
-           ROUND(((last_close / NULLIF(first_open, 0)) - 1)::numeric, 6) AS return
-    FROM monthly_bounds WHERE first_open > 0;
+    SELECT symbol, sector, cat, yr, mo,
+           (last_close / NULLIF(first_open, 0)) - 1 AS ret
+    FROM monthly_bounds WHERE first_open > 0
+    ORDER BY symbol, mo, yr;
     """
     cur.execute(yearly_sql)
-    yearly_rows = cur.fetchall()
+    all_yearly = cur.fetchall()
+    logger.info("precompute_seasonality: fetched %d yearly rows", len(all_yearly))
 
+    # Step 2: Group by (symbol, month) and compute all stats in Python
+    from collections import defaultdict
+    groups: dict[tuple, dict] = {}  # (symbol, month) -> {sector, cat, returns: []}
+    for r in all_yearly:
+        key = (r["symbol"], r["mo"])
+        if key not in groups:
+            groups[key] = {"sector": r["sector"], "cat": r["cat"], "returns": []}
+        ret = float(r["ret"]) if r["ret"] is not None else 0.0
+        groups[key]["returns"].append(ret)
+
+    random.seed(42)  # Reproducible bootstrap
+    rows = []
+    for (symbol, month), g in groups.items():
+        rets = g["returns"]
+        n = len(rets)
+        if n == 0:
+            continue
+        avg = sum(rets) / n
+        med = median(rets) if n > 0 else 0.0
+        tmean = _trimmed_mean(rets)
+        wr = sum(1 for r in rets if r > 0) / n
+        yup = sum(1 for r in rets if r > 0)
+        bp = _bootstrap_p(rets) if n >= 3 else 1.0
+        cd = _cohens_d(rets) if n >= 2 else 0.0
+        best = max(rets)
+        worst = min(rets)
+        vol = math.sqrt(sum((r - avg) ** 2 for r in rets) / max(n - 1, 1))
+
+        rows.append((
+            symbol, g["sector"], g["cat"], month,
+            round(avg, 6), round(med, 6), round(tmean, 6),
+            round(wr, 4), yup, n,
+            round(bp, 4), round(cd, 4),
+            round(best, 6), round(worst, 6), round(vol, 6),
+        ))
+
+    logger.info("precompute_seasonality: computed stats for %d (symbol, month) groups", len(rows))
+
+    # Step 3: Write to table
+    cur.execute("DELETE FROM seasonality_monthly")
+    if rows:
+        insert_sql = """
+            INSERT INTO seasonality_monthly
+                (symbol, sector, category, month,
+                 avg_return, median_return, trimmed_mean,
+                 win_rate, years_up, years_total,
+                 bootstrap_p, cohens_d,
+                 best_return, worst_return, volatility)
+            VALUES %s
+        """
+        psycopg2.extras.execute_values(cur, insert_sql, rows, page_size=500)
+
+    # Also write per-year data for expandable views (reuse already-fetched data)
     cur.execute("DELETE FROM seasonality_yearly")
-    if yearly_rows:
+    if all_yearly:
+        yearly_values = [
+            (r["symbol"], r["sector"], r["cat"], r["yr"], r["mo"],
+             round(float(r["ret"]), 6) if r["ret"] is not None else 0)
+            for r in all_yearly
+        ]
         psycopg2.extras.execute_values(
             cur,
             "INSERT INTO seasonality_yearly (symbol, sector, category, year, month, return) VALUES %s",
-            [(r["symbol"], r["sector"], r["cat"], r["year"], r["month"], r["return"])
-             for r in yearly_rows],
-            page_size=1000,
+            yearly_values, page_size=1000,
         )
-    logger.info("precompute_seasonality: wrote %d yearly rows", len(yearly_rows))
+    logger.info("precompute_seasonality: wrote %d yearly rows", len(all_yearly))
 
     conn.commit()
     conn.close()
     logger.info("precompute_seasonality: wrote %d avg rows + %d yearly rows",
-                len(rows), len(yearly_rows))
+                len(rows), len(all_yearly))
     return len(rows)
 
 
@@ -206,9 +281,14 @@ def monthly_sector_performance(year: int | None = None) -> dict:
         else:
             cur.execute("""
                 SELECT sector, month,
-                       AVG(avg_return)::numeric(10,6) AS avg_return,
-                       AVG(win_rate)::numeric(6,4)    AS win_rate,
-                       SUM(years_total)::int          AS sample_size
+                       AVG(avg_return)::numeric(10,6)    AS avg_return,
+                       AVG(median_return)::numeric(10,6) AS median_return,
+                       AVG(trimmed_mean)::numeric(10,6)  AS trimmed_mean,
+                       AVG(win_rate)::numeric(6,4)       AS win_rate,
+                       SUM(years_total)::int             AS sample_size,
+                       AVG(bootstrap_p)::numeric(6,4)    AS bootstrap_p,
+                       AVG(cohens_d)::numeric(8,4)       AS cohens_d,
+                       AVG(volatility)::numeric(10,6)    AS volatility
                 FROM seasonality_monthly
                 WHERE sector IS NOT NULL
                 GROUP BY sector, month
@@ -231,8 +311,13 @@ def monthly_sector_performance(year: int | None = None) -> dict:
         sector_map.setdefault(name, []).append({
             "month": r["month"],
             "avg_return": float(r["avg_return"] or 0),
+            "median_return": float(r.get("median_return") or r.get("avg_return") or 0),
+            "trimmed_mean": float(r.get("trimmed_mean") or r.get("avg_return") or 0),
             "win_rate": float(r["win_rate"] or 0),
             "sample_size": int(r["sample_size"] or 0),
+            "bootstrap_p": float(r.get("bootstrap_p") or 1.0),
+            "cohens_d": float(r.get("cohens_d") or 0),
+            "volatility": float(r.get("volatility") or 0),
         })
 
     sectors = [
@@ -370,7 +455,9 @@ def monthly_stock_performance(category: str = "A", year: int | None = None,
             where = " AND ".join(conditions)
             cur.execute(f"""
                 SELECT symbol, sector, month, avg_return, win_rate AS up_pct,
-                       years_up, years_total
+                       years_up, years_total,
+                       median_return, trimmed_mean, bootstrap_p, cohens_d,
+                       best_return, worst_return, volatility
                 FROM seasonality_monthly
                 WHERE {where}
                 ORDER BY symbol, month
@@ -406,6 +493,13 @@ def monthly_stock_performance(category: str = "A", year: int | None = None,
             "up_pct": float(r["up_pct"] or 0),
             "years_up": int(r["years_up"] or 0),
             "years_total": int(r["years_total"] or 0),
+            "median_return": float(r.get("median_return") or r.get("avg_return") or 0),
+            "trimmed_mean": float(r.get("trimmed_mean") or r.get("avg_return") or 0),
+            "bootstrap_p": float(r.get("bootstrap_p") or 1.0),
+            "cohens_d": float(r.get("cohens_d") or 0),
+            "best_return": float(r.get("best_return") or 0),
+            "worst_return": float(r.get("worst_return") or 0),
+            "volatility": float(r.get("volatility") or 0),
         })
 
     stocks = sorted(stock_map.values(), key=lambda s: s["symbol"])
@@ -551,9 +645,14 @@ def month_outlook(month: int | None = None) -> dict:
         # Sector outlook
         cur.execute("""
             SELECT sector,
-                   AVG(avg_return)::numeric(10,6) AS avg_return,
-                   AVG(win_rate)::numeric(6,4)    AS win_rate,
-                   SUM(years_total)::int          AS sample_size
+                   AVG(avg_return)::numeric(10,6)    AS avg_return,
+                   AVG(median_return)::numeric(10,6) AS median_return,
+                   AVG(trimmed_mean)::numeric(10,6)  AS trimmed_mean,
+                   AVG(win_rate)::numeric(6,4)       AS win_rate,
+                   SUM(years_total)::int             AS sample_size,
+                   AVG(bootstrap_p)::numeric(6,4)    AS bootstrap_p,
+                   AVG(cohens_d)::numeric(8,4)       AS cohens_d,
+                   AVG(volatility)::numeric(10,6)    AS volatility
             FROM seasonality_monthly
             WHERE sector IS NOT NULL AND month = %s
             GROUP BY sector
@@ -563,7 +662,9 @@ def month_outlook(month: int | None = None) -> dict:
 
         # Stock outlook (category A, at least 2 years of data)
         cur.execute("""
-            SELECT symbol, sector, avg_return, win_rate, years_total AS sample_size
+            SELECT symbol, sector, avg_return, median_return, trimmed_mean,
+                   win_rate, years_total AS sample_size,
+                   bootstrap_p, cohens_d, volatility
             FROM seasonality_monthly
             WHERE category = 'A' AND month = %s AND years_total >= 2
             ORDER BY avg_return DESC
@@ -602,8 +703,13 @@ def month_outlook(month: int | None = None) -> dict:
         return {
             "sector": r["sector"],
             "avg_return": float(r["avg_return"] or 0),
+            "median_return": float(r.get("median_return") or r.get("avg_return") or 0),
+            "trimmed_mean": float(r.get("trimmed_mean") or r.get("avg_return") or 0),
             "win_rate": float(r["win_rate"] or 0),
             "sample_size": r["sample_size"],
+            "bootstrap_p": float(r.get("bootstrap_p") or 1.0),
+            "cohens_d": float(r.get("cohens_d") or 0),
+            "volatility": float(r.get("volatility") or 0),
         }
 
     def _fmt_stock(r):
@@ -611,8 +717,13 @@ def month_outlook(month: int | None = None) -> dict:
             "symbol": r["symbol"],
             "sector": r["sector"],
             "avg_return": float(r["avg_return"] or 0),
+            "median_return": float(r.get("median_return") or r.get("avg_return") or 0),
+            "trimmed_mean": float(r.get("trimmed_mean") or r.get("avg_return") or 0),
             "win_rate": float(r["win_rate"] or 0),
             "sample_size": r["sample_size"],
+            "bootstrap_p": float(r.get("bootstrap_p") or 1.0),
+            "cohens_d": float(r.get("cohens_d") or 0),
+            "volatility": float(r.get("volatility") or 0),
         }
 
     top_sectors = [_fmt_sector(r) for r in sector_rows[:5]]
