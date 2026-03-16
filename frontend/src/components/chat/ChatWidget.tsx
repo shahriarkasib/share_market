@@ -234,7 +234,7 @@ export default function ChatWidget() {
             </div>
             <div className="rounded-lg px-2.5 py-1.5 bg-[var(--hover)] text-[var(--text-muted)] text-xs flex items-center gap-1.5">
               <Loader2 className="h-3 w-3 animate-spin" />
-              Thinking... (10-30s)
+              Analyzing data... (30s-2min)
             </div>
           </div>
         )}

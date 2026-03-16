@@ -155,7 +155,7 @@ def build_prompt(messages: list[dict], new_message: str) -> str:
     return "\n".join(parts)
 
 
-def call_claude(prompt: str, timeout: int = 180) -> str:
+def call_claude(prompt: str, timeout: int = 240) -> str:
     """Call Claude CLI with full tool access — like a real Claude Code session."""
     prompt_file = None
     sys_prompt_file = None
@@ -185,7 +185,7 @@ def call_claude(prompt: str, timeout: int = 180) -> str:
             "bash", "-c",
             f'cat "{prompt_file.name}" | claude -p '
             f'--model {model} '
-            f'--max-turns 10 '
+            f'--max-turns 5 '
             f'--dangerously-skip-permissions '
             f'--add-dir "{BACKEND_DIR}" '
             f'--append-system-prompt "$(cat {sys_prompt_file.name})"'

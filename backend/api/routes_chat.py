@@ -142,7 +142,7 @@ async def _process_local(session_id: str, message: str) -> str:
 
 async def _process_via_gcp(session_id: str, message: str) -> str:
     """Proxy chat to GCP VM chat service."""
-    async with httpx.AsyncClient(timeout=130) as client:
+    async with httpx.AsyncClient(timeout=280) as client:
         resp = await client.post(
             f"{GCP_CHAT_URL}/chat",
             json={"message": message, "session_id": session_id},

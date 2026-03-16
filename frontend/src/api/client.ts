@@ -795,7 +795,7 @@ export async function sendChatMessage(
   const { data } = await api.post<ChatResponse>(
     "/chat",
     { message, session_id: sessionId },
-    { timeout: 120_000 },
+    { timeout: 300_000 },
   );
   return data;
 }
