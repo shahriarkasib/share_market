@@ -1,6 +1,6 @@
 import { NavLink } from "react-router-dom";
 import { useState, useEffect } from "react";
-import { Activity, BarChart3, Grid3X3, Table2, Menu, X, LineChart, TrendingUp, Target, Newspaper, Calendar, Percent, ShieldAlert, MessageCircle } from "lucide-react";
+import { Activity, BarChart3, Grid3X3, Table2, Menu, X, LineChart, TrendingUp, Target, Newspaper, Calendar, Percent, ShieldAlert } from "lucide-react";
 import { clsx } from "clsx";
 import { useMarketStore } from "../../store/marketStore.ts";
 import SymbolSearch from "../search/SymbolSearch.tsx";
@@ -16,7 +16,6 @@ const links = [
   { to: "/dividends", label: "Dividends", icon: Percent },
   { to: "/seasonality", label: "Seasonal", icon: Calendar },
   { to: "/floor", label: "Floor", icon: ShieldAlert },
-  { to: "/chat", label: "Chat", icon: MessageCircle },
 ] as const;
 
 export default function Header() {
