@@ -87,7 +87,7 @@ def call_claude(prompt: str, timeout: int = 120) -> str:
 
         env = get_claude_env()
         model = os.getenv("CLAUDE_MODEL", "sonnet")
-        bash_cmd = f'cat "{prompt_file.name}" | claude -p --model {model} --max-turns 1'
+        bash_cmd = f'cat "{prompt_file.name}" | claude -p --model {model} --max-turns 1 --no-tool-use'
 
         result = subprocess.run(
             ["bash", "-c", bash_cmd],
