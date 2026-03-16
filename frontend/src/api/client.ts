@@ -788,20 +788,25 @@ export interface ChatResponse {
   history: ChatMessage[];
 }
 
+// Chat calls GCP VM directly (bypasses Render's 30s timeout)
+const CHAT_URL = import.meta.env.VITE_CHAT_URL || "http://34.63.227.229:8787";
+
 export async function sendChatMessage(
   message: string,
   sessionId?: string,
 ): Promise<ChatResponse> {
-  const { data } = await api.post<ChatResponse>(
-    "/chat",
-    { message, session_id: sessionId },
-    { timeout: 300_000 },
-  );
-  return data;
+  const res = await fetch(`${CHAT_URL}/chat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ message, session_id: sessionId }),
+    signal: AbortSignal.timeout(300_000),
+  });
+  if (!res.ok) throw new Error(`Chat error: ${res.status}`);
+  return res.json();
 }
 
 export async function clearChatSession(sessionId: string): Promise<void> {
-  await api.delete(`/chat/sessions/${sessionId}`);
+  await fetch(`${CHAT_URL}/chat/sessions/${sessionId}`, { method: "DELETE" }).catch(() => {});
 }
 
 export default api;
