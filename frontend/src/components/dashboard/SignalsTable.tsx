@@ -191,6 +191,41 @@ function SignalRow({
         )}
       </div>
 
+      {/* AI verdict + entry zone status */}
+      {(s.ai_action || s.entry_zone_status) && (
+        <div className="flex items-center gap-2 ml-7 mt-1 flex-wrap">
+          {s.ai_action && (
+            <span className={clsx(
+              "text-[10px] px-1.5 py-0.5 rounded font-bold",
+              s.ai_action.includes("BUY") ? "bg-purple-500/15 text-purple-400 border border-purple-500/30" :
+              s.ai_action.includes("SELL") || s.ai_action.includes("AVOID") ? "bg-red-500/15 text-red-400 border border-red-500/30" :
+              "bg-gray-500/15 text-gray-400 border border-gray-500/30"
+            )}>
+              AI: {s.ai_action} {s.ai_confidence ? `(${s.ai_confidence})` : ""}
+            </span>
+          )}
+          {s.entry_zone_status && s.entry_zone_status !== "UNKNOWN" && (
+            <span className={clsx(
+              "text-[10px] px-1.5 py-0.5 rounded font-bold",
+              s.entry_zone_status === "IN_ZONE" && "bg-emerald-500/15 text-emerald-400 border border-emerald-500/30",
+              s.entry_zone_status === "BELOW_ENTRY" && "bg-blue-500/15 text-blue-400 border border-blue-500/30",
+              s.entry_zone_status === "APPROACHING" && "bg-amber-500/15 text-amber-400 border border-amber-500/30",
+              s.entry_zone_status === "MOVED_PAST" && "bg-red-500/15 text-red-400 border border-red-500/30",
+            )}>
+              {s.entry_zone_status === "IN_ZONE" ? "IN ZONE" :
+               s.entry_zone_status === "BELOW_ENTRY" ? "BELOW ENTRY" :
+               s.entry_zone_status === "APPROACHING" ? "NEAR ENTRY" :
+               "MOVED PAST"}
+            </span>
+          )}
+          {s.ai_key_risk && (
+            <span className="text-[10px] text-red-400/70 truncate max-w-[200px]" title={s.ai_key_risk}>
+              {s.ai_key_risk}
+            </span>
+          )}
+        </div>
+      )}
+
       {/* Target / Stop Loss / R:R as tiny pills */}
       <div className="flex items-center gap-2 ml-7 mt-1">
         <span className="text-[10px] text-[var(--text-dim)]">

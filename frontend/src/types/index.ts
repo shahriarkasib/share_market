@@ -53,6 +53,18 @@ export interface StockSignal {
   daily_ranges?: Record<string, { min: number; max: number }>;
   risk_score?: number;
   t2_maturity_date?: string;
+  // AI / Judge enrichment
+  ai_action?: string;
+  ai_confidence?: string;
+  ai_reasoning?: string;
+  ai_key_risk?: string;
+  ai_stage?: string;
+  ai_catalysts?: string;
+  ai_risk_factors?: string;
+  ai_wait_for?: string;
+  ai_dsex_dependency?: string;
+  entry_zone_status?: 'IN_ZONE' | 'BELOW_ENTRY' | 'APPROACHING' | 'MOVED_PAST' | 'UNKNOWN';
+  live_ltp?: number;
 }
 
 export interface MarketSummary {
@@ -509,6 +521,11 @@ export interface BuyRadarStock {
   if_dsex_drops?: string;
   if_dsex_rises?: string;
   dsex_outlook?: string;
+  // Live price + entry zone status
+  live_ltp?: number;
+  live_change_pct?: number;
+  entry_zone_status?: 'IN_ZONE' | 'BELOW_ENTRY' | 'APPROACHING' | 'MOVED_PAST' | 'UNKNOWN';
+  ai_stage?: string;
   // Tracking fields
   days_on_radar: number;
   first_seen: string;

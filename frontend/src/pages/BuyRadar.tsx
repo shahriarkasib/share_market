@@ -426,12 +426,30 @@ function StockCard({ stock }: { stock: BuyRadarStock }) {
           </button>
         </div>
 
-        {/* Entry zone + targets (compact) */}
+        {/* Entry zone + targets + live price status */}
         {stock.entry_low != null && stock.entry_high != null && (
-          <div className="flex items-center gap-3 mt-2 text-xs">
+          <div className="flex items-center gap-3 mt-2 text-xs flex-wrap">
             <span className="text-emerald-400 font-semibold">
               Entry: {stock.entry_low.toFixed(1)}–{stock.entry_high.toFixed(1)}
             </span>
+            {stock.live_ltp != null && stock.live_ltp > 0 && (
+              <span className="text-[var(--text)] font-medium">
+                Live: {stock.live_ltp.toFixed(1)}
+              </span>
+            )}
+            {stock.entry_zone_status && stock.entry_zone_status !== "UNKNOWN" && (
+              <span className={clsx("px-1.5 py-0.5 rounded text-[10px] font-bold",
+                stock.entry_zone_status === "IN_ZONE" && "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30",
+                stock.entry_zone_status === "BELOW_ENTRY" && "bg-blue-500/20 text-blue-400 border border-blue-500/30",
+                stock.entry_zone_status === "APPROACHING" && "bg-amber-500/20 text-amber-400 border border-amber-500/30",
+                stock.entry_zone_status === "MOVED_PAST" && "bg-red-500/20 text-red-400 border border-red-500/30",
+              )}>
+                {stock.entry_zone_status === "IN_ZONE" && "IN ENTRY ZONE"}
+                {stock.entry_zone_status === "BELOW_ENTRY" && "BELOW ENTRY"}
+                {stock.entry_zone_status === "APPROACHING" && "NEAR ENTRY"}
+                {stock.entry_zone_status === "MOVED_PAST" && "MOVED PAST ENTRY"}
+              </span>
+            )}
             {stock.t1 != null && <span className="text-[var(--text-muted)]">T1: {stock.t1.toFixed(1)}</span>}
             {stock.t2 != null && <span className="text-[var(--text-muted)]">T2: {stock.t2.toFixed(1)}</span>}
             {stock.sl != null && <span className="text-red-400">SL: {stock.sl.toFixed(1)}</span>}

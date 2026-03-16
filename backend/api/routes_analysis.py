@@ -385,6 +385,29 @@ async def trigger_decision_verification():
     return {"status": "started", "message": "Verifying past decisions..."}
 
 
+def _entry_zone_status(live_ltp, entry_low, entry_high):
+    """Compute where the live price sits relative to the entry zone."""
+    if live_ltp is None or live_ltp <= 0:
+        return "UNKNOWN"
+    if entry_low is None or entry_high is None:
+        return "UNKNOWN"
+    try:
+        low = float(entry_low)
+        high = float(entry_high)
+    except (TypeError, ValueError):
+        return "UNKNOWN"
+    if low <= 0 or high <= 0:
+        return "UNKNOWN"
+    if low <= live_ltp <= high:
+        return "IN_ZONE"
+    if live_ltp < low:
+        return "BELOW_ENTRY"
+    # live_ltp > high
+    if live_ltp <= high * 1.03:
+        return "APPROACHING"
+    return "MOVED_PAST"
+
+
 @router.get("/buy-radar")
 async def get_buy_radar(categories: str = "A", exclude_sectors: str = ""):
     """Buy Radar — shows stocks approaching buy zone with per-indicator readiness.
@@ -595,6 +618,12 @@ async def get_buy_radar(categories: str = "A", exclude_sectors: str = ""):
             if p5 > 0 and sym in current_prices:
                 ret5d_map[sym] = round((current_prices[sym] / p5 - 1) * 100, 1)
 
+    # ── Load live prices for entry-zone cross-reference ──
+    live_rows = conn.execute(
+        "SELECT symbol, ltp, change_pct FROM live_prices WHERE ltp > 0"
+    ).fetchall()
+    live_map = {r["symbol"]: {"ltp": float(r["ltp"]), "change_pct": float(r["change_pct"] or 0)} for r in live_rows}
+
     conn.close()
 
     stocks = []
@@ -747,6 +776,14 @@ async def get_buy_radar(categories: str = "A", exclude_sectors: str = ""):
             "if_dsex_drops": llm.get("if_dsex_drops") or "",
             "if_dsex_rises": llm.get("if_dsex_rises") or "",
             "dsex_outlook": llm.get("dsex_outlook") or "",
+            # Live price cross-reference
+            "live_ltp": live_map[sym]["ltp"] if sym in live_map else None,
+            "live_change_pct": live_map[sym]["change_pct"] if sym in live_map else None,
+            "entry_zone_status": _entry_zone_status(
+                live_map.get(sym, {}).get("ltp"), ai_entry_low, ai_entry_high
+            ),
+            # AI stage (raw from LLM)
+            "ai_stage": llm.get("stage") or "",
         })
 
     # ── Save today's snapshots & load history ──

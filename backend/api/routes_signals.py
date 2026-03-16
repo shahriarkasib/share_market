@@ -51,7 +51,25 @@ def _safe_float(val, default=0.0):
         return default
 
 
-def _analysis_to_signal(a: dict, live_map: dict) -> dict:
+def _compute_entry_zone_status(live_ltp, entry_low, entry_high):
+    """Compute where the live price sits relative to the entry zone."""
+    if live_ltp is None or live_ltp <= 0:
+        return "UNKNOWN"
+    if entry_low <= 0 and entry_high <= 0:
+        return "UNKNOWN"
+    if entry_low <= live_ltp <= entry_high:
+        return "IN_ZONE"
+    if live_ltp < entry_low:
+        return "BELOW_ENTRY"
+    # live_ltp > entry_high
+    if entry_high > 0 and live_ltp <= entry_high * 1.03:
+        return "APPROACHING"
+    return "MOVED_PAST"
+
+
+def _analysis_to_signal(a: dict, live_map: dict,
+                        judge_map: dict | None = None,
+                        llm_map: dict | None = None) -> dict:
     """Map a daily_analysis row to the StockSignal dict shape."""
     symbol = a["symbol"]
     action = a.get("action", "HOLD/WAIT")
@@ -196,6 +214,26 @@ def _analysis_to_signal(a: dict, live_map: dict) -> dict:
             parts.append(f"SL: {sl:.1f}")
         exit_strategy = " | ".join(parts) if parts else ""
 
+    # ── AI / LLM enrichment ──
+    judge = (judge_map or {}).get(symbol, {})
+    llm = (llm_map or {}).get(symbol, {})
+
+    ai_action = judge.get("final_action")
+    ai_confidence = judge.get("final_confidence")
+    ai_reasoning = judge.get("reasoning")
+    ai_key_risk = judge.get("key_risk")
+    ai_stage = llm.get("stage")
+    ai_catalysts = llm.get("catalysts")
+    ai_risk_factors = llm.get("risk_factors")
+    ai_wait_for = llm.get("wait_for")
+    ai_dsex_dependency = llm.get("dsex_dependency")
+
+    # ── Entry zone status (uses live LTP) ──
+    live_ltp = _safe_float(live.get("ltp")) if live else None
+    if live_ltp == 0:
+        live_ltp = None
+    entry_zone_status = _compute_entry_zone_status(live_ltp, entry_low, entry_high)
+
     return {
         "symbol": symbol,
         "company_name": company_name,
@@ -225,6 +263,19 @@ def _analysis_to_signal(a: dict, live_map: dict) -> dict:
         "hold_days": hold_days,
         "entry_strategy": entry_strategy,
         "exit_strategy": exit_strategy,
+        # AI / Judge enrichment
+        "ai_action": ai_action,
+        "ai_confidence": ai_confidence,
+        "ai_reasoning": ai_reasoning,
+        "ai_key_risk": ai_key_risk,
+        "ai_stage": ai_stage,
+        "ai_catalysts": ai_catalysts,
+        "ai_risk_factors": ai_risk_factors,
+        "ai_wait_for": ai_wait_for,
+        "ai_dsex_dependency": ai_dsex_dependency,
+        # Live entry zone
+        "entry_zone_status": entry_zone_status,
+        "live_ltp": live_ltp,
         "created_at": datetime.now().isoformat(),
     }
 
@@ -254,15 +305,45 @@ def _get_signals() -> list:
         if not analysis:
             return []
 
-        # Enrich with live prices
+        # Determine analysis date for JOINing judge/llm tables
+        analysis_date = analysis[0].get("date") if analysis else None
+
+        # Enrich with live prices + AI data in one connection
         conn = get_connection()
         live_rows = conn.execute(
             "SELECT symbol, ltp, change_pct, company_name FROM live_prices"
         ).fetchall()
-        conn.close()
         live_map = {r["symbol"]: dict(r) for r in live_rows}
 
-        signals = [_analysis_to_signal(a, live_map) for a in analysis]
+        # Judge daily analysis (final_action, final_confidence, reasoning, key_risk)
+        judge_map = {}
+        if analysis_date:
+            try:
+                judge_rows = conn.execute(
+                    "SELECT symbol, final_action, final_confidence, reasoning, key_risk "
+                    "FROM judge_daily_analysis WHERE date = ?",
+                    [analysis_date],
+                ).fetchall()
+                judge_map = {r["symbol"]: dict(r) for r in judge_rows}
+            except Exception as e:
+                logger.warning("Failed to load judge_daily_analysis: %s", e)
+
+        # LLM daily analysis (stage, risk_factors, catalysts, wait_for, dsex_dependency)
+        llm_map = {}
+        if analysis_date:
+            try:
+                llm_rows = conn.execute(
+                    "SELECT symbol, stage, risk_factors, catalysts, wait_for, dsex_dependency "
+                    "FROM llm_daily_analysis WHERE date = ?",
+                    [analysis_date],
+                ).fetchall()
+                llm_map = {r["symbol"]: dict(r) for r in llm_rows}
+            except Exception as e:
+                logger.warning("Failed to load llm_daily_analysis: %s", e)
+
+        conn.close()
+
+        signals = [_analysis_to_signal(a, live_map, judge_map, llm_map) for a in analysis]
         cache.set("all_signals", signals, CACHE_TTL_SIGNALS * 2)
         return signals
 
