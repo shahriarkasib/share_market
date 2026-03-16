@@ -88,7 +88,7 @@ def _call_claude_cli(prompt: str, timeout: int = 120) -> str:
 
         env = _get_claude_env()
         model = os.getenv("CLAUDE_MODEL", "sonnet")
-        bash_cmd = f'cat "{prompt_file.name}" | claude -p --model {model} --max-turns 1 --permission-mode plan'
+        bash_cmd = f'cat "{prompt_file.name}" | claude -p --model {model} --max-turns 1 --append-system-prompt "You are a DSE (Dhaka Stock Exchange) trading assistant. Answer questions directly about Bangladesh stock market. Do NOT attempt to use any tools, read files, or run commands. Just respond with helpful text based on your knowledge."'
 
         result = subprocess.run(
             ["bash", "-c", bash_cmd],
