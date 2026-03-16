@@ -18,6 +18,9 @@ import uuid
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from threading import Lock
 
+import psycopg2
+import psycopg2.extras
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -155,7 +158,7 @@ def build_prompt(messages: list[dict], new_message: str) -> str:
     return "\n".join(parts)
 
 
-def call_claude(prompt: str, timeout: int = 240) -> str:
+def call_claude(prompt: str, timeout: int = 600) -> str:
     """Call Claude CLI with full tool access — like a real Claude Code session."""
     prompt_file = None
     sys_prompt_file = None
@@ -185,7 +188,7 @@ def call_claude(prompt: str, timeout: int = 240) -> str:
             "bash", "-c",
             f'cat "{prompt_file.name}" | claude -p '
             f'--model {model} '
-            f'--max-turns 5 '
+            f'--max-turns 25 '
             f'--dangerously-skip-permissions '
             f'--add-dir "{BACKEND_DIR}" '
             f'--append-system-prompt "$(cat {sys_prompt_file.name})"'
