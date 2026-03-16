@@ -281,7 +281,7 @@ function DsexForecastBanner({ forecast }: { forecast: DsexForecast }) {
             <BarChart3 className="h-3.5 w-3.5 text-[var(--text-dim)]" />
             <span className="text-[10px] font-bold uppercase text-[var(--text-dim)]">Next {days.length} Trading Days</span>
           </div>
-          <div className="grid grid-cols-5 gap-2">
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-2">
             {days.map((d) => (
               <DayPredictionCard
                 key={d.day}
@@ -516,7 +516,7 @@ function StockCard({ stock }: { stock: BuyRadarStock }) {
           {(stock.expected_return_1w != null || stock.expected_return_2w != null || stock.expected_return_1m != null) && (
             <div>
               <SectionLabel icon={TrendingUp} label="Profit Estimation" color="text-emerald-400" />
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
+              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-2 text-xs">
                 {stock.expected_return_1w != null && (
                   <div className="bg-[var(--surface)] rounded p-2 text-center border border-[var(--border)]">
                     <div className="text-[var(--text-dim)] text-[10px]">1 Week</div>

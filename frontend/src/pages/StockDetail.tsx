@@ -107,7 +107,7 @@ export default function StockDetail() {
           </div>
 
           <div className="text-right">
-            <div className="text-3xl font-bold text-[var(--text)] tabular-nums">
+            <div className="text-xl sm:text-2xl md:text-3xl font-bold text-[var(--text)] tabular-nums">
               {formatBDT(ltp)}
             </div>
             <div
@@ -142,7 +142,7 @@ export default function StockDetail() {
       </div>
 
       {/* Price chart — same viewport height as chart page, scrollable below */}
-      <div style={{ height: 'calc(100vh - 12rem)' }}>
+      <div className="min-h-[300px]" style={{ height: 'calc(100vh - 12rem)' }}>
         <PriceChart symbol={symbol!} signal={signal} />
       </div>
 

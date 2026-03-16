@@ -197,7 +197,7 @@ function OpportunitiesTab() {
         Stocks that dropped more than expected after record date -- potential buying opportunities.
         Sorted by excess drop (biggest opportunity first).
       </p>
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+      <div className="grid gap-3 grid-cols-1 md:grid-cols-2 lg:grid-cols-3">
         {sorted.map((o) => {
           const strong = o.excess_drop > 3;
           return (
@@ -316,7 +316,7 @@ function ImpactAnalyzerTab() {
           {/* Summary card */}
           <div className="rounded-lg border border-[var(--border)] bg-[var(--surface)] p-4 mb-4">
             <h3 className="text-sm font-bold text-[var(--text)] mb-2">{data.symbol} -- Record Date Summary ({data.averages.event_count} events)</h3>
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3 text-xs">
               <div>
                 <span className="text-[var(--text-muted)] block">Avg Ex-Date Drop</span>
                 <span className="text-red-400 font-medium text-sm">

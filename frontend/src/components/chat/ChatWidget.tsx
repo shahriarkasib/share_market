@@ -197,7 +197,7 @@ export default function ChatWidget() {
   if (minimized) {
     return (
       <div
-        className="fixed bottom-5 right-5 z-[9999] w-72 rounded-xl bg-[var(--surface)] border border-[var(--border)] shadow-2xl cursor-pointer"
+        className="fixed bottom-5 right-5 z-[9999] w-[calc(100vw-2.5rem)] sm:w-72 rounded-xl bg-[var(--surface)] border border-[var(--border)] shadow-2xl cursor-pointer"
         onClick={() => setMinimized(false)}
       >
         <div className="flex items-center justify-between px-3 py-2.5">
@@ -225,9 +225,9 @@ export default function ChatWidget() {
 
   // Full chat panel
   return (
-    <div className="fixed bottom-5 right-5 z-[9999] w-[380px] h-[560px] max-h-[80vh] rounded-xl bg-[var(--surface)] border border-[var(--border)] shadow-2xl flex flex-col overflow-hidden">
+    <div className="fixed bottom-0 right-0 sm:bottom-5 sm:right-5 z-[9999] w-[calc(100vw-2.5rem)] sm:w-[380px] h-[calc(100vh-6rem)] sm:h-[560px] max-h-[80vh] rounded-none sm:rounded-xl bg-[var(--surface)] border border-[var(--border)] shadow-2xl flex flex-col overflow-hidden">
       {/* Header */}
-      <div className="flex items-center justify-between px-3 py-2 border-b border-[var(--border)] bg-blue-500 rounded-t-xl shrink-0">
+      <div className="flex items-center justify-between px-3 py-2 border-b border-[var(--border)] bg-blue-500 rounded-t-none sm:rounded-t-xl shrink-0">
         <div className="flex items-center gap-2">
           {user?.photo_url ? (
             <img src={user.photo_url} alt="" className="h-5 w-5 rounded-full" />
@@ -316,7 +316,7 @@ export default function ChatWidget() {
                 localStorage.setItem(USER_KEY, JSON.stringify(u));
               }
             }}
-            className="flex gap-2 w-full max-w-[250px]"
+            className="flex gap-2 w-full max-w-[280px]"
           >
             <input
               name="name"

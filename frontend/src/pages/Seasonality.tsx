@@ -993,7 +993,7 @@ function OutlookTab() {
         {topStocks.length === 0 ? (
           <p className="text-xs text-[var(--text-dim)]">No data</p>
         ) : (
-          <div className="overflow-y-auto max-h-[400px]">
+          <div className="overflow-x-auto overflow-y-auto max-h-[400px]">
             <table className="w-full text-xs">
               <thead className="sticky top-0 bg-[var(--surface)]">
                 <tr className="text-[var(--text-muted)]">
@@ -1053,7 +1053,7 @@ function OutlookTab() {
         {bottomStocks.length === 0 ? (
           <p className="text-xs text-[var(--text-dim)]">No data</p>
         ) : (
-          <div className="overflow-y-auto max-h-[400px]">
+          <div className="overflow-x-auto overflow-y-auto max-h-[400px]">
             <table className="w-full text-xs">
               <thead className="sticky top-0 bg-[var(--surface)]">
                 <tr className="text-[var(--text-muted)]">

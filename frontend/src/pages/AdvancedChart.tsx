@@ -111,7 +111,7 @@ function StockSelector({
       </button>
 
       {open && (
-        <div className="absolute top-full left-0 mt-1 z-50 w-72 bg-[var(--surface)] border border-[var(--border)] rounded-lg shadow-xl overflow-hidden">
+        <div className="absolute top-full left-0 mt-1 z-50 w-full sm:w-72 bg-[var(--surface)] border border-[var(--border)] rounded-lg shadow-xl overflow-hidden">
           {/* Search input */}
           <div className="p-2 border-b border-[var(--border)]">
             <input
