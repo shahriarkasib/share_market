@@ -1,22 +1,22 @@
 #!/usr/bin/env python3
-"""Lightweight chat service for GCP VM — receives requests, calls Claude CLI.
+"""Chat service for GCP VM — full Claude Code experience via CLI.
+
+Claude gets full tool access (Bash, Read, etc.) so it can query the database,
+read files, and analyze data — just like an interactive Claude Code session.
 
 Run: python3 gcp/chat_service.py
-Listens on port 8787. Render proxies /api/v1/chat → here.
+Listens on port 8787.
 """
 
-import asyncio
 import json
 import logging
 import os
 import subprocess
-import sys
 import tempfile
 import time
 import uuid
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from threading import Thread, Lock
-from queue import Queue
+from threading import Lock
 
 logging.basicConfig(
     level=logging.INFO,
@@ -29,24 +29,64 @@ PORT = int(os.getenv("CHAT_PORT", "8787"))
 MAX_HISTORY = 20
 SESSION_TTL = 24 * 3600
 
-SYSTEM_PROMPT = """You are a DSE (Dhaka Stock Exchange) trading assistant. You help users analyze Bangladesh stock market data, make trading decisions, and understand market trends.
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_DIR = os.path.dirname(SCRIPT_DIR)
+BACKEND_DIR = os.path.join(PROJECT_DIR, "backend")
 
-Key facts:
-- DSE uses BDT (Bangladeshi Taka). Minimum tick size: 0.10 BDT.
-- Bangladesh weekends: Friday + Saturday. Sunday is a trading day.
-- T+2 settlement cycle.
-- Stock categories: A (best), B, Z (worst).
-- DSEX is the main index.
+# System prompt injected via --append-system-prompt
+# This tells Claude WHO it is and WHAT it can do
+SYSTEM_PROMPT = """You are a DSE (Dhaka Stock Exchange) trading assistant with FULL access to a PostgreSQL database containing real market data.
 
-Be concise, actionable, and honest about uncertainty. When discussing specific stocks, mention key indicators (RSI, MACD, CMF, volume) and give clear buy/sell/hold recommendations with stop-loss levels.
-Format prices with 1 decimal place. Use tables when comparing multiple stocks."""
+IMPORTANT CONTEXT:
+- You are running on a GCP VM with access to the project codebase at {project_dir}
+- The backend is at {backend_dir}
+- You can run Python scripts using {venv_python}
+- Database: Supabase PostgreSQL (connection string in backend/config.py)
+
+TO QUERY MARKET DATA, run Python like this:
+```python
+import psycopg2
+conn = psycopg2.connect('postgresql://postgres.iihlezpkpllacztoaguc:160021062Ss%23%23@aws-1-ap-southeast-1.pooler.supabase.com:6543/postgres')
+cur = conn.cursor()
+cur.execute("SELECT ...")
+```
+
+KEY TABLES:
+- daily_prices (symbol, date, open, high, low, close, volume) — historical OHLCV
+- live_prices (symbol, ltp, high, low, open, close_prev, change, change_pct, volume, updated_at) — latest prices
+- daily_analysis (symbol, date, ltp, action, score, entry_low, entry_high, sl, t1, t2, rsi, cmf, stoch_rsi, adx, mfi, macd_status, support, resistance, ...) — algo analysis
+- judge_daily_analysis (symbol, date, final_action, final_confidence, entry_low, entry_high, sl, t1, t2) — AI judge verdicts
+- fundamentals (symbol, sector, category, company_name) — stock info
+- dsex_history (date, dsex_index, total_volume, total_value) — DSEX index
+- seasonality_monthly (symbol, month, avg_return, win_rate, median_return, cohens_d, ...) — seasonal patterns
+
+DSE MARKET RULES:
+- Currency: BDT (Bangladeshi Taka). Tick size: 0.10 BDT.
+- Weekends: Friday + Saturday. Sunday IS a trading day.
+- T+2 settlement. Categories: A (best), B, Z.
+- Today's date: use Python datetime to get current date.
+
+USER PROFILE:
+- Name: Sourav. Friend: Husmoy.
+- Halal-only investor. Prefers 20-100 BDT stocks.
+- 2-stock strategy, 5% target.
+- Current portfolio: ORIONINFU 395@362, HWAWELLTEX 1000@44.98, SPCERAMICS 5612@20.3
+- Cash available: ~104K BDT (sold GP at 254)
+
+BEHAVIOR:
+- Be concise and actionable. Give clear buy/sell/hold with stop-loss levels.
+- Format prices with 1 decimal. Use tables for comparisons.
+- Query the database for REAL data — never guess prices or indicators.
+- When asked about market/stocks, ALWAYS query live_prices and daily_analysis.
+""".format(
+    project_dir=PROJECT_DIR,
+    backend_dir=BACKEND_DIR,
+    venv_python=os.path.join(PROJECT_DIR, "venv", "bin", "python3"),
+)
 
 # ── Session store ────────────────────────────────────────────────────
 sessions: dict[str, dict] = {}
 sessions_lock = Lock()
-
-# ── Claude CLI queue (one at a time) ────────────────────────────────
-claude_queue: Queue = Queue()
 
 
 def get_claude_env() -> dict:
@@ -67,53 +107,89 @@ def get_claude_env() -> dict:
 
 
 def build_prompt(messages: list[dict], new_message: str) -> str:
-    parts = [SYSTEM_PROMPT, "\n\nConversation so far:"]
-    for msg in messages[-MAX_HISTORY:]:
-        role = "User" if msg["role"] == "user" else "Assistant"
-        parts.append(f"\n{role}: {msg['content']}")
-    parts.append(f"\nUser: {new_message}")
-    parts.append("\n\nRespond helpfully and concisely.")
+    parts = []
+    if messages:
+        parts.append("Previous conversation:")
+        for msg in messages[-MAX_HISTORY:]:
+            role = "User" if msg["role"] == "user" else "Assistant"
+            parts.append(f"\n{role}: {msg['content']}")
+        parts.append("\n---\n")
+    parts.append(f"User: {new_message}")
     return "\n".join(parts)
 
 
-def call_claude(prompt: str, timeout: int = 120) -> str:
+def call_claude(prompt: str, timeout: int = 180) -> str:
+    """Call Claude CLI with full tool access — like a real Claude Code session."""
     prompt_file = None
+    sys_prompt_file = None
     try:
+        # Write prompt to file
         prompt_file = tempfile.NamedTemporaryFile(
             mode="w", suffix=".txt", delete=False, prefix="claude_chat_"
         )
         prompt_file.write(prompt)
         prompt_file.close()
 
+        # Write system prompt to file (avoid shell escaping issues)
+        sys_prompt_file = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".txt", delete=False, prefix="claude_sys_"
+        )
+        sys_prompt_file.write(SYSTEM_PROMPT)
+        sys_prompt_file.close()
+
         env = get_claude_env()
         model = os.getenv("CLAUDE_MODEL", "sonnet")
-        bash_cmd = f'cat "{prompt_file.name}" | claude -p --model {model} --max-turns 1 --append-system-prompt "You are a DSE (Dhaka Stock Exchange) trading assistant. Answer questions directly about Bangladesh stock market. Do NOT attempt to use any tools, read files, or run commands. Just respond with helpful text based on your knowledge."'
+
+        # Key flags:
+        # --max-turns 10: allow multiple tool calls (query DB, read files, etc.)
+        # --dangerously-skip-permissions: don't prompt for permission
+        # --add-dir: give access to the backend directory
+        cmd = [
+            "bash", "-c",
+            f'cat "{prompt_file.name}" | claude -p '
+            f'--model {model} '
+            f'--max-turns 10 '
+            f'--dangerously-skip-permissions '
+            f'--add-dir "{BACKEND_DIR}" '
+            f'--append-system-prompt "$(cat {sys_prompt_file.name})"'
+        ]
 
         result = subprocess.run(
-            ["bash", "-c", bash_cmd],
-            capture_output=True, text=True, timeout=timeout, env=env,
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=env,
+            cwd=BACKEND_DIR,  # Run from backend dir so it can access files
         )
 
+        stderr_msg = (result.stderr or "").strip()
+        if stderr_msg and "error" in stderr_msg.lower():
+            logger.warning(f"Claude stderr: {stderr_msg[:500]}")
+
         if result.returncode != 0:
-            logger.error(f"Claude error (exit {result.returncode}): {(result.stderr or '')[:300]}")
+            logger.error(f"Claude error (exit {result.returncode}): {(stderr_msg or result.stdout or '')[:500]}")
             return "Sorry, couldn't process your request. Please try again."
 
         resp = result.stdout.strip()
         if "Not logged in" in resp or "Please run /login" in resp:
             return "Claude is not authenticated. Check CLAUDE_CODE_OAUTH_TOKEN."
         if not resp:
-            return "Empty response from Claude. Please try again."
+            return "Empty response. Please try again."
 
-        logger.info(f"Response: {len(resp)} chars")
+        logger.info(f"Response: {len(resp)} chars ({model})")
         return resp
 
     except subprocess.TimeoutExpired:
-        return "Request timed out. Try a shorter question."
+        logger.error(f"Claude timed out ({timeout}s)")
+        return "Request timed out. Try a simpler question."
     except FileNotFoundError:
-        return "Claude CLI not found on this server."
+        logger.error("Claude CLI not found")
+        return "Claude CLI not installed."
     finally:
-        if prompt_file and os.path.exists(prompt_file.name):
-            os.unlink(prompt_file.name)
+        for f in [prompt_file, sys_prompt_file]:
+            if f and os.path.exists(f.name):
+                os.unlink(f.name)
 
 
 def cleanup_sessions():
@@ -211,22 +287,24 @@ class ChatHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def log_message(self, format, *args):
-        # Suppress default HTTP logging, we use our own
         pass
 
 
 def main():
-    logger.info(f"Starting chat service on port {PORT}...")
+    logger.info(f"Starting DSE Chat Service (full Claude Code mode)...")
+    logger.info(f"Project: {PROJECT_DIR}")
+    logger.info(f"Backend: {BACKEND_DIR}")
 
-    # Verify Claude CLI
     env = get_claude_env()
     token_set = bool(env.get("CLAUDE_CODE_OAUTH_TOKEN"))
-    logger.info(f"Claude CLI: {subprocess.run(['which', 'claude'], capture_output=True, text=True).stdout.strip()}")
+    claude_path = subprocess.run(['which', 'claude'], capture_output=True, text=True).stdout.strip()
+    logger.info(f"Claude CLI: {claude_path}")
     logger.info(f"OAuth token: {'set' if token_set else 'NOT SET'}")
+    logger.info(f"Model: {os.getenv('CLAUDE_MODEL', 'sonnet')}")
+    logger.info(f"Max turns: 10 (full tool access)")
 
     server = HTTPServer(("0.0.0.0", PORT), ChatHandler)
-    logger.info(f"Chat service running on http://0.0.0.0:{PORT}")
-    logger.info(f"Health check: http://0.0.0.0:{PORT}/health")
+    logger.info(f"Listening on http://0.0.0.0:{PORT}")
 
     try:
         server.serve_forever()
