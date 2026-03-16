@@ -794,11 +794,12 @@ const CHAT_URL = import.meta.env.VITE_CHAT_URL || "https://34.63.227.229.nip.io"
 export async function sendChatMessage(
   message: string,
   sessionId?: string,
+  userEmail?: string,
 ): Promise<ChatResponse> {
   const res = await fetch(`${CHAT_URL}/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ message, session_id: sessionId }),
+    body: JSON.stringify({ message, session_id: sessionId, user_email: userEmail }),
     signal: AbortSignal.timeout(300_000),
   });
   if (!res.ok) throw new Error(`Chat error: ${res.status}`);

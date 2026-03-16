@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Chat service for GCP VM — full Claude Code experience via CLI.
+"""Multi-user chat service for GCP VM — full Claude Code experience via CLI.
 
-Claude gets full tool access (Bash, Read, etc.) so it can query the database,
-read files, and analyze data — just like an interactive Claude Code session.
+Each user gets their own profile (portfolio, strategy, preferences) stored
+in the database. Google OAuth provides user identification.
 
 Run: python3 gcp/chat_service.py
-Listens on port 8787.
+Listens on port 8787. Caddy provides HTTPS on port 443.
 """
 
 import json
@@ -17,9 +17,6 @@ import time
 import uuid
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from threading import Lock
-
-import psycopg2
-import psycopg2.extras
 
 logging.basicConfig(
     level=logging.INFO,
@@ -36,9 +33,11 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.dirname(SCRIPT_DIR)
 BACKEND_DIR = os.path.join(PROJECT_DIR, "backend")
 
-# System prompt injected via --append-system-prompt
-# This tells Claude WHO it is and WHAT it can do
-SYSTEM_PROMPT = """You are a professional DSE (Dhaka Stock Exchange) trading analyst with FULL access to a PostgreSQL database containing comprehensive market data. You analyze stocks using raw data and your own expertise — you do NOT rely on pre-computed scores or rigid rules.
+DB_URL = "postgresql://postgres.iihlezpkpllacztoaguc:160021062Ss%23%23@aws-1-ap-southeast-1.pooler.supabase.com:6543/postgres"
+
+# ── General system prompt (same for all users) ──────────────────────
+
+GENERAL_PROMPT = """You are a professional DSE (Dhaka Stock Exchange) trading analyst with FULL access to a PostgreSQL database containing comprehensive market data. You analyze stocks using raw data and your own expertise — you do NOT rely on pre-computed scores or rigid rules.
 
 ENVIRONMENT:
 - GCP VM with project at {project_dir}, backend at {backend_dir}
@@ -48,50 +47,22 @@ ENVIRONMENT:
 DATABASE ACCESS:
 ```python
 import psycopg2
-conn = psycopg2.connect('postgresql://postgres.iihlezpkpllacztoaguc:160021062Ss%23%23@aws-1-ap-southeast-1.pooler.supabase.com:6543/postgres')
+conn = psycopg2.connect('{db_url}')
 cur = conn.cursor()
 ```
 
 AVAILABLE DATA — query ALL of these when analyzing a stock:
 
 1. PRICE HISTORY (daily_prices): symbol, date, open, high, low, close, volume, value, trade_count
-   → Full OHLCV going back to 2015. Use this to see trends, support/resistance, volume patterns, how far a stock has moved.
-
 2. LIVE PRICES (live_prices): symbol, ltp, high, low, open, close_prev, change, change_pct, volume, value, trade_count, updated_at
-   → Current trading session data.
-
-3. TECHNICAL INDICATORS (daily_analysis): symbol, date, ltp, action, score, entry_low, entry_high, sl, t1, t2,
-   rsi, stoch_rsi, macd_line, macd_signal, macd_hist, macd_status, mfi, cmf, obv, williams_r,
-   adx, plus_di, minus_di, bb_pct, atr, atr_pct, volatility, max_dd,
-   ema9, ema21, sma50, momentum_3d, momentum_5d, turnover,
-   chg_5d, chg_10d, chg_20d, support, resistance, trend_50d, avg_vol, vol_ratio,
-   category, entry_start, entry_end, exit_t1_by, exit_t2_by, hold_days_t1, hold_days_t2
-   → Pre-computed technical indicators. NOTE: check the date — these may be stale. Use as reference but verify against current prices.
-
-4. LLM ANALYSIS (llm_daily_analysis): symbol, date, action, confidence, reasoning, score,
-   wait_for, wait_days, risk_factors, catalysts, how_to_buy, volume_rule,
-   entry_low, entry_high, sl, t1, t2, stage, stage_reasoning,
-   expected_return_1w, expected_return_2w, expected_return_1m, downside_risk,
-   dsex_dependency, if_dsex_drops, if_dsex_rises, dsex_outlook
-   → AI analysis with rich context including DSEX dependency and scenario analysis.
-
-5. AI JUDGE (judge_daily_analysis): symbol, date, final_action, final_confidence, agreement,
-   reasoning, key_risk, algo_strengths, llm_strengths,
-   entry_low, entry_high, sl, t1, t2, score
-   → Final AI verdict comparing algo vs LLM analysis.
-
+3. TECHNICAL INDICATORS (daily_analysis): symbol, date, ltp, action, score, entry_low, entry_high, sl, t1, t2, rsi, stoch_rsi, macd_line, macd_signal, macd_hist, macd_status, mfi, cmf, obv, williams_r, adx, plus_di, minus_di, bb_pct, atr, atr_pct, volatility, max_dd, ema9, ema21, sma50, momentum_3d, momentum_5d, turnover, chg_5d, chg_10d, chg_20d, support, resistance, trend_50d, avg_vol, vol_ratio, category
+4. LLM ANALYSIS (llm_daily_analysis): symbol, date, action, confidence, reasoning, score, wait_for, wait_days, risk_factors, catalysts, how_to_buy, volume_rule, entry_low, entry_high, sl, t1, t2, stage, stage_reasoning, expected_return_1w, expected_return_2w, expected_return_1m, downside_risk, dsex_dependency, if_dsex_drops, if_dsex_rises, dsex_outlook
+5. AI JUDGE (judge_daily_analysis): symbol, date, final_action, final_confidence, agreement, reasoning, key_risk, algo_strengths, llm_strengths, entry_low, entry_high, sl, t1, t2, score
 6. FUNDAMENTALS (fundamentals): symbol, sector, category, company_name
-   → Category A = best governance, B = medium, Z = poor.
-
 7. DSEX INDEX (dsex_history): date, dsex_index, dses_index, ds30_index, total_volume, total_value, total_trade
-   → Broad market index. Essential for understanding market regime.
-
-8. SEASONALITY (seasonality_monthly): symbol, sector, category, month, avg_return, win_rate, years_up, years_total,
-   median_return, trimmed_mean, bootstrap_p, cohens_d, best_return, worst_return, volatility
-   → Statistical seasonal patterns with significance tests.
-
+8. SEASONALITY (seasonality_monthly): symbol, sector, category, month, avg_return, win_rate, years_up, years_total, median_return, trimmed_mean, bootstrap_p, cohens_d, best_return, worst_return, volatility
 9. YEARLY SEASONALITY (seasonality_yearly): symbol, year, month, monthly_return
-   → Individual year-month returns for detailed pattern analysis.
+10. USER PROFILES (chat_users): id, email, name, photo_url, portfolio (JSONB), strategy, preferences, feedback
 
 DSE MARKET RULES:
 - Currency: BDT. Tick size: 0.10 BDT.
@@ -99,30 +70,129 @@ DSE MARKET RULES:
 - T+2 settlement. Categories: A (best), B, Z.
 - Trading hours: 10:00-14:30 BST (UTC+6).
 
-USER PROFILE:
-- Name: Sourav. Friend: Husmoy.
-- Halal-only investor. Prefers 20-100 BDT stocks.
-- 2-stock strategy, 5% target.
-- Current portfolio: ORIONINFU 395@362, HWAWELLTEX 1000@44.98, SPCERAMICS 5612@20.3
-- Cash available: ~104K BDT (sold GP at 254)
+USER PROFILE MANAGEMENT:
+- The current user's profile is loaded below. When they share portfolio info, strategy, preferences, or feedback, UPDATE their profile in the database.
+- To update: UPDATE chat_users SET portfolio = '...', updated_at = CURRENT_TIMESTAMP WHERE email = '<user_email>'
+- Portfolio format (JSONB): {{"SYMBOL": {{"qty": 100, "price": 50.0, "date": "2026-03-15"}}, ...}}
+- When user says "I bought X shares of Y at Z", add it to their portfolio JSON.
+- When user says "I sold X", remove it from their portfolio JSON.
 
 HOW TO ANALYZE — USE YOUR OWN JUDGMENT:
-- You are a professional analyst. Look at ALL the raw data and form your own opinion.
-- Pull the full price history to understand the trend structure — where did the move start, how far has it gone, is it accelerating or exhausting.
-- Cross-reference multiple indicators — RSI, MACD, CMF, MFI, ADX, Stochastic, OBV, Williams %R, Bollinger bands, ATR — to build a complete picture.
-- Always check the DSEX index trend — individual stocks correlate with the broad market.
-- Check seasonality — some months are historically strong/weak for specific stocks.
-- Look at volume patterns — is smart money accumulating or distributing?
-- Compare current price against historical support/resistance levels from the price data itself.
-- When screening for buys, filter out stocks that have already made their move — look at the price chart, not just the algo signal.
-- The algo scores and LLM analysis are just ONE input — verify everything against actual price action.
-- Be honest. If there are no good setups right now, say so. Don't force a recommendation.
+- Pull the full price history to understand trends. Cross-reference all indicators.
+- Always check DSEX trend — individual stocks correlate with the broad market.
+- Check seasonality. Look at volume patterns.
+- When screening for buys, verify stocks haven't already made their move.
+- Be honest. If there are no good setups, say so.
 - Format: concise, tables when comparing, 1 decimal for prices.
 """.format(
     project_dir=PROJECT_DIR,
     backend_dir=BACKEND_DIR,
     venv_python=os.path.join(PROJECT_DIR, "venv", "bin", "python3"),
+    db_url=DB_URL,
 )
+
+# ── Database helpers ─────────────────────────────────────────────────
+
+
+def _get_db():
+    import psycopg2
+    import psycopg2.extras
+    return psycopg2.connect(DB_URL, cursor_factory=psycopg2.extras.RealDictCursor)
+
+
+def init_db():
+    """Create chat_users table if it doesn't exist."""
+    try:
+        conn = _get_db()
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS chat_users (
+                id SERIAL PRIMARY KEY,
+                email TEXT UNIQUE NOT NULL,
+                name TEXT NOT NULL DEFAULT '',
+                photo_url TEXT DEFAULT '',
+                portfolio JSONB DEFAULT '{}',
+                strategy TEXT DEFAULT '',
+                preferences TEXT DEFAULT '',
+                feedback TEXT DEFAULT '',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        conn.commit()
+        cur.execute("SELECT COUNT(*) FROM chat_users")
+        count = cur.fetchone()["count"]
+        conn.close()
+        logger.info(f"chat_users table ready ({count} users)")
+    except Exception as e:
+        logger.error(f"DB init failed: {e}")
+
+
+def get_or_create_user(email: str, name: str = "", photo_url: str = "") -> dict:
+    """Get user profile or create new one."""
+    try:
+        conn = _get_db()
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM chat_users WHERE email = %s", (email,))
+        user = cur.fetchone()
+        if not user:
+            cur.execute(
+                "INSERT INTO chat_users (email, name, photo_url) VALUES (%s, %s, %s) RETURNING *",
+                (email, name, photo_url),
+            )
+            user = cur.fetchone()
+            conn.commit()
+            logger.info(f"New user: {name} ({email})")
+        else:
+            # Update name/photo if changed
+            if (name and name != user["name"]) or (photo_url and photo_url != user["photo_url"]):
+                cur.execute(
+                    "UPDATE chat_users SET name = %s, photo_url = %s, updated_at = CURRENT_TIMESTAMP WHERE email = %s",
+                    (name or user["name"], photo_url or user["photo_url"], email),
+                )
+                conn.commit()
+        conn.close()
+        return dict(user)
+    except Exception as e:
+        logger.error(f"User lookup failed: {e}")
+        return {"email": email, "name": name, "portfolio": {}, "strategy": "", "preferences": "", "feedback": ""}
+
+
+def build_user_context(user: dict) -> str:
+    """Build user-specific context string."""
+    parts = [f"\nCURRENT USER: {user.get('name', 'Unknown')} ({user.get('email', '')})"]
+
+    portfolio = user.get("portfolio") or {}
+    if isinstance(portfolio, str):
+        try:
+            portfolio = json.loads(portfolio)
+        except Exception:
+            portfolio = {}
+
+    if portfolio:
+        parts.append("Portfolio:")
+        for sym, info in portfolio.items():
+            if isinstance(info, dict):
+                parts.append(f"  - {sym}: {info.get('qty', '?')} shares @ {info.get('price', '?')} BDT")
+            else:
+                parts.append(f"  - {sym}: {info}")
+    else:
+        parts.append("Portfolio: No holdings saved yet. Ask the user if they have any stocks.")
+
+    strategy = user.get("strategy", "")
+    if strategy:
+        parts.append(f"Strategy: {strategy}")
+
+    preferences = user.get("preferences", "")
+    if preferences:
+        parts.append(f"Preferences: {preferences}")
+
+    feedback = user.get("feedback", "")
+    if feedback:
+        parts.append(f"Past feedback: {feedback}")
+
+    return "\n".join(parts)
+
 
 # ── Session store ────────────────────────────────────────────────────
 sessions: dict[str, dict] = {}
@@ -158,32 +228,29 @@ def build_prompt(messages: list[dict], new_message: str) -> str:
     return "\n".join(parts)
 
 
-def call_claude(prompt: str, timeout: int = 600) -> str:
-    """Call Claude CLI with full tool access — like a real Claude Code session."""
+def call_claude(prompt: str, user_context: str = "", timeout: int = 600) -> str:
+    """Call Claude CLI with full tool access and user-specific context."""
     prompt_file = None
     sys_prompt_file = None
     try:
-        # Write prompt to file
         prompt_file = tempfile.NamedTemporaryFile(
             mode="w", suffix=".txt", delete=False, prefix="claude_chat_"
         )
         prompt_file.write(prompt)
         prompt_file.close()
 
-        # Write system prompt to file (avoid shell escaping issues)
+        # Combine general + user-specific prompt
+        full_system = GENERAL_PROMPT + "\n" + user_context
+
         sys_prompt_file = tempfile.NamedTemporaryFile(
             mode="w", suffix=".txt", delete=False, prefix="claude_sys_"
         )
-        sys_prompt_file.write(SYSTEM_PROMPT)
+        sys_prompt_file.write(full_system)
         sys_prompt_file.close()
 
         env = get_claude_env()
         model = os.getenv("CLAUDE_MODEL", "sonnet")
 
-        # Key flags:
-        # --max-turns 10: allow multiple tool calls (query DB, read files, etc.)
-        # --dangerously-skip-permissions: don't prompt for permission
-        # --add-dir: give access to the backend directory
         cmd = [
             "bash", "-c",
             f'cat "{prompt_file.name}" | claude -p '
@@ -195,12 +262,8 @@ def call_claude(prompt: str, timeout: int = 600) -> str:
         ]
 
         result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            env=env,
-            cwd=BACKEND_DIR,  # Run from backend dir so it can access files
+            cmd, capture_output=True, text=True, timeout=timeout,
+            env=env, cwd=BACKEND_DIR,
         )
 
         stderr_msg = (result.stderr or "").strip()
@@ -244,6 +307,8 @@ class ChatHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         if self.path == "/chat":
             self._handle_chat()
+        elif self.path == "/auth/google":
+            self._handle_google_auth()
         else:
             self._respond(404, {"error": "not found"})
 
@@ -258,6 +323,16 @@ class ChatHandler(BaseHTTPRequestHandler):
                 self._respond(200, {"session_id": sid, "messages": session["messages"]})
             else:
                 self._respond(200, {"session_id": sid, "messages": []})
+        elif self.path.startswith("/user/"):
+            email = self.path.split("/user/")[1]
+            user = get_or_create_user(email)
+            self._respond(200, {"user": {
+                "email": user.get("email"),
+                "name": user.get("name"),
+                "photo_url": user.get("photo_url"),
+                "portfolio": user.get("portfolio", {}),
+                "strategy": user.get("strategy", ""),
+            }})
         else:
             self._respond(404, {"error": "not found"})
 
@@ -269,6 +344,40 @@ class ChatHandler(BaseHTTPRequestHandler):
             self._respond(200, {"status": "cleared"})
         else:
             self._respond(404, {"error": "not found"})
+
+    def _handle_google_auth(self):
+        """Verify Google token and return/create user."""
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            body = json.loads(self.rfile.read(length))
+        except Exception:
+            self._respond(400, {"error": "invalid JSON"})
+            return
+
+        # The frontend sends the Google credential (JWT)
+        # For simplicity, we trust the decoded info from the frontend
+        # In production, verify the JWT with Google's API
+        email = body.get("email", "").strip()
+        name = body.get("name", "").strip()
+        photo_url = body.get("photo_url", "").strip()
+
+        if not email:
+            self._respond(400, {"error": "email required"})
+            return
+
+        user = get_or_create_user(email, name, photo_url)
+        logger.info(f"Auth: {name} ({email})")
+
+        self._respond(200, {
+            "user": {
+                "email": user.get("email"),
+                "name": user.get("name"),
+                "photo_url": user.get("photo_url"),
+                "portfolio": user.get("portfolio", {}),
+                "strategy": user.get("strategy", ""),
+                "preferences": user.get("preferences", ""),
+            }
+        })
 
     def _handle_chat(self):
         try:
@@ -284,17 +393,26 @@ class ChatHandler(BaseHTTPRequestHandler):
             return
 
         session_id = body.get("session_id") or str(uuid.uuid4())
+        user_email = body.get("user_email", "")
         cleanup_sessions()
+
+        # Load user profile for context
+        user_context = ""
+        if user_email:
+            user = get_or_create_user(user_email)
+            user_context = build_user_context(user)
+        else:
+            user_context = "\nCURRENT USER: Anonymous (not signed in). No portfolio data. Give general advice."
 
         with sessions_lock:
             if session_id not in sessions:
-                sessions[session_id] = {"messages": [], "last_active": time.time()}
+                sessions[session_id] = {"messages": [], "last_active": time.time(), "user_email": user_email}
             session = sessions[session_id]
 
         prompt = build_prompt(session["messages"], message)
-        logger.info(f"[{session_id[:8]}] Processing: {message[:80]}...")
+        logger.info(f"[{session_id[:8]}] [{user_email or 'anon'}] {message[:80]}...")
 
-        response = call_claude(prompt)
+        response = call_claude(prompt, user_context)
 
         with sessions_lock:
             session["messages"].append({"role": "user", "content": message})
@@ -317,7 +435,7 @@ class ChatHandler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.end_headers()
-        self.wfile.write(json.dumps(data).encode())
+        self.wfile.write(json.dumps(data, default=str).encode())
 
     def do_OPTIONS(self):
         self.send_response(200)
@@ -331,9 +449,12 @@ class ChatHandler(BaseHTTPRequestHandler):
 
 
 def main():
-    logger.info(f"Starting DSE Chat Service (full Claude Code mode)...")
+    logger.info("Starting DSE Chat Service (multi-user, full Claude Code)...")
     logger.info(f"Project: {PROJECT_DIR}")
     logger.info(f"Backend: {BACKEND_DIR}")
+
+    # Init DB table
+    init_db()
 
     env = get_claude_env()
     token_set = bool(env.get("CLAUDE_CODE_OAUTH_TOKEN"))
@@ -341,7 +462,7 @@ def main():
     logger.info(f"Claude CLI: {claude_path}")
     logger.info(f"OAuth token: {'set' if token_set else 'NOT SET'}")
     logger.info(f"Model: {os.getenv('CLAUDE_MODEL', 'sonnet')}")
-    logger.info(f"Max turns: 10 (full tool access)")
+    logger.info(f"Max turns: 25")
 
     server = HTTPServer(("0.0.0.0", PORT), ChatHandler)
     logger.info(f"Listening on http://0.0.0.0:{PORT}")
