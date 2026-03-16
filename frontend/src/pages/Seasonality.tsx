@@ -216,13 +216,6 @@ function returnBg(value: number): string {
   return "rgba(239,68,68,0.45)";
 }
 
-/** Color for up_pct cells. */
-function upPctBg(pct: number): string {
-  if (pct >= 70) return "rgba(34,197,94,0.30)";
-  if (pct >= 50) return "rgba(34,197,94,0.12)";
-  if (pct >= 30) return "rgba(239,68,68,0.12)";
-  return "rgba(239,68,68,0.30)";
-}
 
 export function fmtPct(v: number | null | undefined): string {
   return v != null ? v.toFixed(1) + "%" : "—";
@@ -432,7 +425,7 @@ function SectorHeatmapTab() {
                     const isExpanded = expandedMonths.has(month);
 
                     // Overall metric cell
-                    const metricVal = md ? (md as Record<string, number>)[metric] ?? 0 : 0;
+                    const metricVal = md ? (md as unknown as Record<string, number>)[metric] ?? 0 : 0;
                     const disp = md ? getMetricDisplay(metricVal, metric) : null;
                     const avgCell = !md || !disp ? (
                       <td key={i} className="px-1 py-1.5 text-center text-[var(--text-dim)]">--</td>
@@ -444,7 +437,7 @@ function SectorHeatmapTab() {
                           month === CURRENT_MONTH && !isExpanded && "ring-1 ring-blue-500/40 rounded",
                         )}
                         style={{ background: metricBg(disp.raw, metric) }}
-                        title={`Win: ${(md.win_rate * 100).toFixed(0)}% | p=${(md as Record<string, number>).bootstrap_p?.toFixed(3) ?? "?"} | d=${(md as Record<string, number>).cohens_d?.toFixed(2) ?? "?"} | Samples: ${md.sample_size}`}
+                        title={`Win: ${(md.win_rate * 100).toFixed(0)}% | p=${(md as unknown as Record<string, number>).bootstrap_p?.toFixed(3) ?? "?"} | d=${(md as unknown as Record<string, number>).cohens_d?.toFixed(2) ?? "?"} | Samples: ${md.sample_size}`}
                       >
                         {disp.text}
                       </td>
@@ -725,7 +718,7 @@ function StockPatternsTab() {
                     const isExpanded = expandedMonths.has(month);
 
                     // Overall metric cell
-                    const metricVal = md ? (md as Record<string, number>)[metric] ?? 0 : 0;
+                    const metricVal = md ? (md as unknown as Record<string, number>)[metric] ?? 0 : 0;
                     const disp = md ? getMetricDisplay(metricVal, metric) : null;
                     const avgCell = !md || !disp ? (
                       <td key={i} className="px-1 py-1.5 text-center text-[var(--text-dim)]">--</td>
@@ -940,7 +933,7 @@ function OutlookTab() {
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
             {topSectors.map((s) => {
-              const d = getMetricDisplay((s as Record<string, number>)[metric] ?? 0, metric);
+              const d = getMetricDisplay((s as unknown as Record<string, number>)[metric] ?? 0, metric);
               return (
                 <div
                   key={s.sector}
@@ -971,7 +964,7 @@ function OutlookTab() {
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
             {bottomSectors.map((s) => {
-              const d = getMetricDisplay((s as Record<string, number>)[metric] ?? 0, metric);
+              const d = getMetricDisplay((s as unknown as Record<string, number>)[metric] ?? 0, metric);
               return (
                 <div
                   key={s.sector}
