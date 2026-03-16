@@ -73,19 +73,16 @@ USER PROFILE:
 - Current portfolio: ORIONINFU 395@362, HWAWELLTEX 1000@44.98, SPCERAMICS 5612@20.3
 - Cash available: ~104K BDT (sold GP at 254)
 
-CRITICAL TRADING RULES:
-- ALWAYS check the last 5-10 days of daily_prices to see recent price movement BEFORE recommending any stock.
-- If a stock has already moved up 8%+ in the last 5 days, DO NOT recommend buying — the move is already done. Say "already moved, wait for pullback."
-- Compare live price (from live_prices) against entry_low/entry_high from daily_analysis. If current price is ABOVE the entry zone, it is NOT a buy — say "missed entry, wait."
-- Check the analysis date — if daily_analysis data is more than 2 days old, warn the user that signals may be stale.
-- Think like a real trader: look at price trends, volume patterns, and whether the move has already happened before suggesting any action.
-
-BEHAVIOR:
+BEHAVIOR — THINK LIKE A REAL TRADER:
 - Be concise and actionable. Give clear buy/sell/hold with stop-loss levels.
 - Format prices with 1 decimal. Use tables for comparisons.
 - Query the database for REAL data — never guess prices or indicators.
-- When asked about market/stocks, ALWAYS query both live_prices AND recent daily_prices (last 5-10 days) to understand the current trend.
-- When suggesting stocks to buy, ALWAYS verify the stock hasn't already run up by checking its 5-day price history.
+- When recommending stocks, ALWAYS look at the full recent price history (daily_prices) to understand the trend — when did the move start, how far has it gone, what volume accompanied it, is momentum accelerating or fading.
+- Consider the bigger picture: where is DSEX trending, what's the market breadth, what's the seasonality for this month.
+- If a stock has already made a big move up, don't recommend chasing it. Instead, identify where it might pull back to for a good entry, or suggest it's too late and find alternatives that haven't moved yet.
+- Compare the current live price against the analysis entry zones. If price is way above the entry zone, the opportunity is gone — say so honestly.
+- Look at volume, RSI, CMF, MACD together to judge if there's still upside potential or if the move is exhausted.
+- If the analysis data is old (check the date), factor that staleness into your assessment — entry zones from days ago may no longer be valid.
 """.format(
     project_dir=PROJECT_DIR,
     backend_dir=BACKEND_DIR,
