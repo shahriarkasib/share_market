@@ -775,4 +775,33 @@ export async function fetchFloorDates(): Promise<{ dates: string[] }> {
   return data;
 }
 
+/* ========================== Chat ========================== */
+
+export interface ChatMessage {
+  role: "user" | "assistant";
+  content: string;
+}
+
+export interface ChatResponse {
+  session_id: string;
+  response: string;
+  history: ChatMessage[];
+}
+
+export async function sendChatMessage(
+  message: string,
+  sessionId?: string,
+): Promise<ChatResponse> {
+  const { data } = await api.post<ChatResponse>(
+    "/chat",
+    { message, session_id: sessionId },
+    { timeout: 120_000 },
+  );
+  return data;
+}
+
+export async function clearChatSession(sessionId: string): Promise<void> {
+  await api.delete(`/chat/sessions/${sessionId}`);
+}
+
 export default api;

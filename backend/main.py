@@ -332,6 +332,7 @@ from api.routes_events import router as events_router
 from api.routes_dividends import router as dividends_router
 from api.routes_seasonality import router as seasonality_router
 from api.routes_floor import router as floor_router
+from api.routes_chat import router as chat_router
 
 app.include_router(market_router, prefix=f"{API_PREFIX}/market", tags=["Market"])
 app.include_router(stock_router, prefix=f"{API_PREFIX}/stock", tags=["Stock"])
@@ -345,6 +346,7 @@ app.include_router(events_router, prefix=f"{API_PREFIX}/events", tags=["Events"]
 app.include_router(dividends_router, prefix=f"{API_PREFIX}/dividends", tags=["Dividends"])
 app.include_router(seasonality_router, prefix=f"{API_PREFIX}/seasonality", tags=["Seasonality"])
 app.include_router(floor_router, prefix=f"{API_PREFIX}/floor", tags=["Floor Detection"])
+app.include_router(chat_router, prefix=f"{API_PREFIX}/chat", tags=["Chat"])
 
 
 @app.get("/")

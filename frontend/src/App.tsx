@@ -11,6 +11,7 @@ import News from "./pages/News.tsx";
 import Seasonality from "./pages/Seasonality.tsx";
 import Dividends from "./pages/Dividends.tsx";
 import FloorDetection from "./pages/FloorDetection.tsx";
+import Chat from "./pages/Chat.tsx";
 
 export default function App() {
   return (
@@ -27,6 +28,7 @@ export default function App() {
         <Route path="/seasonality" element={<Seasonality />} />
         <Route path="/dividends" element={<Dividends />} />
         <Route path="/floor" element={<FloorDetection />} />
+        <Route path="/chat" element={<Chat />} />
       </Route>
     </Routes>
   );
