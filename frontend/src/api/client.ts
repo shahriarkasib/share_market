@@ -26,10 +26,7 @@ const api = axios.create({
   headers: { "Content-Type": "application/json" },
 });
 
-// Keep Render backend warm — ping every 10 minutes to prevent cold starts
-setInterval(() => {
-  fetch("/api/v1/market/summary", { method: "HEAD" }).catch(() => {});
-}, 10 * 60 * 1000);
+// GCP VM never sleeps — no keep-alive needed
 
 api.interceptors.response.use(
   (response) => response,
