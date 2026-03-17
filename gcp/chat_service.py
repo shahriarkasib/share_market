@@ -583,7 +583,8 @@ class ChatHandler(BaseHTTPRequestHandler):
         prompt = build_prompt(session["messages"], message)
         logger.info(f"[{session_id[:8]}] [{user_email or 'anon'}] {message[:80]}...")
 
-        response = call_claude(prompt, user_context)
+        # Use deep mode (full tool access with haiku for speed)
+        response = call_claude_deep(prompt, user_context)
 
         with sessions_lock:
             session["messages"].append({"role": "user", "content": message})
