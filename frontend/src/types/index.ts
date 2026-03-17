@@ -527,6 +527,12 @@ export interface BuyRadarStock {
   ai_signals: string[];
   stage_reasoning: string;
   sell_plan?: string;
+  // Entry direction + conviction
+  entry_direction?: 'CONVERGING' | 'AT_ENTRY' | 'NEAR_ENTRY' | 'DIVERGING' | 'MOVED_PAST';
+  entry_direction_reason?: string;
+  conviction?: 'HIGH' | 'MEDIUM' | 'LOW' | 'WEAK';
+  conviction_score?: number;
+  conviction_reason?: string;
   // Profit estimation
   expected_return_1w?: number;
   expected_return_2w?: number;

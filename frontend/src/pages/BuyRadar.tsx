@@ -364,17 +364,40 @@ function StockCard({ stock }: { stock: BuyRadarStock }) {
               <span className={clsx("text-[10px] px-1.5 py-0.5 rounded font-bold", style.badge)}>
                 {stock.stage.replace("_", " ")}
               </span>
-              {stock.entry_zone_status && stock.entry_zone_status !== "UNKNOWN" && (
+              {stock.entry_direction ? (
+                <span className={clsx("px-1.5 py-0.5 rounded text-[10px] font-bold",
+                  stock.entry_direction === "AT_ENTRY" && "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30",
+                  stock.entry_direction === "NEAR_ENTRY" && "bg-emerald-500/15 text-emerald-300 border border-emerald-500/20",
+                  stock.entry_direction === "CONVERGING" && "bg-blue-500/20 text-blue-400 border border-blue-500/30",
+                  stock.entry_direction === "DIVERGING" && "bg-amber-500/20 text-amber-400 border border-amber-500/30",
+                  stock.entry_direction === "MOVED_PAST" && "bg-red-500/20 text-red-400 border border-red-500/30",
+                )} title={stock.entry_direction_reason || ""}>
+                  {stock.entry_direction === "AT_ENTRY" ? "AT ENTRY" :
+                   stock.entry_direction === "NEAR_ENTRY" ? "NEAR ENTRY" :
+                   stock.entry_direction === "CONVERGING" ? "→ CONVERGING" :
+                   stock.entry_direction === "DIVERGING" ? "← DIVERGING" :
+                   "MOVED PAST"}
+                </span>
+              ) : stock.entry_zone_status && stock.entry_zone_status !== "UNKNOWN" ? (
                 <span className={clsx("px-1.5 py-0.5 rounded text-[10px] font-bold",
                   stock.entry_zone_status === "IN_ZONE" && "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30",
                   stock.entry_zone_status === "BELOW_ENTRY" && "bg-blue-500/20 text-blue-400 border border-blue-500/30",
                   stock.entry_zone_status === "APPROACHING" && "bg-amber-500/20 text-amber-400 border border-amber-500/30",
                   stock.entry_zone_status === "MOVED_PAST" && "bg-red-500/20 text-red-400 border border-red-500/30",
                 )}>
-                  {stock.entry_zone_status === "IN_ZONE" && "IN ENTRY ZONE"}
-                  {stock.entry_zone_status === "BELOW_ENTRY" && "BELOW ENTRY"}
-                  {stock.entry_zone_status === "APPROACHING" && "NEAR ENTRY"}
-                  {stock.entry_zone_status === "MOVED_PAST" && "MOVED PAST ENTRY"}
+                  {stock.entry_zone_status === "IN_ZONE" ? "IN ZONE" :
+                   stock.entry_zone_status === "BELOW_ENTRY" ? "BELOW" :
+                   stock.entry_zone_status === "APPROACHING" ? "NEAR" : "MOVED PAST"}
+                </span>
+              ) : null}
+              {stock.conviction && (
+                <span className={clsx("px-1.5 py-0.5 rounded text-[10px] font-bold",
+                  stock.conviction === "HIGH" && "bg-emerald-500/15 text-emerald-400",
+                  stock.conviction === "MEDIUM" && "bg-blue-500/15 text-blue-400",
+                  stock.conviction === "LOW" && "bg-amber-500/15 text-amber-400",
+                  stock.conviction === "WEAK" && "bg-red-500/15 text-red-400",
+                )} title={stock.conviction_reason || ""}>
+                  {stock.conviction_score ? `${stock.conviction_score}%` : stock.conviction}
                 </span>
               )}
               {stock.ready_count > 0 && (

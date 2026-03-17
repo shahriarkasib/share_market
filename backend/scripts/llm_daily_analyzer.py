@@ -1078,11 +1078,35 @@ Return a JSON array. Start with [ end with ]. NO other text:
     "dsex_dependency": "HIGH|MEDIUM|LOW",
     "if_dsex_drops": "What happens to this stock and your entry if DSEX drops 1-2%",
     "if_dsex_rises": "What happens if DSEX rallies 1-2%",
+    "entry_direction": "CONVERGING|AT_ENTRY|NEAR_ENTRY|DIVERGING|MOVED_PAST",
+    "entry_direction_reason": "Why this direction — cite actual price movement toward or away from entry zone over recent days",
+    "conviction": "HIGH|MEDIUM|LOW|WEAK",
+    "conviction_score": 75,
+    "conviction_reason": "Why this conviction — cite buy/sell volume ratio, CMF/OBV trends, DSEX support, order book if available",
     "position_size_pct": 5.0,
     "shares_for_100k": 100,
     "score": 50
   }}
 ]
+
+ENTRY ZONE DIRECTION — track the JOURNEY toward entry:
+- CONVERGING: Price is moving TOWARD the entry zone day by day (getting cheaper/closer to support)
+- NEAR_ENTRY: Price is within 2-3% of entry zone, almost there
+- AT_ENTRY: Price is currently inside the entry zone (entry_low to entry_high)
+- DIVERGING: Price WAS near entry but is now moving AWAY (bounced up or broke down past SL)
+- MOVED_PAST: Price rallied well above entry zone — opportunity is gone
+Look at the price trajectory over recent days, not just today's snapshot.
+
+CONVICTION — how confident that the move will happen:
+- Analyze buy vs sell volume ratio (from OHLCV: up-day volume vs down-day volume)
+- Check CMF trend: is it turning positive and increasing? (institutional buying)
+- Check OBV trend: rising = accumulation, falling = distribution
+- Is DSEX supporting this stock or working against it?
+- Has this pattern (these indicator values) worked historically?
+- HIGH (75-100): multiple confirming signals, strong volume, DSEX supportive
+- MEDIUM (50-74): some confirmation, mixed signals
+- LOW (25-49): weak confirmation, conflicting signals
+- WEAK (0-24): no real evidence the move will happen
 
 SELL SIGNAL DETECTION — CRITICAL:
 - Actively look for stocks showing distribution (price up but CMF/OBV declining)
@@ -1121,8 +1145,9 @@ def store_llm_results(date_str: str, results: list[dict], batch_id: int, raw: st
                      expected_return_1w, expected_return_2w, expected_return_1m, downside_risk,
                      dsex_dependency, if_dsex_drops, if_dsex_rises, dsex_outlook,
                      sell_urgency, position_size_pct, shares_for_100k,
+                     entry_direction, entry_direction_reason, conviction, conviction_score, conviction_reason,
                      batch_id, raw_response)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (date, symbol) DO UPDATE SET
                     action = EXCLUDED.action, confidence = EXCLUDED.confidence,
                     reasoning = EXCLUDED.reasoning, wait_for = EXCLUDED.wait_for,
@@ -1145,6 +1170,11 @@ def store_llm_results(date_str: str, results: list[dict], batch_id: int, raw: st
                     sell_urgency = EXCLUDED.sell_urgency,
                     position_size_pct = EXCLUDED.position_size_pct,
                     shares_for_100k = EXCLUDED.shares_for_100k,
+                    entry_direction = EXCLUDED.entry_direction,
+                    entry_direction_reason = EXCLUDED.entry_direction_reason,
+                    conviction = EXCLUDED.conviction,
+                    conviction_score = EXCLUDED.conviction_score,
+                    conviction_reason = EXCLUDED.conviction_reason,
                     batch_id = EXCLUDED.batch_id, raw_response = EXCLUDED.raw_response
             """, (
                 date_str, symbol, action,
@@ -1177,6 +1207,11 @@ def store_llm_results(date_str: str, results: list[dict], batch_id: int, raw: st
                 r.get("sell_urgency", "NONE"),
                 r.get("position_size_pct"),
                 r.get("shares_for_100k"),
+                r.get("entry_direction", ""),
+                r.get("entry_direction_reason", ""),
+                r.get("conviction", ""),
+                r.get("conviction_score"),
+                r.get("conviction_reason", ""),
                 batch_id,
                 raw if saved == 0 else None,
             ))

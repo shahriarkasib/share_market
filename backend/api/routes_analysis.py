@@ -786,6 +786,12 @@ async def get_buy_radar(categories: str = "A", exclude_sectors: str = ""):
             ),
             # AI stage (raw from LLM)
             "ai_stage": llm.get("stage") or "",
+            # Entry direction + conviction
+            "entry_direction": llm.get("entry_direction") or "",
+            "entry_direction_reason": llm.get("entry_direction_reason") or "",
+            "conviction": llm.get("conviction") or "",
+            "conviction_score": llm.get("conviction_score"),
+            "conviction_reason": llm.get("conviction_reason") or "",
         })
 
     # ── Save today's snapshots & load history ──
