@@ -471,6 +471,76 @@ def load_ohlcv_history(symbols: list[str], daily_days: int = 130, weekly_weeks: 
     return result
 
 
+def load_indicator_history(symbols: list[str], days: int = 60) -> dict[str, str]:
+    """Load 60-day indicator history per symbol — RSI, MACD, CMF, MFI, StochRSI, ADX, BB%, OBV, volume trends.
+
+    Returns dict[symbol -> compact CSV string of daily indicator values].
+    """
+    conn = get_conn()
+    cur = conn.cursor()
+    placeholders = ",".join(["%s"] * len(symbols))
+    cur.execute(f"""
+        SELECT symbol, date, rsi, stoch_rsi, macd_line, macd_signal, macd_hist,
+               mfi, cmf, adx, plus_di, minus_di, bb_pct, williams_r,
+               obv, vol_ratio, ema9, ema21, sma50, atr_pct
+        FROM daily_analysis
+        WHERE symbol IN ({placeholders})
+        ORDER BY symbol, date DESC
+    """, symbols)
+    rows = cur.fetchall()
+    conn.close()
+
+    from collections import defaultdict
+    by_sym: dict[str, list] = defaultdict(list)
+    for r in rows:
+        by_sym[r["symbol"]].append(r)
+
+    result = {}
+    for sym in symbols:
+        sym_rows = by_sym.get(sym, [])[:days]
+        if not sym_rows:
+            result[sym] = ""
+            continue
+        sym_rows.reverse()  # oldest first
+        lines = ["date,RSI,StRSI,MACD_L,MACD_S,MACD_H,MFI,CMF,ADX,+DI,-DI,BB%,W%R,OBV,VolR,EMA9,EMA21,SMA50,ATR%"]
+        for r in sym_rows:
+            def f(v, d=1):
+                return f"{float(v):.{d}f}" if v is not None else ""
+            lines.append(
+                f"{r['date']},{f(r['rsi'])},{f(r['stoch_rsi'])},{f(r['macd_line'],3)},{f(r['macd_signal'],3)},"
+                f"{f(r['macd_hist'],3)},{f(r['mfi'])},{f(r['cmf'],2)},{f(r['adx'])},{f(r['plus_di'])},"
+                f"{f(r['minus_di'])},{f(r['bb_pct'])},{f(r['williams_r'])},{int(r['obv']) if r['obv'] else ''},"
+                f"{f(r['vol_ratio'],1)},{f(r['ema9'])},{f(r['ema21'])},{f(r['sma50'])},{f(r['atr_pct'])}"
+            )
+        result[sym] = "\n".join(lines)
+    return result
+
+
+def load_seasonality(symbols: list[str], month: int) -> dict[str, str]:
+    """Load seasonality stats for current month per symbol."""
+    conn = get_conn()
+    cur = conn.cursor()
+    placeholders = ",".join(["%s"] * len(symbols))
+    cur.execute(f"""
+        SELECT symbol, avg_return, win_rate, median_return, cohens_d, volatility, years_total
+        FROM seasonality_monthly
+        WHERE symbol IN ({placeholders}) AND month = %s
+    """, symbols + [month])
+    rows = cur.fetchall()
+    conn.close()
+
+    result = {}
+    for r in rows:
+        wr = float(r["win_rate"]) if r["win_rate"] else 0
+        result[r["symbol"]] = (
+            f"Seasonality (month {month}): avg={float(r['avg_return'] or 0):+.2f}%, "
+            f"win={wr:.0f}%, median={float(r['median_return'] or 0):+.2f}%, "
+            f"d={float(r['cohens_d'] or 0):+.2f}, vol={float(r['volatility'] or 0):.1f}%, "
+            f"yrs={r['years_total']}"
+        )
+    return result
+
+
 def load_dsex_history(days: int = 130) -> str:
     """Load recent DSEX index history (6 months), return compact CSV."""
     conn = get_conn()
@@ -788,6 +858,8 @@ def build_llm_prompt(
     ohlcv_map: dict[str, str] = None, dsex_csv: str = "",
     dsex_corr: dict[str, dict] = None,
     events_map: dict[str, str] = None, market_news: str = "",
+    indicator_history_map: dict[str, str] = None,
+    seasonality_map: dict[str, str] = None,
 ) -> str:
     """Build prompt for a batch of stocks — minimal rules, let AI think."""
     dsex = market.get("dsex_index", 0)
@@ -882,6 +954,17 @@ def build_llm_prompt(
             stock_block += f"Last 5 days: {last5}\n"
         if ohlcv_csv:
             stock_block += f"\nPrice History (daily + weekly):\n```\n{ohlcv_csv}\n```\n"
+
+        # 60-day indicator history (RSI, MACD, CMF trends over time)
+        ind_hist = (indicator_history_map or {}).get(s["symbol"], "")
+        if ind_hist:
+            stock_block += f"\nIndicator History (60 days):\n```\n{ind_hist}\n```\n"
+
+        # Seasonality for current month
+        season = (seasonality_map or {}).get(s["symbol"], "")
+        if season:
+            stock_block += f"\n{season}\n"
+
         event_text = (events_map or {}).get(s["symbol"], "")
         if event_text:
             stock_block += f"\nCorporate Events:\n{event_text}\n"
@@ -971,9 +1054,10 @@ Return a JSON array. Start with [ end with ]. NO other text:
 [
   {{
     "symbol": "SYMBOL",
-    "action": "BUY|BUY on dip|BUY on pullback|HOLD/WAIT|SELL/AVOID|AVOID",
+    "action": "BUY|BUY on dip|BUY on pullback|HOLD/WAIT|SELL|SELL (take profit)|SELL (cut loss)|AVOID",
     "confidence": "HIGH|MEDIUM|LOW",
-    "stage": "ENTRY_ZONE|READY|APPROACHING|BUILDING|WATCHING|TOO_LATE",
+    "sell_urgency": "NONE|LOW|MEDIUM|HIGH|CRITICAL",
+    "stage": "ENTRY_ZONE|READY|APPROACHING|BUILDING|WATCHING|TOO_LATE|SELL_SIGNAL|TAKE_PROFIT",
     "stage_reasoning": "Why this stage. Reference specific prices, dates, volumes from the data. Be specific — cite actual numbers.",
     "reasoning": "3-5 sentence honest analysis using multiple indicator groups. What does the confluence of momentum + trend + volume tell you? Don't sugarcoat.",
     "expected_return_1w": 0.0,
@@ -994,9 +1078,24 @@ Return a JSON array. Start with [ end with ]. NO other text:
     "dsex_dependency": "HIGH|MEDIUM|LOW",
     "if_dsex_drops": "What happens to this stock and your entry if DSEX drops 1-2%",
     "if_dsex_rises": "What happens if DSEX rallies 1-2%",
+    "position_size_pct": 5.0,
+    "shares_for_100k": 100,
     "score": 50
   }}
 ]
+
+SELL SIGNAL DETECTION — CRITICAL:
+- Actively look for stocks showing distribution (price up but CMF/OBV declining)
+- Overbought RSI (>70) + bearish MACD cross + declining volume = SELL
+- Price breaking below EMA21 or SMA50 after uptrend = SELL
+- If a stock has risen 10%+ in 5 days, it's likely exhausted — mark SELL or TAKE_PROFIT
+- sell_urgency: CRITICAL = sell immediately, HIGH = sell within 1-2 days, MEDIUM = consider selling, LOW = watch closely, NONE = no sell signal
+- Use the 60-day indicator history to see TRENDS — is RSI rising or falling? Is MACD converging or diverging over the past week?
+
+POSITION SIZING:
+- position_size_pct: recommended % of a 200K BDT portfolio to allocate
+- shares_for_100k: how many shares to buy with 100K BDT budget, based on SL distance (risk max 2% per trade)
+- Formula: shares = (100000 * 0.02) / (entry_price - sl) = 2000 / (entry - sl)
 
 Start with [ end with ]. ONLY JSON."""
 
@@ -1021,8 +1120,9 @@ def store_llm_results(date_str: str, results: list[dict], batch_id: int, raw: st
                      stage, stage_reasoning,
                      expected_return_1w, expected_return_2w, expected_return_1m, downside_risk,
                      dsex_dependency, if_dsex_drops, if_dsex_rises, dsex_outlook,
+                     sell_urgency, position_size_pct, shares_for_100k,
                      batch_id, raw_response)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (date, symbol) DO UPDATE SET
                     action = EXCLUDED.action, confidence = EXCLUDED.confidence,
                     reasoning = EXCLUDED.reasoning, wait_for = EXCLUDED.wait_for,
@@ -1042,6 +1142,9 @@ def store_llm_results(date_str: str, results: list[dict], batch_id: int, raw: st
                     if_dsex_drops = EXCLUDED.if_dsex_drops,
                     if_dsex_rises = EXCLUDED.if_dsex_rises,
                     dsex_outlook = EXCLUDED.dsex_outlook,
+                    sell_urgency = EXCLUDED.sell_urgency,
+                    position_size_pct = EXCLUDED.position_size_pct,
+                    shares_for_100k = EXCLUDED.shares_for_100k,
                     batch_id = EXCLUDED.batch_id, raw_response = EXCLUDED.raw_response
             """, (
                 date_str, symbol, action,
@@ -1071,6 +1174,9 @@ def store_llm_results(date_str: str, results: list[dict], batch_id: int, raw: st
                 r.get("if_dsex_drops", ""),
                 r.get("if_dsex_rises", ""),
                 r.get("dsex_outlook", ""),
+                r.get("sell_urgency", "NONE"),
+                r.get("position_size_pct"),
+                r.get("shares_for_100k"),
                 batch_id,
                 raw if saved == 0 else None,
             ))
@@ -1125,6 +1231,16 @@ def run_llm_analysis(date_str: str) -> list[dict]:
     dsex_corr = compute_dsex_correlations(all_symbols, days=130)
     logger.info(f"Computed DSEX correlations for {len(dsex_corr)} stocks")
 
+    # Load 60-day indicator history (RSI, MACD, CMF trends over time)
+    indicator_history_map = load_indicator_history(all_symbols, days=60)
+    logger.info(f"Loaded indicator history for {len(indicator_history_map)} stocks")
+
+    # Load seasonality for current month
+    from datetime import datetime as _dt
+    current_month = _dt.now(DSE_TZ).month
+    seasonality_map = load_seasonality(all_symbols, current_month)
+    logger.info(f"Loaded seasonality for {len(seasonality_map)} stocks (month {current_month})")
+
     # Load corporate events and news for all symbols
     events_map = load_corporate_events(date_str, all_symbols)
     market_news = load_market_news_summary(date_str)
@@ -1148,6 +1264,7 @@ def run_llm_analysis(date_str: str) -> list[dict]:
             batch, market, feedback, i, total_batches,
             ohlcv_map=ohlcv_map, dsex_csv=dsex_csv, dsex_corr=dsex_corr,
             events_map=events_map, market_news=market_news,
+            indicator_history_map=indicator_history_map, seasonality_map=seasonality_map,
         )
         logger.info(f"Batch {i} prompt: {len(prompt)} chars")
         raw = call_claude(prompt)
