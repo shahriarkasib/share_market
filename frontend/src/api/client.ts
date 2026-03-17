@@ -789,7 +789,7 @@ export interface ChatResponse {
 }
 
 // Chat calls GCP VM directly (bypasses Render's 30s timeout)
-const CHAT_URL = import.meta.env.VITE_CHAT_URL || "https://34.63.227.229.nip.io";
+const CHAT_URL = import.meta.env.VITE_CHAT_URL || "https://34.126.128.18.nip.io";
 
 export async function sendChatMessage(
   message: string,
