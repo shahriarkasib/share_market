@@ -1111,13 +1111,22 @@ const AnalysisCard = forwardRef<HTMLDivElement, { stock: DailyAnalysis; highligh
               </span>
             </span>
           )}
+          {stock.bb_pct != null && (
+            <span className="text-[var(--text-dim)]">
+              BB% <span className={clsx("font-medium",
+                stock.bb_pct < 0.2 ? "text-green-400" : stock.bb_pct > 0.8 ? "text-red-400" : "text-[var(--text)]",
+              )}>
+                {(stock.bb_pct * 100).toFixed(0)}
+              </span>
+            </span>
+          )}
         </div>
 
         {/* Reasoning */}
         {stock.reasoning && (
           <div className="px-3 py-2 border-t border-[var(--border)]">
             <p className="text-[11px] text-[var(--text-muted)] leading-relaxed">
-              {expanded ? stock.reasoning : stock.reasoning.slice(0, 120) + (stock.reasoning.length > 120 ? "..." : "")}
+              {expanded ? stock.reasoning : (stock.reasoning.split('. ')[0] + (stock.reasoning.includes('. ') ? '.' : ''))}
             </p>
           </div>
         )}
@@ -1129,6 +1138,13 @@ const AnalysisCard = forwardRef<HTMLDivElement, { stock: DailyAnalysis; highligh
               <span className="text-[10px] text-[var(--text-dim)] flex items-center gap-1">
                 <Clock className="h-3 w-3" />
                 Hold {stock.hold_days_t1}–{stock.hold_days_t2 ?? stock.hold_days_t1} days
+              </span>
+            )}
+            {stock.prediction_json?.t2_safe != null && (
+              <span className={clsx("text-[10px] px-1.5 py-0.5 rounded font-medium",
+                stock.prediction_json.t2_safe ? "bg-green-500/15 text-green-400" : "bg-red-500/15 text-red-400",
+              )}>
+                T+2 {stock.prediction_json.t2_safe ? "Safe" : "Risk"}
               </span>
             )}
             {stock.score != null && (

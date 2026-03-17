@@ -662,6 +662,7 @@ async def get_buy_radar(categories: str = "A", exclude_sectors: str = ""):
         ai_reasoning_text = llm.get("reasoning") or ""
         ai_wait_for = llm.get("wait_for") or ""
         ai_how_to_buy = llm.get("how_to_buy") or ""
+        ai_sell_plan = llm.get("sell_plan") or ""
         ai_key_risk = judge.get("key_risk") or ""
         ai_catalysts = llm.get("catalysts") or []
         ai_risk_factors = llm.get("risk_factors") or []
@@ -766,6 +767,7 @@ async def get_buy_radar(categories: str = "A", exclude_sectors: str = ""):
             "ai_risk_factors": ai_risk_factors if isinstance(ai_risk_factors, list) else [],
             "ai_signals": [f"AI: {ai_action}"],
             "stage_reasoning": llm.get("stage_reasoning") or "",
+            "sell_plan": ai_sell_plan,
             # Profit estimation
             "expected_return_1w": llm.get("expected_return_1w"),
             "expected_return_2w": llm.get("expected_return_2w"),

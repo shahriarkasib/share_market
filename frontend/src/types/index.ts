@@ -227,6 +227,21 @@ export interface DailyAnalysis {
   score: number;
   sector?: string;
   category?: string;
+  prediction_json?: {
+    t2_safe?: boolean;
+    risk_score?: number;
+    expected_return_pct?: number;
+    hold_days?: number;
+    entry_strategy?: string;
+    exit_strategy?: string;
+    predicted_prices?: Record<string, number>;
+    daily_ranges?: Record<string, { min: number; max: number }>;
+    price_range_next_3d?: { min: number; max: number };
+    support_level?: number;
+    resistance_level?: number;
+    trend_strength?: string;
+    volatility_level?: string;
+  } | null;
 }
 
 export interface DailyAnalysisResponse {
@@ -511,6 +526,7 @@ export interface BuyRadarStock {
   ai_risk_factors: string[];
   ai_signals: string[];
   stage_reasoning: string;
+  sell_plan?: string;
   // Profit estimation
   expected_return_1w?: number;
   expected_return_2w?: number;

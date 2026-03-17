@@ -364,6 +364,24 @@ function StockCard({ stock }: { stock: BuyRadarStock }) {
               <span className={clsx("text-[10px] px-1.5 py-0.5 rounded font-bold", style.badge)}>
                 {stock.stage.replace("_", " ")}
               </span>
+              {stock.entry_zone_status && stock.entry_zone_status !== "UNKNOWN" && (
+                <span className={clsx("px-1.5 py-0.5 rounded text-[10px] font-bold",
+                  stock.entry_zone_status === "IN_ZONE" && "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30",
+                  stock.entry_zone_status === "BELOW_ENTRY" && "bg-blue-500/20 text-blue-400 border border-blue-500/30",
+                  stock.entry_zone_status === "APPROACHING" && "bg-amber-500/20 text-amber-400 border border-amber-500/30",
+                  stock.entry_zone_status === "MOVED_PAST" && "bg-red-500/20 text-red-400 border border-red-500/30",
+                )}>
+                  {stock.entry_zone_status === "IN_ZONE" && "IN ENTRY ZONE"}
+                  {stock.entry_zone_status === "BELOW_ENTRY" && "BELOW ENTRY"}
+                  {stock.entry_zone_status === "APPROACHING" && "NEAR ENTRY"}
+                  {stock.entry_zone_status === "MOVED_PAST" && "MOVED PAST ENTRY"}
+                </span>
+              )}
+              {stock.ready_count > 0 && (
+                <span className="text-[10px] text-[var(--text-muted)] bg-[var(--hover)] px-1.5 py-0.5 rounded">
+                  {stock.ready_count}/6 ready
+                </span>
+              )}
               {stock.is_new && (
                 <span className="text-[9px] px-1.5 py-0.5 rounded bg-yellow-500/20 text-yellow-400 font-bold flex items-center gap-0.5">
                   <Sparkles className="h-3 w-3" /> NEW
@@ -387,6 +405,11 @@ function StockCard({ stock }: { stock: BuyRadarStock }) {
                 {stock.ret_5d > 0 ? "+" : ""}{stock.ret_5d}% (5d)
               </span>
               {stock.sector && <span className="text-[var(--text-dim)]">{stock.sector}</span>}
+              {stock.vol_ratio > 0 && (
+                <span className={clsx("text-[10px] font-medium", stock.vol_ratio >= 1.5 ? "text-green-400" : stock.vol_ratio < 0.5 ? "text-red-400" : "text-[var(--text-dim)]")}>
+                  {stock.vol_ratio.toFixed(1)}x vol
+                </span>
+              )}
             </div>
 
             {/* AI action + confidence (summary) */}
@@ -437,23 +460,17 @@ function StockCard({ stock }: { stock: BuyRadarStock }) {
                 Live: {stock.live_ltp.toFixed(1)}
               </span>
             )}
-            {stock.entry_zone_status && stock.entry_zone_status !== "UNKNOWN" && (
-              <span className={clsx("px-1.5 py-0.5 rounded text-[10px] font-bold",
-                stock.entry_zone_status === "IN_ZONE" && "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30",
-                stock.entry_zone_status === "BELOW_ENTRY" && "bg-blue-500/20 text-blue-400 border border-blue-500/30",
-                stock.entry_zone_status === "APPROACHING" && "bg-amber-500/20 text-amber-400 border border-amber-500/30",
-                stock.entry_zone_status === "MOVED_PAST" && "bg-red-500/20 text-red-400 border border-red-500/30",
-              )}>
-                {stock.entry_zone_status === "IN_ZONE" && "IN ENTRY ZONE"}
-                {stock.entry_zone_status === "BELOW_ENTRY" && "BELOW ENTRY"}
-                {stock.entry_zone_status === "APPROACHING" && "NEAR ENTRY"}
-                {stock.entry_zone_status === "MOVED_PAST" && "MOVED PAST ENTRY"}
-              </span>
-            )}
             {stock.t1 != null && <span className="text-[var(--text-muted)]">T1: {stock.t1.toFixed(1)}</span>}
             {stock.t2 != null && <span className="text-[var(--text-muted)]">T2: {stock.t2.toFixed(1)}</span>}
             {stock.sl != null && <span className="text-red-400">SL: {stock.sl.toFixed(1)}</span>}
           </div>
+        )}
+
+        {/* Sell plan summary */}
+        {stock.sell_plan && (
+          <p className="text-[10px] text-amber-400 mt-1 truncate" title={stock.sell_plan}>
+            Exit: {stock.sell_plan.slice(0, 60)}...
+          </p>
         )}
 
         {/* Red flags (always visible) */}
@@ -464,6 +481,18 @@ function StockCard({ stock }: { stock: BuyRadarStock }) {
                 {flag}
               </span>
             ))}
+            {stock.dsex_dependency === "HIGH" && (
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/20">
+                High DSEX dependency
+              </span>
+            )}
+          </div>
+        )}
+        {stock.red_flags.length === 0 && stock.dsex_dependency === "HIGH" && (
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/20">
+              High DSEX dependency
+            </span>
           </div>
         )}
       </div>
