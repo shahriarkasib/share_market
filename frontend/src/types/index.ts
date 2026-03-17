@@ -13,6 +13,33 @@ export interface StockPrice {
   trade_count: number;
 }
 
+export interface MatrixStock extends StockPrice {
+  sector: string;
+  category: string;
+  algo_action: string;
+  ai_action: string;
+  ai_confidence: string;
+  score: number;
+  rsi: number;
+  stoch_rsi: number;
+  macd_status: string;
+  bb_pct: number;
+  vol_ratio: number;
+  entry_low: number | null;
+  entry_high: number | null;
+  sl: number | null;
+  t1: number | null;
+  t2: number | null;
+  risk_pct: number;
+  reward_pct: number;
+  support: number;
+  resistance: number;
+  entry_direction: string;
+  conviction: string;
+  stage: string;
+  composite_score: number;
+}
+
 export interface StockSignal {
   symbol: string;
   company_name?: string;
@@ -556,6 +583,43 @@ export interface BuyRadarStock {
   stage_history: string[];
   trend: "IMPROVING" | "STABLE" | "DETERIORATING";
   is_new: boolean;
+  // Algo analysis enrichment
+  algo_action?: string;
+  algo_score?: number;
+  algo_reasoning?: string;
+  macd_status?: string;
+  risk_pct?: number;
+  reward_pct?: number;
+  support?: number;
+  resistance?: number;
+  atr?: number;
+  atr_pct?: number;
+  trend_50d?: number;
+  max_dd?: number;
+  entry_start?: string;
+  entry_end?: string;
+  exit_t1_by?: string;
+  exit_t2_by?: string;
+  hold_days_t1?: number;
+  hold_days_t2?: number;
+  scenarios_json?: string;
+  prediction_json?: {
+    t2_safe?: boolean;
+    risk_score?: number;
+    expected_return_pct?: number;
+    hold_days?: number;
+    entry_strategy?: string;
+    exit_strategy?: string;
+    predicted_prices?: Record<string, number>;
+    daily_ranges?: Record<string, { min: number; max: number }>;
+    price_range_next_3d?: { min: number; max: number };
+    support_level?: number;
+    resistance_level?: number;
+    trend_strength?: string;
+    volatility_level?: string;
+  } | null;
+  algo_wait_days?: string;
+  vol_entry?: string;
 }
 
 export interface RemovedRadarStock {

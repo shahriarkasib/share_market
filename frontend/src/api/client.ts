@@ -3,6 +3,7 @@ import type {
   MarketSummary,
   StockSignal,
   StockPrice,
+  MatrixStock,
   SignalsSummary,
   ScreenerResult,
   WatchlistItem,
@@ -70,6 +71,11 @@ export async function fetchAllPrices(category?: string): Promise<StockPrice[]> {
   const { data } = await api.get<StockPrice[]>("/market/all-prices", {
     params: category ? { category } : undefined,
   });
+  return data;
+}
+
+export async function fetchMatrixData(): Promise<MatrixStock[]> {
+  const { data } = await api.get("/market/matrix");
   return data;
 }
 

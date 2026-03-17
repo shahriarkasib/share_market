@@ -5,7 +5,6 @@ import StockDetail from "./pages/StockDetail.tsx";
 import Heatmap from "./pages/Heatmap.tsx";
 import DataMatrix from "./pages/DataMatrix.tsx";
 import AdvancedChart from "./pages/AdvancedChart.tsx";
-import DailyAnalysis from "./pages/DailyAnalysis.tsx";
 import BuyRadar from "./pages/BuyRadar.tsx";
 import News from "./pages/News.tsx";
 import Seasonality from "./pages/Seasonality.tsx";
@@ -21,7 +20,6 @@ export default function App() {
         <Route path="/heatmap" element={<Heatmap />} />
         <Route path="/matrix" element={<DataMatrix />} />
         <Route path="/chart" element={<AdvancedChart />} />
-        <Route path="/analysis" element={<DailyAnalysis />} />
         <Route path="/radar" element={<BuyRadar />} />
         <Route path="/news" element={<News />} />
         <Route path="/seasonality" element={<Seasonality />} />

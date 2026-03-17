@@ -408,6 +408,19 @@ def _entry_zone_status(live_ltp, entry_low, entry_high):
     return "MOVED_PAST"
 
 
+def _parse_prediction(raw):
+    """Parse prediction_json from daily_analysis (may be string or dict)."""
+    if not raw:
+        return None
+    if isinstance(raw, dict):
+        return raw
+    try:
+        import json as _json
+        return _json.loads(raw)
+    except Exception:
+        return None
+
+
 @router.get("/buy-radar")
 async def get_buy_radar(categories: str = "A", exclude_sectors: str = ""):
     """Buy Radar — shows stocks approaching buy zone with per-indicator readiness.
@@ -457,7 +470,11 @@ async def get_buy_radar(categories: str = "A", exclude_sectors: str = ""):
     if latest_date:
         arows = conn.execute(
             "SELECT symbol, ltp, action, score, entry_low, entry_high, sl, t1, t2, "
-            "macd_status FROM daily_analysis WHERE date = ?",
+            "macd_status, entry_start, entry_end, exit_t1_by, exit_t2_by, "
+            "hold_days_t1, hold_days_t2, risk_pct, reward_pct, "
+            "support, resistance, atr, atr_pct, trend_50d, max_dd, "
+            "scenarios_json, reasoning, prediction_json, wait_days, vol_entry "
+            "FROM daily_analysis WHERE date = ?",
             (latest_date,),
         ).fetchall()
         analysis_map = {r["symbol"]: dict(r) for r in arows}
@@ -792,6 +809,29 @@ async def get_buy_radar(categories: str = "A", exclude_sectors: str = ""):
             "conviction": llm.get("conviction") or "",
             "conviction_score": llm.get("conviction_score"),
             "conviction_reason": llm.get("conviction_reason") or "",
+            # ── Algo analysis enrichment ──
+            "algo_action": a.get("action") or "",
+            "algo_score": float(a.get("score") or 0),
+            "algo_reasoning": a.get("reasoning") or "",
+            "macd_status": a.get("macd_status") or "",
+            "risk_pct": float(a.get("risk_pct") or 0),
+            "reward_pct": float(a.get("reward_pct") or 0),
+            "support": float(a.get("support") or 0),
+            "resistance": float(a.get("resistance") or 0),
+            "atr": float(a.get("atr") or 0),
+            "atr_pct": float(a.get("atr_pct") or 0),
+            "trend_50d": float(a.get("trend_50d") or 0),
+            "max_dd": float(a.get("max_dd") or 0),
+            "entry_start": a.get("entry_start"),
+            "entry_end": a.get("entry_end"),
+            "exit_t1_by": a.get("exit_t1_by"),
+            "exit_t2_by": a.get("exit_t2_by"),
+            "hold_days_t1": a.get("hold_days_t1"),
+            "hold_days_t2": a.get("hold_days_t2"),
+            "scenarios_json": a.get("scenarios_json"),
+            "prediction_json": _parse_prediction(a.get("prediction_json")),
+            "algo_wait_days": a.get("wait_days") or "",
+            "vol_entry": a.get("vol_entry") or "",
         })
 
     # ── Save today's snapshots & load history ──

@@ -118,6 +118,124 @@ async def get_all_prices(category: str = None):
     return []
 
 
+@router.get("/matrix")
+async def get_matrix_data():
+    """Enriched stock data for the Matrix page — prices + analysis + AI signals."""
+    cached = cache.get("matrix_data")
+    if cached:
+        return cached
+
+    conn = get_connection()
+
+    # Live prices
+    price_rows = conn.execute(
+        "SELECT symbol, ltp, change, change_pct, open, high, low, close_prev, "
+        "volume, value, trade_count FROM live_prices WHERE ltp > 0"
+    ).fetchall()
+    prices = {r["symbol"]: dict(r) for r in price_rows}
+
+    # Fundamentals (sector, category)
+    fund_rows = conn.execute(
+        "SELECT symbol, sector, category FROM fundamentals"
+    ).fetchall()
+    fund_map = {r["symbol"]: dict(r) for r in fund_rows}
+
+    # Latest daily analysis
+    latest_row = conn.execute("SELECT MAX(date) FROM daily_analysis").fetchone()
+    latest_date = str(latest_row[0]) if latest_row and latest_row[0] else None
+
+    analysis_map = {}
+    if latest_date:
+        a_rows = conn.execute(
+            "SELECT symbol, action, score, rsi, stoch_rsi, macd_status, "
+            "entry_low, entry_high, sl, t1, t2, risk_pct, reward_pct, "
+            "bb_pct, vol_ratio, support, resistance "
+            "FROM daily_analysis WHERE date = ?", (latest_date,)
+        ).fetchall()
+        analysis_map = {r["symbol"]: dict(r) for r in a_rows}
+
+    # LLM + Judge analysis
+    llm_map = {}
+    judge_map = {}
+    if latest_date:
+        llm_date_row = conn.execute("SELECT MAX(date) FROM llm_daily_analysis").fetchone()
+        ai_date = str(llm_date_row[0]) if llm_date_row and llm_date_row[0] else latest_date
+
+        llm_rows = conn.execute(
+            "SELECT symbol, action, confidence, stage, entry_direction, conviction "
+            "FROM llm_daily_analysis WHERE date = ?", (ai_date,)
+        ).fetchall()
+        llm_map = {r["symbol"]: dict(r) for r in llm_rows}
+
+        judge_rows = conn.execute(
+            "SELECT symbol, final_action, final_confidence, agreement, score "
+            "FROM judge_daily_analysis WHERE date = ?", (ai_date,)
+        ).fetchall()
+        judge_map = {r["symbol"]: dict(r) for r in judge_rows}
+
+    conn.close()
+
+    # Build enriched result
+    result = []
+    for sym, p in prices.items():
+        fund = fund_map.get(sym, {})
+        a = analysis_map.get(sym, {})
+        llm = llm_map.get(sym, {})
+        judge = judge_map.get(sym, {})
+
+        ai_action = judge.get("final_action") or llm.get("action") or ""
+        ai_confidence = judge.get("final_confidence") or llm.get("confidence") or ""
+        ai_score = float(judge.get("score") or llm.get("score") or a.get("score") or 0)
+
+        # Composite ranking score: higher = better buy opportunity
+        # Weights: AI score (40%), RSI inversed (20%), risk-reward (20%), change momentum (20%)
+        rsi_val = float(a.get("rsi") or 50)
+        risk_pct = abs(float(a.get("risk_pct") or 0))
+        reward_pct = float(a.get("reward_pct") or 0)
+        rr = reward_pct / risk_pct if risk_pct > 0 else 0
+
+        # Normalize components (0-100 scale)
+        score_norm = max(0, min(100, ai_score))  # already 0-100
+        rsi_norm = max(0, min(100, 100 - rsi_val))  # lower RSI = better for buying
+        rr_norm = max(0, min(100, rr * 25))  # R:R of 4 = 100
+        # Prefer negative change (dip buying) but not too negative
+        chg = float(p.get("change_pct") or 0)
+        momentum_norm = max(0, min(100, 50 - chg * 10))  # -5% change = 100, +5% = 0
+
+        composite = (score_norm * 0.4 + rsi_norm * 0.2 + rr_norm * 0.2 + momentum_norm * 0.2)
+
+        result.append({
+            **p,
+            "sector": fund.get("sector") or "",
+            "category": fund.get("category") or "",
+            "algo_action": a.get("action") or "",
+            "ai_action": ai_action,
+            "ai_confidence": ai_confidence,
+            "score": ai_score,
+            "rsi": float(a.get("rsi") or 0),
+            "stoch_rsi": float(a.get("stoch_rsi") or 0),
+            "macd_status": a.get("macd_status") or "",
+            "bb_pct": float(a.get("bb_pct") or 0),
+            "vol_ratio": float(a.get("vol_ratio") or 0),
+            "entry_low": a.get("entry_low"),
+            "entry_high": a.get("entry_high"),
+            "sl": a.get("sl"),
+            "t1": a.get("t1"),
+            "t2": a.get("t2"),
+            "risk_pct": float(a.get("risk_pct") or 0),
+            "reward_pct": reward_pct,
+            "support": float(a.get("support") or 0),
+            "resistance": float(a.get("resistance") or 0),
+            "entry_direction": llm.get("entry_direction") or "",
+            "conviction": llm.get("conviction") or "",
+            "stage": llm.get("stage") or "",
+            "composite_score": round(composite, 1),
+        })
+
+    cache.set("matrix_data", result, 300)  # 5 min cache
+    return result
+
+
 @router.get("/dsex-chart")
 async def get_dsex_chart():
     """Get DSEX index history formatted for charting."""

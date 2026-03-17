@@ -26,6 +26,12 @@ import {
 import { fetchBuyRadar } from "../api/client.ts";
 import type { BuyRadarStock, BuyRadarResponse, RemovedRadarStock, MarketContext, DsexForecast, DsexDailyPrediction } from "../types/index.ts";
 
+function formatDateShort(d?: string | null): string {
+  if (!d) return "–";
+  const dt = new Date(d + "T00:00:00");
+  return dt.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
+}
+
 /* ── Stage config — entry direction categories ── */
 const STAGES = [
   { key: "IN_ENTRY_ZONE",     label: "In Entry Zone",      desc: "BUY NOW — price is in entry range" },
@@ -508,6 +514,33 @@ function StockCard({ stock }: { stock: BuyRadarStock }) {
           </p>
         )}
 
+        {/* T+2 safety + hold days badges */}
+        {(stock.prediction_json?.t2_safe != null || stock.hold_days_t1 != null) && (
+          <div className="mt-1.5 flex items-center gap-2">
+            {stock.prediction_json?.t2_safe != null && (
+              <span className={clsx("text-[10px] px-1.5 py-0.5 rounded font-medium flex items-center gap-1",
+                stock.prediction_json.t2_safe ? "bg-green-500/15 text-green-400 border border-green-500/25" : "bg-red-500/15 text-red-400 border border-red-500/25"
+              )}>
+                T+2 {stock.prediction_json.t2_safe ? "Safe" : "Risk"}
+              </span>
+            )}
+            {stock.hold_days_t1 != null && (
+              <span className="text-[10px] text-[var(--text-dim)] flex items-center gap-1">
+                <Clock className="h-3 w-3" />
+                Hold {stock.hold_days_t1}–{stock.hold_days_t2 ?? stock.hold_days_t1}d
+              </span>
+            )}
+            {stock.macd_status && (
+              <span className={clsx("text-[10px] font-medium",
+                stock.macd_status.toLowerCase().includes("bullish") ? "text-green-400" :
+                stock.macd_status.toLowerCase().includes("bearish") ? "text-red-400" : "text-amber-400"
+              )}>
+                MACD: {stock.macd_status}
+              </span>
+            )}
+          </div>
+        )}
+
         {/* Red flags (always visible) */}
         {stock.red_flags.length > 0 && (
           <div className="mt-2 flex flex-wrap gap-1.5">
@@ -643,6 +676,46 @@ function StockCard({ stock }: { stock: BuyRadarStock }) {
             </div>
           )}
 
+          {/* Algo Analysis */}
+          {(stock.algo_reasoning || stock.prediction_json) && (
+            <div>
+              <SectionLabel icon={BarChart3} label={`Algo Analysis${stock.algo_action ? ` (${stock.algo_action})` : ""}`} color="text-blue-400" />
+              {stock.algo_reasoning && (
+                <p className="text-xs text-[var(--text-muted)] leading-relaxed mb-2">
+                  {stock.algo_reasoning}
+                </p>
+              )}
+              {stock.prediction_json && (
+                <div className="flex flex-wrap gap-2 text-xs">
+                  {stock.prediction_json.t2_safe != null && (
+                    <span className={clsx("px-1.5 py-0.5 rounded font-medium",
+                      stock.prediction_json.t2_safe ? "bg-green-500/15 text-green-400" : "bg-red-500/15 text-red-400"
+                    )}>
+                      T+2 {stock.prediction_json.t2_safe ? "Safe" : "Risk"}
+                    </span>
+                  )}
+                  {stock.prediction_json.expected_return_pct != null && (
+                    <span className={clsx("px-1.5 py-0.5 rounded font-medium",
+                      stock.prediction_json.expected_return_pct > 0 ? "bg-green-500/15 text-green-400" : "bg-red-500/15 text-red-400"
+                    )}>
+                      Expected: {stock.prediction_json.expected_return_pct > 0 ? "+" : ""}{stock.prediction_json.expected_return_pct.toFixed(1)}%
+                    </span>
+                  )}
+                  {stock.prediction_json.trend_strength && (
+                    <span className="px-1.5 py-0.5 rounded bg-[var(--hover)] text-[var(--text-muted)] font-medium">
+                      {stock.prediction_json.trend_strength}
+                    </span>
+                  )}
+                  {stock.prediction_json.volatility_level && (
+                    <span className="px-1.5 py-0.5 rounded bg-[var(--hover)] text-[var(--text-muted)] font-medium">
+                      Vol: {stock.prediction_json.volatility_level}
+                    </span>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Risk + Catalysts */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             {stock.ai_key_risk && (
@@ -687,6 +760,85 @@ function StockCard({ stock }: { stock: BuyRadarStock }) {
               <LayerBar key={key} label={label} pct={stock.layers[key as keyof typeof stock.layers] ?? 0} desc={desc} />
             ))}
           </div>
+
+          {/* Timing & Technical Levels */}
+          {(stock.entry_start || stock.support || stock.risk_pct) && (
+            <div>
+              <SectionLabel icon={Clock} label="Timing & Levels" color="text-blue-400" />
+              <div className="space-y-2">
+                {/* Timing windows */}
+                {(stock.entry_start || stock.exit_t1_by) && (
+                  <div className="flex flex-wrap gap-3 text-xs">
+                    {stock.entry_start && (
+                      <span className="text-[var(--text-dim)]">Entry: <span className="font-medium text-blue-400">{formatDateShort(stock.entry_start)} – {formatDateShort(stock.entry_end)}</span></span>
+                    )}
+                    {stock.exit_t1_by && (
+                      <span className="text-[var(--text-dim)]">T1 by: <span className="font-medium text-green-400">{formatDateShort(stock.exit_t1_by)}</span></span>
+                    )}
+                    {stock.exit_t2_by && (
+                      <span className="text-[var(--text-dim)]">T2 by: <span className="font-medium text-green-400">{formatDateShort(stock.exit_t2_by)}</span></span>
+                    )}
+                    {stock.hold_days_t1 != null && (
+                      <span className="text-[var(--text-dim)]">Hold: <span className="font-medium text-[var(--text)]">{stock.hold_days_t1}–{stock.hold_days_t2 ?? stock.hold_days_t1}d</span></span>
+                    )}
+                  </div>
+                )}
+                {/* Support/Resistance/ATR */}
+                <div className="flex flex-wrap gap-3 text-xs">
+                  {stock.support > 0 && <span className="text-[var(--text-dim)]">Support: <span className="font-medium text-green-400">{stock.support.toFixed(1)}</span></span>}
+                  {stock.resistance > 0 && <span className="text-[var(--text-dim)]">Resistance: <span className="font-medium text-red-400">{stock.resistance.toFixed(1)}</span></span>}
+                  {stock.atr > 0 && <span className="text-[var(--text-dim)]">ATR: <span className="font-medium text-[var(--text)]">{stock.atr.toFixed(1)} ({stock.atr_pct?.toFixed(1)}%)</span></span>}
+                  {stock.trend_50d != null && <span className="text-[var(--text-dim)]">50d Trend: <span className={clsx("font-medium", (stock.trend_50d ?? 0) >= 0 ? "text-green-400" : "text-red-400")}>{(stock.trend_50d ?? 0) > 0 ? "+" : ""}{stock.trend_50d?.toFixed(1)}%</span></span>}
+                </div>
+                {/* Risk/Reward */}
+                {(stock.risk_pct || stock.reward_pct) && (
+                  <div className="flex flex-wrap gap-3 text-xs">
+                    {stock.risk_pct != null && <span className="text-[var(--text-dim)]">Risk: <span className="font-medium text-red-400">{stock.risk_pct.toFixed(1)}%</span></span>}
+                    {stock.reward_pct != null && <span className="text-[var(--text-dim)]">Reward: <span className="font-medium text-green-400">{stock.reward_pct.toFixed(1)}%</span></span>}
+                    {stock.risk_pct && stock.reward_pct && Math.abs(stock.risk_pct) > 0 && (
+                      <span className="text-[var(--text-dim)]">R:R: <span className={clsx("font-medium",
+                        Math.abs(stock.reward_pct / stock.risk_pct) >= 2 ? "text-green-400" :
+                        Math.abs(stock.reward_pct / stock.risk_pct) >= 1 ? "text-amber-400" : "text-red-400"
+                      )}>1:{Math.abs(stock.reward_pct / stock.risk_pct).toFixed(1)}</span></span>
+                    )}
+                    {stock.max_dd != null && stock.max_dd < 0 && <span className="text-[var(--text-dim)]">Max DD: <span className="font-medium text-red-400">{stock.max_dd.toFixed(1)}%</span></span>}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Scenarios */}
+          {(() => {
+            let scenarios: { name: string; steps: string[] }[] = [];
+            if (stock.scenarios_json) {
+              try {
+                const parsed = typeof stock.scenarios_json === "string" ? JSON.parse(stock.scenarios_json) : stock.scenarios_json;
+                if (Array.isArray(parsed)) scenarios = parsed;
+              } catch {}
+            }
+            if (scenarios.length === 0) return null;
+            return (
+              <div>
+                <SectionLabel icon={Target} label="Scenarios" color="text-cyan-400" />
+                <div className="space-y-1.5">
+                  {scenarios.map((sc, i) => (
+                    <div key={i} className="text-xs">
+                      <span className={clsx("font-medium",
+                        sc.name?.toLowerCase().includes("dip") ? "text-green-400" :
+                        sc.name?.toLowerCase().includes("gap down") ? "text-red-400" : "text-amber-400"
+                      )}>{sc.name}</span>
+                      {sc.steps && (
+                        <ul className="ml-3 mt-0.5 space-y-0.5 text-[var(--text-muted)]">
+                          {sc.steps.map((step, j) => <li key={j} className="list-disc list-inside">{step}</li>)}
+                        </ul>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            );
+          })()}
 
           {/* Key signals */}
           {stock.signals.length > 0 && (
