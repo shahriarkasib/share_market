@@ -653,15 +653,66 @@ async def scrape_daily_news():
 
 
 async def cleanup_intraday_snapshots():
-    """Delete intraday snapshots older than 90 days. This data is irreplaceable — DSE doesn't provide historical intraday."""
+    """Delete intraday + orderbook snapshots older than 90 days. This data is irreplaceable — DSE doesn't provide historical intraday."""
     try:
         conn = get_connection()
         conn.execute("DELETE FROM intraday_snapshots WHERE ts < NOW() - INTERVAL '90 days'")
+        conn.execute("DELETE FROM orderbook_snapshots WHERE ts < NOW() - INTERVAL '90 days'")
         conn.commit()
         conn.close()
-        logger.info("Cleaned up old intraday snapshots")
+        logger.info("Cleaned up old intraday + orderbook snapshots")
     except Exception as e:
         logger.error(f"Intraday cleanup failed: {e}")
+
+
+async def fetch_orderbook_snapshots():
+    """Fetch order book (bid/ask depth) for A-category stocks from LankaBD."""
+    import json as _json
+    try:
+        from data.orderbook_scraper import fetch_all_depths
+
+        # Get A-category symbols
+        conn = get_connection()
+        rows = conn.execute("SELECT symbol FROM fundamentals WHERE category = 'A' ORDER BY symbol").fetchall()
+        symbols = [r["symbol"] for r in rows]
+
+        if not symbols:
+            logger.warning("No A-cat symbols for orderbook fetch")
+            conn.close()
+            return
+
+        logger.info(f"Fetching order book for {len(symbols)} A-cat stocks...")
+        depths = fetch_all_depths(symbols, delay=0.2)
+        logger.info(f"Got depth for {len(depths)}/{len(symbols)} stocks")
+
+        snap_ts = datetime.now().replace(second=0, microsecond=0).isoformat()
+        saved = 0
+        for d in depths:
+            try:
+                conn.execute(
+                    """INSERT INTO orderbook_snapshots
+                       (symbol, ts, ltp, best_bid, best_ask, spread,
+                        total_bid_volume, total_ask_volume, bid_ask_ratio,
+                        bid_levels, ask_levels, trades, volume, bids_json, asks_json)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                       ON CONFLICT (symbol, ts) DO NOTHING""",
+                    (
+                        d["symbol"], snap_ts, d["ltp"],
+                        d["best_bid"], d["best_ask"], d["spread"],
+                        d["total_bid_volume"], d["total_ask_volume"], d["bid_ask_ratio"],
+                        d["bid_levels"], d["ask_levels"], d["trades"], d["volume"],
+                        _json.dumps(d["bids"]), _json.dumps(d["asks"]),
+                    ),
+                )
+                saved += 1
+            except Exception as e:
+                logger.debug(f"Orderbook save {d['symbol']}: {e}")
+
+        conn.commit()
+        conn.close()
+        logger.info(f"Saved {saved} orderbook snapshots")
+    except Exception as e:
+        logger.error(f"Orderbook fetch failed: {e}")
 
 
 # ─── BACKWARD COMPAT (used by main.py startup) ───────────────────────
@@ -781,6 +832,19 @@ def setup_scheduler() -> AsyncIOScheduler:
         ),
         id="daily_news_scrape",
         name="Scrape LankaBD news & events",
+        replace_existing=True,
+    )
+
+    # Order book / market depth snapshots (every 5 min during market hours)
+    scheduler.add_job(
+        fetch_orderbook_snapshots,
+        trigger=CronTrigger(
+            day_of_week="sun,mon,tue,wed,thu",
+            hour="10-14", minute="3,8,13,18,23,28,33,38,43,48,53,58",
+            timezone="Asia/Dhaka",
+        ),
+        id="orderbook_snapshots",
+        name="Fetch order book (bid/ask depth)",
         replace_existing=True,
     )
 

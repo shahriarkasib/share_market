@@ -276,6 +276,27 @@ def init_database():
         )""",
         "CREATE INDEX IF NOT EXISTS idx_intraday_sym_ts ON intraday_snapshots(symbol, ts)",
 
+        """CREATE TABLE IF NOT EXISTS orderbook_snapshots (
+            id SERIAL PRIMARY KEY,
+            symbol TEXT NOT NULL,
+            ts TIMESTAMP NOT NULL,
+            ltp DOUBLE PRECISION,
+            best_bid DOUBLE PRECISION,
+            best_ask DOUBLE PRECISION,
+            spread DOUBLE PRECISION,
+            total_bid_volume BIGINT,
+            total_ask_volume BIGINT,
+            bid_ask_ratio DOUBLE PRECISION,
+            bid_levels INTEGER,
+            ask_levels INTEGER,
+            trades INTEGER,
+            volume BIGINT,
+            bids_json JSONB,
+            asks_json JSONB,
+            UNIQUE(symbol, ts)
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_orderbook_sym_ts ON orderbook_snapshots(symbol, ts)",
+
         """CREATE TABLE IF NOT EXISTS daily_analysis (
             id SERIAL PRIMARY KEY,
             date DATE NOT NULL,
