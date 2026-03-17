@@ -477,12 +477,24 @@ def _heavy_refresh_sync():
 # ─── DAILY PRICE SYNC (every 15 min, lightweight) ────────────────────
 
 async def sync_daily_prices_from_live():
-    """Copy today's live prices into daily_prices table for historical record."""
+    """Copy today's live prices into daily_prices table for historical record.
+    Skips if market didn't actually trade (prevents fake data on holidays/weekends).
+    """
     try:
         from data.repository import upsert_today_prices
         today_str = datetime.now(DSE_TZ).strftime("%Y-%m-%d")
         conn = get_connection()
         rows = conn.execute("SELECT * FROM live_prices").fetchall()
+
+        # Guard: check if market actually traded by comparing with yesterday
+        # If ALL stocks have same LTP as close_prev, market is closed
+        if rows:
+            traded = sum(1 for r in rows if r.get("ltp") and r.get("close_prev") and float(r["ltp"]) != float(r["close_prev"]))
+            if traded < 5:
+                logger.info(f"Market appears closed (only {traded} stocks changed). Skipping daily price sync.")
+                conn.close()
+                return
+
         conn.close()
         if not rows:
             return
