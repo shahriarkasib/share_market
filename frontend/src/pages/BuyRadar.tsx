@@ -830,6 +830,8 @@ export default function BuyRadar() {
   const [error, setError] = useState("");
   const [view, setView] = useState<"pipeline" | "list">("pipeline");
   const [selectedCats, setSelectedCats] = useState<Set<string>>(new Set(["A"]));
+  const [stageFilter, setStageFilter] = useState<string | null>(null);
+  const [showMarketCtx, setShowMarketCtx] = useState(false);
 
   const toggleCat = (cat: string) => {
     setSelectedCats(prev => {
@@ -950,28 +952,58 @@ export default function BuyRadar() {
         ))}
       </div>
 
-      {/* Stage summary bar */}
+      {/* Stage filter tabs — clickable */}
       <div className="flex gap-2 mb-4 overflow-x-auto pb-1">
+        <button
+          onClick={() => setStageFilter(null)}
+          className={clsx("flex items-center gap-2 px-3 py-2 rounded-lg border shrink-0 transition-all",
+            !stageFilter ? "bg-blue-500/15 border-blue-500/40 ring-1 ring-blue-500/30" : "border-[var(--border)] hover:bg-[var(--hover)]"
+          )}
+        >
+          <span className={clsx("text-xl font-bold", !stageFilter ? "text-blue-400" : "text-[var(--text-muted)]")}>{data.stocks.length}</span>
+          <div className="text-xs font-semibold text-[var(--text-muted)]">All</div>
+        </button>
         {visibleStages.map(({ key, label, desc }) => {
           const count = byStage[key]?.length || 0;
+          if (count === 0) return null;
           const st = STAGE_STYLES[key];
+          const active = stageFilter === key;
           return (
-            <div key={key} className={clsx("flex items-center gap-2.5 px-3 py-2 rounded-lg border shrink-0", st.bg, st.border)}>
+            <button
+              key={key}
+              onClick={() => setStageFilter(active ? null : key)}
+              className={clsx("flex items-center gap-2.5 px-3 py-2 rounded-lg border shrink-0 transition-all cursor-pointer",
+                active ? `${st.bg} ${st.border} ring-1 ring-current` : `${st.bg} ${st.border} hover:brightness-110`
+              )}
+            >
               <span className={clsx("text-xl font-bold", st.text)}>{count}</span>
               <div>
                 <div className={clsx("text-xs font-semibold", st.text)}>{label}</div>
                 <div className="text-[10px] text-[var(--text-dim)]">{desc}</div>
               </div>
-            </div>
+            </button>
           );
         })}
       </div>
 
-      {/* Market context banner */}
-      {data.market_ctx && <MarketContextBanner ctx={data.market_ctx} />}
-
-      {/* DSEX Forecast */}
-      {data.dsex_forecast && <DsexForecastBanner forecast={data.dsex_forecast} />}
+      {/* Market context + DSEX — collapsible, collapsed by default */}
+      {(data.market_ctx || data.dsex_forecast) && (
+        <div className="mb-4">
+          <button
+            onClick={() => setShowMarketCtx(!showMarketCtx)}
+            className="flex items-center gap-2 text-xs text-[var(--text-muted)] hover:text-[var(--text)] transition-colors mb-2"
+          >
+            {showMarketCtx ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+            Market Context & DSEX Analysis
+          </button>
+          {showMarketCtx && (
+            <div className="space-y-3">
+              {data.market_ctx && <MarketContextBanner ctx={data.market_ctx} />}
+              {data.dsex_forecast && <DsexForecastBanner forecast={data.dsex_forecast} />}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Indicator explainer */}
       <IndicatorHelp />
@@ -980,6 +1012,7 @@ export default function BuyRadar() {
       {view === "pipeline" && (
         <div className="space-y-6">
           {visibleStages.map(({ key, label }) => {
+            if (stageFilter && stageFilter !== key) return null;
             const stocks = byStage[key] || [];
             if (stocks.length === 0) return null;
             const st = STAGE_STYLES[key];
@@ -1002,7 +1035,7 @@ export default function BuyRadar() {
       {/* List view */}
       {view === "list" && (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-          {data.stocks.map((s) => <StockCard key={s.symbol} stock={s} />)}
+          {(stageFilter ? (byStage[stageFilter] || []) : data.stocks).map((s) => <StockCard key={s.symbol} stock={s} />)}
         </div>
       )}
 
