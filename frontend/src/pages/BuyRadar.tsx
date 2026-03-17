@@ -26,8 +26,14 @@ import {
 import { fetchBuyRadar } from "../api/client.ts";
 import type { BuyRadarStock, BuyRadarResponse, RemovedRadarStock, MarketContext, DsexForecast, DsexDailyPrediction } from "../types/index.ts";
 
-/* ── Stage config ── */
+/* ── Stage config — combines old stages + new entry direction ── */
 const STAGES = [
+  { key: "AT_ENTRY", label: "At Entry", desc: "In entry zone — BUY NOW" },
+  { key: "NEAR_ENTRY", label: "Near Entry", desc: "Almost at entry — 1-2 days" },
+  { key: "CONVERGING", label: "Converging", desc: "Moving toward entry zone" },
+  { key: "DIVERGING", label: "Diverging", desc: "Was near entry, moving away" },
+  { key: "MOVED_PAST", label: "Moved Past", desc: "Price left entry zone — missed" },
+  // Fallback for old stages when entry_direction not available
   { key: "ENTRY_ZONE", label: "Entry Zone", desc: "Buy NOW — best price is here" },
   { key: "READY", label: "Ready", desc: "1-2 days — one trigger away" },
   { key: "APPROACHING", label: "Approaching", desc: "5-10 days — setup forming" },
@@ -36,11 +42,17 @@ const STAGES = [
 ] as const;
 
 const STAGE_STYLES: Record<string, { bg: string; border: string; badge: string; text: string; dot: string }> = {
+  AT_ENTRY:    { bg: "bg-emerald-500/8",  border: "border-emerald-500/30", badge: "bg-emerald-500/20 text-emerald-400", text: "text-emerald-400", dot: "bg-emerald-400" },
+  NEAR_ENTRY:  { bg: "bg-green-500/8",    border: "border-green-500/25",   badge: "bg-green-500/20 text-green-400",     text: "text-green-400",   dot: "bg-green-400" },
+  CONVERGING:  { bg: "bg-blue-500/8",     border: "border-blue-500/25",    badge: "bg-blue-500/20 text-blue-400",       text: "text-blue-400",    dot: "bg-blue-400" },
+  DIVERGING:   { bg: "bg-amber-500/8",    border: "border-amber-500/25",   badge: "bg-amber-500/20 text-amber-400",     text: "text-amber-400",   dot: "bg-amber-400" },
+  MOVED_PAST:  { bg: "bg-red-500/8",      border: "border-red-500/25",     badge: "bg-red-500/20 text-red-400",         text: "text-red-400",     dot: "bg-red-400" },
+  // Legacy fallbacks
   ENTRY_ZONE:  { bg: "bg-emerald-500/8",  border: "border-emerald-500/30", badge: "bg-emerald-500/20 text-emerald-400", text: "text-emerald-400", dot: "bg-emerald-400" },
-  READY:       { bg: "bg-green-500/8",     border: "border-green-500/25",   badge: "bg-green-500/20 text-green-400",     text: "text-green-400",   dot: "bg-green-400" },
-  APPROACHING: { bg: "bg-amber-500/8",     border: "border-amber-500/25",   badge: "bg-amber-500/20 text-amber-400",     text: "text-amber-400",   dot: "bg-amber-400" },
-  BUILDING:    { bg: "bg-blue-500/8",      border: "border-blue-500/25",    badge: "bg-blue-500/20 text-blue-400",       text: "text-blue-400",    dot: "bg-blue-400" },
-  WATCHING:    { bg: "bg-slate-500/5",     border: "border-[var(--border)]", badge: "bg-slate-500/15 text-slate-400",    text: "text-slate-400",   dot: "bg-slate-400" },
+  READY:       { bg: "bg-green-500/8",    border: "border-green-500/25",   badge: "bg-green-500/20 text-green-400",     text: "text-green-400",   dot: "bg-green-400" },
+  APPROACHING: { bg: "bg-amber-500/8",    border: "border-amber-500/25",   badge: "bg-amber-500/20 text-amber-400",     text: "text-amber-400",   dot: "bg-amber-400" },
+  BUILDING:    { bg: "bg-blue-500/8",     border: "border-blue-500/25",    badge: "bg-blue-500/20 text-blue-400",       text: "text-blue-400",    dot: "bg-blue-400" },
+  WATCHING:    { bg: "bg-slate-500/5",    border: "border-[var(--border)]", badge: "bg-slate-500/15 text-slate-400",    text: "text-slate-400",   dot: "bg-slate-400" },
 };
 
 /* ── Layer config ── */
@@ -863,12 +875,30 @@ export default function BuyRadar() {
 
   if (!data) return null;
 
-  // Group stocks by stage
+  // Group stocks by entry_direction (preferred) or stage (fallback)
   const byStage: Record<string, BuyRadarStock[]> = {};
   for (const s of STAGES) byStage[s.key] = [];
   for (const stock of data.stocks) {
-    if (byStage[stock.stage]) byStage[stock.stage].push(stock);
+    // Prefer LLM entry_direction over algo stage
+    const groupKey = stock.entry_direction || stock.stage;
+    if (byStage[groupKey]) {
+      byStage[groupKey].push(stock);
+    } else if (byStage[stock.stage]) {
+      byStage[stock.stage].push(stock);
+    }
   }
+  // Filter out empty legacy stages when entry_direction is available
+  const hasEntryDirection = data.stocks.some(s => s.entry_direction);
+  const visibleStages = STAGES.filter(s => {
+    if (hasEntryDirection) {
+      // Show new direction stages, hide legacy ones with 0 count
+      const isLegacy = ["ENTRY_ZONE", "READY", "APPROACHING", "BUILDING", "WATCHING"].includes(s.key);
+      return !isLegacy || (byStage[s.key]?.length || 0) > 0;
+    }
+    // No entry_direction data yet — show only legacy stages
+    const isNew = ["AT_ENTRY", "NEAR_ENTRY", "CONVERGING", "DIVERGING", "MOVED_PAST"].includes(s.key);
+    return !isNew;
+  });
 
   return (
     <div className="max-w-[1440px] mx-auto px-3 sm:px-4 lg:px-8 py-4">
@@ -922,7 +952,7 @@ export default function BuyRadar() {
 
       {/* Stage summary bar */}
       <div className="flex gap-2 mb-4 overflow-x-auto pb-1">
-        {STAGES.map(({ key, label, desc }) => {
+        {visibleStages.map(({ key, label, desc }) => {
           const count = byStage[key]?.length || 0;
           const st = STAGE_STYLES[key];
           return (
@@ -949,7 +979,7 @@ export default function BuyRadar() {
       {/* Pipeline view */}
       {view === "pipeline" && (
         <div className="space-y-6">
-          {STAGES.map(({ key, label }) => {
+          {visibleStages.map(({ key, label }) => {
             const stocks = byStage[key] || [];
             if (stocks.length === 0) return null;
             const st = STAGE_STYLES[key];
