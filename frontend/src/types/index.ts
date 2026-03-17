@@ -528,7 +528,7 @@ export interface BuyRadarStock {
   stage_reasoning: string;
   sell_plan?: string;
   // Entry direction + conviction
-  entry_direction?: 'CONVERGING' | 'AT_ENTRY' | 'NEAR_ENTRY' | 'DIVERGING' | 'MOVED_PAST';
+  entry_direction?: 'DROPPING_TO_ENTRY' | 'NEAR_ENTRY_DOWN' | 'IN_ENTRY_ZONE' | 'NEAR_ENTRY_UP' | 'MOVED_PAST';
   entry_direction_reason?: string;
   conviction?: 'HIGH' | 'MEDIUM' | 'LOW' | 'WEAK';
   conviction_score?: number;

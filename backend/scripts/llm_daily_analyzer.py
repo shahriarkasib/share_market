@@ -1078,7 +1078,7 @@ Return a JSON array. Start with [ end with ]. NO other text:
     "dsex_dependency": "HIGH|MEDIUM|LOW",
     "if_dsex_drops": "What happens to this stock and your entry if DSEX drops 1-2%",
     "if_dsex_rises": "What happens if DSEX rallies 1-2%",
-    "entry_direction": "CONVERGING|AT_ENTRY|NEAR_ENTRY|DIVERGING|MOVED_PAST",
+    "entry_direction": "DROPPING_TO_ENTRY|NEAR_ENTRY_DOWN|IN_ENTRY_ZONE|NEAR_ENTRY_UP|MOVED_PAST",
     "entry_direction_reason": "Why this direction — cite actual price movement toward or away from entry zone over recent days",
     "conviction": "HIGH|MEDIUM|LOW|WEAK",
     "conviction_score": 75,
@@ -1089,13 +1089,13 @@ Return a JSON array. Start with [ end with ]. NO other text:
   }}
 ]
 
-ENTRY ZONE DIRECTION — track the JOURNEY toward entry:
-- CONVERGING: Price is moving TOWARD the entry zone day by day (getting cheaper/closer to support)
-- NEAR_ENTRY: Price is within 2-3% of entry zone, almost there
-- AT_ENTRY: Price is currently inside the entry zone (entry_low to entry_high)
-- DIVERGING: Price WAS near entry but is now moving AWAY (bounced up or broke down past SL)
-- MOVED_PAST: Price rallied well above entry zone — opportunity is gone
-Look at the price trajectory over recent days, not just today's snapshot.
+ENTRY ZONE DIRECTION — track WHERE price is relative to entry zone AND which direction it's moving:
+- DROPPING_TO_ENTRY: Price is falling TOWARD entry zone (getting cheaper day by day). Not there yet but heading in the right direction.
+- NEAR_ENTRY_DOWN: Price is very close to entry zone (within 2-3%) AND still dropping. Almost buyable — get ready.
+- IN_ENTRY_ZONE: Price is currently INSIDE the entry zone (between entry_low and entry_high). BUY NOW window is open.
+- NEAR_ENTRY_UP: Price was in or near entry zone but is now bouncing UP and moving away. Window is closing — decide fast.
+- MOVED_PAST: Price has rallied well above the entry zone. The opportunity is gone. Don't chase.
+Look at recent price trajectory (last 3-5 days) to determine direction, not just today's snapshot.
 
 CONVICTION — how confident that the move will happen:
 - Analyze buy vs sell volume ratio (from OHLCV: up-day volume vs down-day volume)

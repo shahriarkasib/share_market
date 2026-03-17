@@ -26,28 +26,28 @@ import {
 import { fetchBuyRadar } from "../api/client.ts";
 import type { BuyRadarStock, BuyRadarResponse, RemovedRadarStock, MarketContext, DsexForecast, DsexDailyPrediction } from "../types/index.ts";
 
-/* ── Stage config — combines old stages + new entry direction ── */
+/* ── Stage config — entry direction categories ── */
 const STAGES = [
-  { key: "AT_ENTRY", label: "At Entry", desc: "In entry zone — BUY NOW" },
-  { key: "NEAR_ENTRY", label: "Near Entry", desc: "Almost at entry — 1-2 days" },
-  { key: "CONVERGING", label: "Converging", desc: "Moving toward entry zone" },
-  { key: "DIVERGING", label: "Diverging", desc: "Was near entry, moving away" },
-  { key: "MOVED_PAST", label: "Moved Past", desc: "Price left entry zone — missed" },
-  // Fallback for old stages when entry_direction not available
-  { key: "ENTRY_ZONE", label: "Entry Zone", desc: "Buy NOW — best price is here" },
-  { key: "READY", label: "Ready", desc: "1-2 days — one trigger away" },
-  { key: "APPROACHING", label: "Approaching", desc: "5-10 days — setup forming" },
-  { key: "BUILDING", label: "Building", desc: "2-3 weeks — early accumulation" },
-  { key: "WATCHING", label: "Watching", desc: "On radar — not actionable yet" },
+  { key: "IN_ENTRY_ZONE",     label: "In Entry Zone",      desc: "BUY NOW — price is in entry range" },
+  { key: "NEAR_ENTRY_DOWN",   label: "Near Entry ↓",       desc: "Almost there — price still dropping" },
+  { key: "DROPPING_TO_ENTRY", label: "Dropping to Entry",   desc: "Price falling toward entry zone" },
+  { key: "NEAR_ENTRY_UP",     label: "Near Entry ↑",        desc: "Window closing — price bouncing up" },
+  { key: "MOVED_PAST",        label: "Moved Past",          desc: "Too late — price above entry zone" },
+  // Legacy fallbacks (before LLM provides entry_direction)
+  { key: "ENTRY_ZONE",  label: "Entry Zone",   desc: "Buy NOW — best price is here" },
+  { key: "READY",       label: "Ready",        desc: "1-2 days — one trigger away" },
+  { key: "APPROACHING", label: "Approaching",  desc: "5-10 days — setup forming" },
+  { key: "BUILDING",    label: "Building",     desc: "2-3 weeks — early accumulation" },
+  { key: "WATCHING",    label: "Watching",     desc: "On radar — not actionable yet" },
 ] as const;
 
 const STAGE_STYLES: Record<string, { bg: string; border: string; badge: string; text: string; dot: string }> = {
-  AT_ENTRY:    { bg: "bg-emerald-500/8",  border: "border-emerald-500/30", badge: "bg-emerald-500/20 text-emerald-400", text: "text-emerald-400", dot: "bg-emerald-400" },
-  NEAR_ENTRY:  { bg: "bg-green-500/8",    border: "border-green-500/25",   badge: "bg-green-500/20 text-green-400",     text: "text-green-400",   dot: "bg-green-400" },
-  CONVERGING:  { bg: "bg-blue-500/8",     border: "border-blue-500/25",    badge: "bg-blue-500/20 text-blue-400",       text: "text-blue-400",    dot: "bg-blue-400" },
-  DIVERGING:   { bg: "bg-amber-500/8",    border: "border-amber-500/25",   badge: "bg-amber-500/20 text-amber-400",     text: "text-amber-400",   dot: "bg-amber-400" },
-  MOVED_PAST:  { bg: "bg-red-500/8",      border: "border-red-500/25",     badge: "bg-red-500/20 text-red-400",         text: "text-red-400",     dot: "bg-red-400" },
-  // Legacy fallbacks
+  IN_ENTRY_ZONE:     { bg: "bg-emerald-500/10", border: "border-emerald-500/40", badge: "bg-emerald-500/20 text-emerald-400", text: "text-emerald-400", dot: "bg-emerald-400" },
+  NEAR_ENTRY_DOWN:   { bg: "bg-green-500/8",    border: "border-green-500/30",   badge: "bg-green-500/20 text-green-400",     text: "text-green-400",   dot: "bg-green-400" },
+  DROPPING_TO_ENTRY: { bg: "bg-blue-500/8",      border: "border-blue-500/25",    badge: "bg-blue-500/20 text-blue-400",       text: "text-blue-400",    dot: "bg-blue-400" },
+  NEAR_ENTRY_UP:     { bg: "bg-amber-500/8",     border: "border-amber-500/25",   badge: "bg-amber-500/20 text-amber-400",     text: "text-amber-400",   dot: "bg-amber-400" },
+  MOVED_PAST:        { bg: "bg-red-500/8",        border: "border-red-500/25",     badge: "bg-red-500/20 text-red-400",         text: "text-red-400",     dot: "bg-red-400" },
+  // Legacy
   ENTRY_ZONE:  { bg: "bg-emerald-500/8",  border: "border-emerald-500/30", badge: "bg-emerald-500/20 text-emerald-400", text: "text-emerald-400", dot: "bg-emerald-400" },
   READY:       { bg: "bg-green-500/8",    border: "border-green-500/25",   badge: "bg-green-500/20 text-green-400",     text: "text-green-400",   dot: "bg-green-400" },
   APPROACHING: { bg: "bg-amber-500/8",    border: "border-amber-500/25",   badge: "bg-amber-500/20 text-amber-400",     text: "text-amber-400",   dot: "bg-amber-400" },
@@ -378,16 +378,16 @@ function StockCard({ stock }: { stock: BuyRadarStock }) {
               </span>
               {stock.entry_direction ? (
                 <span className={clsx("px-1.5 py-0.5 rounded text-[10px] font-bold",
-                  stock.entry_direction === "AT_ENTRY" && "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30",
-                  stock.entry_direction === "NEAR_ENTRY" && "bg-emerald-500/15 text-emerald-300 border border-emerald-500/20",
-                  stock.entry_direction === "CONVERGING" && "bg-blue-500/20 text-blue-400 border border-blue-500/30",
-                  stock.entry_direction === "DIVERGING" && "bg-amber-500/20 text-amber-400 border border-amber-500/30",
+                  stock.entry_direction === "IN_ENTRY_ZONE" && "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30",
+                  stock.entry_direction === "NEAR_ENTRY_DOWN" && "bg-green-500/20 text-green-400 border border-green-500/30",
+                  stock.entry_direction === "DROPPING_TO_ENTRY" && "bg-blue-500/20 text-blue-400 border border-blue-500/30",
+                  stock.entry_direction === "NEAR_ENTRY_UP" && "bg-amber-500/20 text-amber-400 border border-amber-500/30",
                   stock.entry_direction === "MOVED_PAST" && "bg-red-500/20 text-red-400 border border-red-500/30",
                 )} title={stock.entry_direction_reason || ""}>
-                  {stock.entry_direction === "AT_ENTRY" ? "AT ENTRY" :
-                   stock.entry_direction === "NEAR_ENTRY" ? "NEAR ENTRY" :
-                   stock.entry_direction === "CONVERGING" ? "→ CONVERGING" :
-                   stock.entry_direction === "DIVERGING" ? "← DIVERGING" :
+                  {stock.entry_direction === "IN_ENTRY_ZONE" ? "IN ENTRY ZONE" :
+                   stock.entry_direction === "NEAR_ENTRY_DOWN" ? "NEAR ENTRY ↓" :
+                   stock.entry_direction === "DROPPING_TO_ENTRY" ? "↓ DROPPING TO ENTRY" :
+                   stock.entry_direction === "NEAR_ENTRY_UP" ? "NEAR ENTRY ↑" :
                    "MOVED PAST"}
                 </span>
               ) : stock.entry_zone_status && stock.entry_zone_status !== "UNKNOWN" ? (
@@ -891,15 +891,13 @@ export default function BuyRadar() {
   }
   // Filter out empty legacy stages when entry_direction is available
   const hasEntryDirection = data.stocks.some(s => s.entry_direction);
+  const newKeys = ["IN_ENTRY_ZONE", "NEAR_ENTRY_DOWN", "DROPPING_TO_ENTRY", "NEAR_ENTRY_UP", "MOVED_PAST"];
+  const legacyKeys = ["ENTRY_ZONE", "READY", "APPROACHING", "BUILDING", "WATCHING"];
   const visibleStages = STAGES.filter(s => {
     if (hasEntryDirection) {
-      // Show new direction stages, hide legacy ones with 0 count
-      const isLegacy = ["ENTRY_ZONE", "READY", "APPROACHING", "BUILDING", "WATCHING"].includes(s.key);
-      return !isLegacy || (byStage[s.key]?.length || 0) > 0;
+      return !legacyKeys.includes(s.key) || (byStage[s.key]?.length || 0) > 0;
     }
-    // No entry_direction data yet — show only legacy stages
-    const isNew = ["AT_ENTRY", "NEAR_ENTRY", "CONVERGING", "DIVERGING", "MOVED_PAST"].includes(s.key);
-    return !isNew;
+    return !newKeys.includes(s.key);
   });
 
   return (
