@@ -653,10 +653,10 @@ async def scrape_daily_news():
 
 
 async def cleanup_intraday_snapshots():
-    """Delete intraday snapshots older than 7 days."""
+    """Delete intraday snapshots older than 90 days. This data is irreplaceable — DSE doesn't provide historical intraday."""
     try:
         conn = get_connection()
-        conn.execute("DELETE FROM intraday_snapshots WHERE ts < NOW() - INTERVAL '7 days'")
+        conn.execute("DELETE FROM intraday_snapshots WHERE ts < NOW() - INTERVAL '90 days'")
         conn.commit()
         conn.close()
         logger.info("Cleaned up old intraday snapshots")
