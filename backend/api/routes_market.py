@@ -130,7 +130,7 @@ async def get_matrix_data():
     # Live prices
     price_rows = conn.execute(
         "SELECT symbol, ltp, change, change_pct, open, high, low, close_prev, "
-        "volume, value, trade_count FROM live_prices WHERE ltp > 0"
+        "volume, value, trade_count, bid_ask_ratio FROM live_prices WHERE ltp > 0"
     ).fetchall()
     prices = {r["symbol"]: dict(r) for r in price_rows}
 
@@ -230,6 +230,7 @@ async def get_matrix_data():
             "conviction": llm.get("conviction") or "",
             "stage": llm.get("stage") or "",
             "composite_score": round(composite, 1),
+            "bid_ask_ratio": float(p.get("bid_ask_ratio") or 0),
         })
 
     cache.set("matrix_data", result, 300)  # 5 min cache

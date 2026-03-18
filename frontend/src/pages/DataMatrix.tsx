@@ -292,6 +292,33 @@ const columns: Column[] = [
         : 0,
   },
   {
+    key: "bid_ask_ratio",
+    label: "B/A",
+    align: "right",
+    sortable: true,
+    render: (r) => {
+      if (!r.bid_ask_ratio || r.bid_ask_ratio === 0)
+        return <span className="text-[var(--text-dim)]">–</span>;
+      return (
+        <span
+          className={clsx(
+            "font-medium",
+            r.bid_ask_ratio >= 2
+              ? "text-green-400"
+              : r.bid_ask_ratio >= 1.2
+                ? "text-emerald-400"
+                : r.bid_ask_ratio >= 0.8
+                  ? "text-[var(--text-muted)]"
+                  : "text-red-400",
+          )}
+        >
+          {r.bid_ask_ratio.toFixed(1)}
+        </span>
+      );
+    },
+    getValue: (r) => r.bid_ask_ratio || 0,
+  },
+  {
     key: "value",
     label: "Turnover",
     align: "right",

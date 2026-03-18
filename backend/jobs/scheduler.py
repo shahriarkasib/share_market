@@ -627,6 +627,39 @@ async def run_post_market_analysis():
         logger.error(f"Post-market analysis failed: {e}")
 
 
+async def sync_order_book():
+    """Fetch bid/ask depth for A-category stocks and update live_prices."""
+    if not is_trading_day():
+        return
+    try:
+        from data.orderbook_scraper import fetch_all_depths
+        conn = get_connection()
+        syms = [r["symbol"] for r in conn.execute(
+            "SELECT symbol FROM fundamentals WHERE category = 'A'"
+        ).fetchall()]
+        conn.close()
+
+        depths = fetch_all_depths(syms, delay=0.2)
+        if not depths:
+            return
+
+        conn = get_connection()
+        updated = 0
+        for d in depths:
+            conn.execute(
+                "UPDATE live_prices SET bid_ask_ratio = ?, total_bid_vol = ?, total_ask_vol = ? "
+                "WHERE symbol = ?",
+                (d.get("bid_ask_ratio", 0), d.get("total_bid_volume", 0),
+                 d.get("total_ask_volume", 0), d["symbol"]),
+            )
+            updated += 1
+        conn.execute("COMMIT")
+        conn.close()
+        logger.info(f"Order book synced for {updated} stocks")
+    except Exception as e:
+        logger.error(f"Order book sync failed: {e}")
+
+
 async def precompute_radar():
     """Precompute radar results for all category combos and store in DB."""
     if not is_trading_day():
@@ -864,6 +897,19 @@ def setup_scheduler() -> AsyncIOScheduler:
         ),
         id="daily_analysis",
         name="Post-market daily analysis",
+        replace_existing=True,
+    )
+
+    # Order book depth sync (every 10 min during market)
+    scheduler.add_job(
+        sync_order_book,
+        trigger=CronTrigger(
+            day_of_week="sun,mon,tue,wed,thu",
+            hour="10-14", minute="1,11,21,31,41,51",
+            timezone="Asia/Dhaka",
+        ),
+        id="order_book_sync",
+        name="Sync bid/ask depth from LankaBD",
         replace_existing=True,
     )
 

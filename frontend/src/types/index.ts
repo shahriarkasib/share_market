@@ -38,6 +38,7 @@ export interface MatrixStock extends StockPrice {
   conviction: string;
   stage: string;
   composite_score: number;
+  bid_ask_ratio: number;
 }
 
 export interface StockSignal {
@@ -573,6 +574,7 @@ export interface BuyRadarStock {
   // Live price + entry zone status
   live_ltp?: number;
   live_change_pct?: number;
+  bid_ask_ratio?: number;
   entry_zone_status?: 'IN_ZONE' | 'BELOW_ENTRY' | 'APPROACHING' | 'MOVED_PAST' | 'UNKNOWN';
   ai_stage?: string;
   // Tracking fields

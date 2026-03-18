@@ -685,9 +685,9 @@ def compute_buy_radar(categories: str = "A", exclude_sectors: str = ""):
 
     # ── Load live prices for entry-zone cross-reference ──
     live_rows = conn.execute(
-        "SELECT symbol, ltp, change_pct FROM live_prices WHERE ltp > 0"
+        "SELECT symbol, ltp, change_pct, bid_ask_ratio FROM live_prices WHERE ltp > 0"
     ).fetchall()
-    live_map = {r["symbol"]: {"ltp": float(r["ltp"]), "change_pct": float(r["change_pct"] or 0)} for r in live_rows}
+    live_map = {r["symbol"]: {"ltp": float(r["ltp"]), "change_pct": float(r["change_pct"] or 0), "bid_ask_ratio": float(r["bid_ask_ratio"] or 0)} for r in live_rows}
 
     conn.close()
 
@@ -846,6 +846,7 @@ def compute_buy_radar(categories: str = "A", exclude_sectors: str = ""):
             # Live price cross-reference
             "live_ltp": live_map[sym]["ltp"] if sym in live_map else None,
             "live_change_pct": live_map[sym]["change_pct"] if sym in live_map else None,
+            "bid_ask_ratio": live_map[sym]["bid_ask_ratio"] if sym in live_map else None,
             "entry_zone_status": _entry_zone_status(
                 live_map.get(sym, {}).get("ltp"), ai_entry_low, ai_entry_high
             ),

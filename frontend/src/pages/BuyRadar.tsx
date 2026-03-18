@@ -504,6 +504,15 @@ function StockCard({ stock }: { stock: BuyRadarStock }) {
             {stock.t1 != null && <span className="text-[var(--text-muted)]">T1: {stock.t1.toFixed(1)}</span>}
             {stock.t2 != null && <span className="text-[var(--text-muted)]">T2: {stock.t2.toFixed(1)}</span>}
             {stock.sl != null && <span className="text-red-400">SL: {stock.sl.toFixed(1)}</span>}
+            {stock.bid_ask_ratio != null && stock.bid_ask_ratio > 0 && (
+              <span className={clsx("font-medium",
+                stock.bid_ask_ratio >= 2 ? "text-green-400" :
+                stock.bid_ask_ratio >= 1.2 ? "text-emerald-400" :
+                stock.bid_ask_ratio >= 0.8 ? "text-[var(--text-muted)]" : "text-red-400"
+              )}>
+                B/A: {stock.bid_ask_ratio.toFixed(1)}×
+              </span>
+            )}
           </div>
         )}
 
