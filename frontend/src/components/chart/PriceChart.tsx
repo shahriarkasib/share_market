@@ -68,7 +68,7 @@ const SUB_PANE_DEFS = [
 
 const PANE_LABELS: Record<string, string> = {
   rsi: "RSI (14)",
-  macd: "MACD (12, 26, close, 9)",
+  macd: "MACD (12,26,9) — Green=Bullish Red=Bearish",
   stoch: "Stoch (14, 3)",
   stochrsi: "Stoch RSI (14, 14, 3, 3)",
   mfi: "MFI (14)",
@@ -82,7 +82,7 @@ const PANE_LABELS: Record<string, string> = {
 
 const PANE_TIPS: Record<string, string> = {
   rsi: "Relative Strength Index — <30 oversold (bounce likely), >70 overbought (risky). Measures seller/buyer exhaustion.",
-  macd: "Moving Average Convergence Divergence — histogram crossing 0 upward = momentum shifting bullish. Signal line cross = buy/sell signal.",
+  macd: "MACD — Green bars = bullish momentum (MACD above signal), Red bars = bearish momentum (MACD below signal). Histogram crossing 0 = momentum shift. NOT buy/sell volume.",
   stoch: "Stochastic Oscillator — <20 oversold, >80 overbought. %K crossing above %D in oversold = buy signal.",
   stochrsi: "Stochastic RSI — faster RSI variant. <0.2 deeply oversold (strong bounce). K crossing above D = early buy.",
   mfi: "Money Flow Index — like RSI but includes volume. <20 sellers exhausted + volume confirms. Stronger than RSI alone.",
@@ -132,7 +132,7 @@ function OHLCVLegend({ bar, overlayValues }: {
       <span className="text-slate-500">H <span className={clr}>{bar.high.toFixed(1)}</span></span>
       <span className="text-slate-500">L <span className={clr}>{bar.low.toFixed(1)}</span></span>
       <span className="text-slate-500">C <span className={clr}>{bar.close.toFixed(1)}</span></span>
-      <span className="text-slate-500">V <span className="text-slate-700">{(bar.volume / 1000).toFixed(0)}K</span></span>
+      <span className="text-slate-500">V <span className="text-slate-700">{bar.volume >= 1e6 ? (bar.volume / 1e6).toFixed(2) + "M" : bar.volume >= 1e3 ? (bar.volume / 1e3).toFixed(0) + "K" : bar.volume.toLocaleString()}</span></span>
       {overlayValues.map((ov) =>
         ov.value != null ? (
           <span key={ov.label} style={{ color: ov.color }} className="font-medium">
@@ -258,7 +258,7 @@ export default function PriceChart({ symbol, signal, height: fixedHeight }: Prop
     const f = (v: number | null | undefined, d = 2) => v != null ? v.toFixed(d) : "\u2014";
     setPaneValues({
       rsi: f(ind.rsi?.[idx]),
-      macd: `${f(ind.macd_line?.[idx], 4)} ${f(ind.macd_signal?.[idx], 4)} ${f(ind.macd_hist?.[idx], 4)}`,
+      macd: `Line ${f(ind.macd_line?.[idx], 4)}  Signal ${f(ind.macd_signal?.[idx], 4)}  Hist ${f(ind.macd_hist?.[idx], 4)}${ind.macd_hist?.[idx] != null ? (ind.macd_hist[idx]! >= 0 ? " ▲ Bullish" : " ▼ Bearish") : ""}`,
       stoch: `%K ${f(ind.stoch_k?.[idx])} %D ${f(ind.stoch_d?.[idx])}`,
       stochrsi: `%K ${f(ind.stochrsi_k?.[idx])} %D ${f(ind.stochrsi_d?.[idx])}`,
       mfi: f(ind.mfi?.[idx]),
@@ -329,6 +329,7 @@ export default function PriceChart({ symbol, signal, height: fixedHeight }: Prop
       layout: { background: { color: colors.bg }, textColor: colors.text, fontSize: 11 },
       grid: { vertLines: { color: colors.grid }, horzLines: { color: colors.grid } },
       crosshair: {
+        mode: 0, // Normal mode — more stable than Magnet mode
         vertLine: { color: colors.crosshair, width: 1 as const, style: LineStyle.Dashed, labelBackgroundColor: colors.crosshairLabel },
         horzLine: { color: colors.crosshair, width: 1 as const, style: LineStyle.Dashed, labelBackgroundColor: colors.crosshairLabel },
       },
@@ -359,8 +360,8 @@ export default function PriceChart({ symbol, signal, height: fixedHeight }: Prop
     });
     allChartsRef.current.push(mainChart);
 
-    // Main series — use same compactFormat so price scale width matches sub-panes
-    const mainPriceFmt = { type: "custom" as const, formatter: compactFormat };
+    // Main series — DSE tick size = 0.10 BDT
+    const mainPriceFmt = { type: "price" as const, precision: 1, minMove: 0.1 };
     if (chartType === "candlestick") {
       const s = mainChart.addSeries(CandlestickSeries, {
         upColor: "#22c55e", downColor: "#ef4444",
