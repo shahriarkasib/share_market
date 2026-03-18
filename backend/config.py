@@ -24,16 +24,12 @@ STRONG_SELL_THRESHOLD = -40
 # bdshare reports value in millions BDT, so 0.5 = 5 lakh BDT
 MIN_DAILY_VALUE = 0.5
 
-# Database — Supabase PostgreSQL
+# Database — Local PostgreSQL on GCP VM
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
-    "postgresql://postgres.iihlezpkpllacztoaguc:160021062Ss%23%23@aws-1-ap-southeast-1.pooler.supabase.com:6543/postgres",
+    "postgresql://postgres:dse_local_2026@127.0.0.1:5432/dse_trading",
 )
-# Direct connection for DDL / migrations (bypasses pgbouncer)
-DATABASE_URL_DIRECT = os.getenv(
-    "DATABASE_URL_DIRECT",
-    "postgresql://postgres.iihlezpkpllacztoaguc:160021062Ss%23%23@aws-1-ap-southeast-1.pooler.supabase.com:5432/postgres",
-)
+DATABASE_URL_DIRECT = DATABASE_URL  # Same connection, no pgbouncer needed
 
 # API Configuration
 API_PREFIX = "/api/v1"

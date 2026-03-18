@@ -24,6 +24,28 @@ DSE_TZ = pytz.timezone("Asia/Dhaka")
 _heavy_refresh_lock = threading.Lock()
 
 
+def is_trading_day(date_str: str = None) -> bool:
+    """Check if a given date is a DSE trading day (not weekend, not holiday).
+    Uses the market_holidays table. Bangladesh weekends = Friday + Saturday.
+    """
+    if date_str is None:
+        date_str = datetime.now(DSE_TZ).strftime("%Y-%m-%d")
+    try:
+        dt = datetime.strptime(date_str, "%Y-%m-%d")
+        # Friday=4, Saturday=5 in Python weekday()
+        if dt.weekday() in (4, 5):
+            return False
+        conn = get_connection()
+        row = conn.execute(
+            "SELECT 1 FROM market_holidays WHERE date = ?", (date_str,)
+        ).fetchone()
+        conn.close()
+        return row is None  # True if NOT a holiday
+    except Exception as e:
+        logger.warning(f"is_trading_day check failed: {e}, assuming trading day")
+        return True
+
+
 # ─── FAST JOBS (run every 5 min, <10s total) ─────────────────────────
 
 async def fast_pipeline():
@@ -31,6 +53,9 @@ async def fast_pipeline():
 
     Target: <10 seconds. Never blocks user requests.
     """
+    if not is_trading_day():
+        logger.info("Not a trading day — skipping fast pipeline")
+        return
     try:
         await _fetch_live_prices()
         await _sync_market_summary()
@@ -237,6 +262,8 @@ def _refresh_fast_caches():
 
 async def heavy_refresh():
     """Rebuild expensive caches in a background thread so we never block requests."""
+    if not is_trading_day():
+        return
     if not _heavy_refresh_lock.acquire(blocking=False):
         logger.info("Heavy refresh already running, skipping")
         return
@@ -480,9 +507,12 @@ async def sync_daily_prices_from_live():
     """Copy today's live prices into daily_prices table for historical record.
     Skips if market didn't actually trade (prevents fake data on holidays/weekends).
     """
+    today_str = datetime.now(DSE_TZ).strftime("%Y-%m-%d")
+    if not is_trading_day(today_str):
+        logger.info(f"Holiday/weekend ({today_str}) — skipping daily price sync")
+        return
     try:
         from data.repository import upsert_today_prices
-        today_str = datetime.now(DSE_TZ).strftime("%Y-%m-%d")
         conn = get_connection()
         rows = conn.execute("SELECT * FROM live_prices").fetchall()
 
@@ -581,6 +611,9 @@ def backfill_dsex_history():
 
 async def run_post_market_analysis():
     """Run daily analysis after market close."""
+    if not is_trading_day():
+        logger.info("Not a trading day — skipping post-market analysis")
+        return
     try:
         logger.info("Triggering post-market daily analysis...")
         from analysis.daily_report import run_daily_analysis
