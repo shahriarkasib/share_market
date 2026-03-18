@@ -503,7 +503,8 @@ async def get_buy_radar(categories: str = "A", exclude_sectors: str = ""):
             "score, risk_factors, catalysts, how_to_buy, volume_rule, "
             "entry_low, entry_high, sl, t1, t2, stage, stage_reasoning, "
             "expected_return_1w, expected_return_2w, expected_return_1m, downside_risk, "
-            "dsex_dependency, if_dsex_drops, if_dsex_rises, dsex_outlook "
+            "dsex_dependency, if_dsex_drops, if_dsex_rises, dsex_outlook, "
+            "entry_direction, entry_direction_reason, conviction, conviction_score, conviction_reason "
             "FROM llm_daily_analysis WHERE date = ?", (ai_date,),
         ).fetchall()
         llm_map = {r["symbol"]: dict(r) for r in llm_rows}
