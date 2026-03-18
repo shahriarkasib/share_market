@@ -1,5 +1,6 @@
 """Background job scheduler — lightweight pipeline that never blocks requests."""
 
+import json
 import logging
 import os
 import threading
@@ -626,6 +627,29 @@ async def run_post_market_analysis():
         logger.error(f"Post-market analysis failed: {e}")
 
 
+async def precompute_radar():
+    """Precompute radar results for all category combos and store in DB."""
+    if not is_trading_day():
+        return
+    try:
+        from api.routes_analysis import compute_buy_radar
+        for cat in ["A", "A,B", "A,B,Z"]:
+            result = compute_buy_radar(cat, "")
+            conn = get_connection()
+            conn.execute("DELETE FROM radar_precomputed WHERE category = ?", (cat,))
+            conn.execute(
+                "INSERT INTO radar_precomputed (date, category, data_json, created_at) "
+                "VALUES (?, ?, ?, NOW())",
+                (result.get("date"), cat, json.dumps(result)),
+            )
+            conn.execute("COMMIT")
+            conn.close()
+            cache.delete(f"buy_radar_{cat}_")
+            logger.info(f"Radar precomputed: category={cat}, {result.get('count')} stocks")
+    except Exception as e:
+        logger.error(f"Radar precompute failed: {e}")
+
+
 async def run_live_scanner():
     """Run intraday live scanner."""
     try:
@@ -840,6 +864,18 @@ def setup_scheduler() -> AsyncIOScheduler:
         ),
         id="daily_analysis",
         name="Post-market daily analysis",
+        replace_existing=True,
+    )
+
+    # Precompute radar (15:30 BST — after analysis finishes)
+    scheduler.add_job(
+        precompute_radar,
+        trigger=CronTrigger(
+            day_of_week="sun,mon,tue,wed,thu",
+            hour=15, minute=30, timezone="Asia/Dhaka",
+        ),
+        id="precompute_radar",
+        name="Precompute radar results",
         replace_existing=True,
     )
 

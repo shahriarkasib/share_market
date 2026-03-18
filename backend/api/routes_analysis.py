@@ -423,16 +423,63 @@ def _parse_prediction(raw):
 
 @router.get("/buy-radar")
 async def get_buy_radar(categories: str = "A", exclude_sectors: str = ""):
-    """Buy Radar — shows stocks approaching buy zone with per-indicator readiness.
-
-    Query params:
-      categories: comma-separated list of categories (default "A", options: A,B,Z,ALL)
-      exclude_sectors: comma-separated sector keywords to exclude (e.g. "bank,insurance")
-    """
+    """Buy Radar — serves precomputed radar data. Falls back to live compute if stale."""
     cache_key = f"buy_radar_{categories}_{exclude_sectors}"
     cached = cache.get(cache_key)
     if cached:
         return cached
+
+    # Try precomputed first (instant)
+    try:
+        conn = get_connection()
+        row = conn.execute(
+            "SELECT data_json, created_at FROM radar_precomputed "
+            "WHERE category = ? ORDER BY created_at DESC LIMIT 1",
+            (categories,),
+        ).fetchone()
+        conn.close()
+        if row and row["data_json"]:
+            result = json.loads(row["data_json"])
+            cache.set(cache_key, result, ttl=1800)
+            return result
+    except Exception as e:
+        logger.warning(f"Precomputed radar read failed: {e}")
+
+    # Fallback: compute live
+    result = compute_buy_radar(categories, exclude_sectors)
+    cache.set(cache_key, result, ttl=1800)
+    return result
+
+
+@router.post("/buy-radar/recompute")
+async def recompute_buy_radar():
+    """Force recompute radar for all categories and store in radar_precomputed."""
+    import threading
+    def _recompute():
+        for cat in ["A", "A,B", "A,B,Z", "ALL"]:
+            try:
+                result = compute_buy_radar(cat, "")
+                conn = get_connection()
+                conn.execute(
+                    "DELETE FROM radar_precomputed WHERE category = ?", (cat,)
+                )
+                conn.execute(
+                    "INSERT INTO radar_precomputed (date, category, data_json, created_at) "
+                    "VALUES (?, ?, ?, NOW())",
+                    (result.get("date"), cat, json.dumps(result)),
+                )
+                conn.execute("COMMIT")
+                conn.close()
+                cache.delete(f"buy_radar_{cat}_")
+                logger.info(f"Radar precomputed for category={cat}: {result.get('count')} stocks")
+            except Exception as e:
+                logger.error(f"Radar precompute failed for {cat}: {e}")
+    threading.Thread(target=_recompute, daemon=True).start()
+    return {"status": "recomputing"}
+
+
+def compute_buy_radar(categories: str = "A", exclude_sectors: str = ""):
+    """Compute buy radar data — the heavy computation."""
 
     conn = get_connection()
 
@@ -982,5 +1029,4 @@ async def get_buy_radar(categories: str = "A", exclude_sectors: str = ""):
         "removed": removed,
     }
 
-    cache.set(cache_key, result, ttl=1800)  # 30 min cache
     return result
