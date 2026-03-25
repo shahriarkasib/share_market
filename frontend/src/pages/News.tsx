@@ -233,9 +233,9 @@ function NewsCard({ item }: { item: NewsItem }) {
             )}
             <Badge label={item.category} colorMap={CATEGORY_COLORS} />
             {/* Affected symbols */}
-            {item.affected_symbols && item.affected_symbols.length > 0 && (
+            {item.affected_symbols && (Array.isArray(item.affected_symbols) ? item.affected_symbols : []).length > 0 && (
               <div className="flex items-center gap-1">
-                {item.affected_symbols.slice(0, 4).map((sym) => (
+                {(Array.isArray(item.affected_symbols) ? item.affected_symbols : []).slice(0, 4).map((sym) => (
                   <Link
                     key={sym}
                     to={`/stock/${sym}`}
@@ -244,7 +244,7 @@ function NewsCard({ item }: { item: NewsItem }) {
                     {sym}
                   </Link>
                 ))}
-                {item.affected_symbols.length > 4 && (
+                {Array.isArray(item.affected_symbols) && item.affected_symbols.length > 4 && (
                   <span className="text-[10px] text-[var(--text-dim)]">
                     +{item.affected_symbols.length - 4}
                   </span>
