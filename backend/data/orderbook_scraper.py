@@ -1,16 +1,15 @@
 """Order book / market depth scraper from LankaBD.
 
 Fetches bid/ask prices and volumes for DSE stocks via LankaBD's
-MarketDepthData AJAX endpoint. Stores snapshots every 5 minutes
-during market hours.
+MarketDepthData AJAX endpoint (requires anti-forgery token).
 
 Usage:
     from data.orderbook_scraper import fetch_market_depth, fetch_all_depths
 """
 
 import logging
+import re
 import time
-from datetime import datetime
 
 import requests
 from bs4 import BeautifulSoup
@@ -18,64 +17,96 @@ from bs4 import BeautifulSoup
 logger = logging.getLogger(__name__)
 
 LANKABD_DEPTH_URL = "https://www.lankabd.com/Home/MarketDepthData"
+LANKABD_DEPTH_PAGE = "https://www.lankabd.com/Home/MarketDepth"
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36",
     "X-Requested-With": "XMLHttpRequest",
 }
 
+# Module-level token cache
+_token_cache: dict = {"token": None, "session": None, "ts": 0}
+TOKEN_TTL = 600  # refresh token every 10 min
 
-def _get_session() -> requests.Session:
-    """Get a session with LankaBD cookies."""
+
+def _get_session_with_token() -> tuple[requests.Session, str]:
+    """Get a session with LankaBD cookies + anti-forgery token.
+
+    LankaBD requires __RequestVerificationToken for POST requests.
+    Token is fetched from the MarketDepth page and cached for 10 min.
+    """
+    now = time.time()
+    if (_token_cache["token"] and _token_cache["session"]
+            and now - _token_cache["ts"] < TOKEN_TTL):
+        return _token_cache["session"], _token_cache["token"]
+
     s = requests.Session()
     s.headers.update(HEADERS)
-    # Visit homepage to get session cookie
     try:
-        s.get("https://www.lankabd.com", timeout=10)
-    except Exception:
-        pass
-    return s
+        # Visit MarketDepth page to get session cookie + token
+        r = s.get(LANKABD_DEPTH_PAGE, timeout=15)
+        if not r.ok:
+            raise ValueError(f"MarketDepth page returned {r.status_code}")
+        tokens = re.findall(
+            r'__RequestVerificationToken.*?value="([^"]+)"', r.text
+        )
+        if not tokens:
+            raise ValueError("No anti-forgery token found on page")
+        token = tokens[0]
+        _token_cache["token"] = token
+        _token_cache["session"] = s
+        _token_cache["ts"] = now
+        logger.info("LankaBD token acquired")
+        return s, token
+    except Exception as e:
+        logger.warning(f"Failed to get LankaBD token: {e}")
+        raise
 
 
-def fetch_market_depth(session: requests.Session, symbol: str) -> dict | None:
+def fetch_market_depth(symbol: str) -> dict | None:
     """Fetch order book for a single stock.
 
     Returns: {
         "symbol": "GP",
         "ltp": 254.5,
-        "open": 253.0,
-        "high": 255.2,
-        "low": 252.0,
-        "ycp": 253.0,
-        "close": 254.5,
-        "trades": 923,
-        "volume": 89748,
-        "value": 22753000,
-        "bids": [{"price": 254.0, "volume": 500}, {"price": 253.5, "volume": 1200}, ...],
-        "asks": [{"price": 255.0, "volume": 300}, {"price": 255.5, "volume": 800}, ...],
+        "bids": [{"price": 254.0, "volume": 500}, ...],
+        "asks": [{"price": 255.0, "volume": 300}, ...],
         "total_bid_volume": 5000,
         "total_ask_volume": 3200,
         "bid_ask_ratio": 1.56,
+        "best_bid": 254.0,
+        "best_ask": 255.0,
+        "spread": 1.0,
     }
     """
     try:
+        session, token = _get_session_with_token()
         r = session.post(
             LANKABD_DEPTH_URL,
-            data={"Symbol": symbol, "Exchange": "DSE"},
+            data={
+                "Symbol": symbol,
+                "Exchange": "DSE",
+                "__RequestVerificationToken": token,
+            },
             timeout=10,
         )
-        if not r.ok:
-            # Try GET
-            r = session.get(
+        if not r.ok or not r.text:
+            # Token might be stale — force refresh once
+            _token_cache["ts"] = 0
+            session, token = _get_session_with_token()
+            r = session.post(
                 LANKABD_DEPTH_URL,
-                params={"Symbol": symbol, "Exchange": "DSE"},
+                data={
+                    "Symbol": symbol,
+                    "Exchange": "DSE",
+                    "__RequestVerificationToken": token,
+                },
                 timeout=10,
             )
-        if not r.ok or not r.text:
-            return None
+            if not r.ok or not r.text:
+                return None
 
         data = r.json()
 
-        # Parse buy/sell price tables from HTML
         bids = _parse_depth_table(data.get("buyPriceTable", ""))
         asks = _parse_depth_table(data.get("sellPriceTable", ""))
 
@@ -92,7 +123,7 @@ def fetch_market_depth(session: requests.Session, symbol: str) -> dict | None:
             "close": _safe_float(data.get("closePrice")),
             "trades": _safe_int(data.get("noOfTrade")),
             "volume": _safe_int(data.get("totalVolume")),
-            "value": _safe_float(data.get("totalValueMN", 0)) * 1_000_000,  # MN → raw
+            "value": _safe_float(data.get("totalValueMN", 0)) * 1_000_000,
             "bids": bids,
             "asks": asks,
             "total_bid_volume": total_bid,
@@ -149,18 +180,10 @@ def _safe_int(val, default=0) -> int:
 
 
 def fetch_all_depths(symbols: list[str], delay: float = 0.3) -> list[dict]:
-    """Fetch order book for multiple stocks with rate limiting.
-
-    Args:
-        symbols: List of stock symbols
-        delay: Seconds between requests (rate limit)
-
-    Returns: List of depth dicts (only successful ones)
-    """
-    session = _get_session()
+    """Fetch order book for multiple stocks with rate limiting."""
     results = []
     for i, sym in enumerate(symbols):
-        depth = fetch_market_depth(session, sym)
+        depth = fetch_market_depth(sym)
         if depth:
             results.append(depth)
         if i < len(symbols) - 1:
