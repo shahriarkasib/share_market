@@ -683,6 +683,18 @@ async def precompute_radar():
         logger.error(f"Radar precompute failed: {e}")
 
 
+async def scrape_dse_official_news():
+    """Scrape DSE official announcements — catches news before newspapers."""
+    if not is_trading_day():
+        return
+    try:
+        from scripts.dse_news_scraper import scrape_dse_news
+        thread = threading.Thread(target=scrape_dse_news, daemon=True)
+        thread.start()
+    except Exception as e:
+        logger.error(f"DSE news scrape failed: {e}")
+
+
 async def run_live_scanner():
     """Run intraday live scanner."""
     try:
