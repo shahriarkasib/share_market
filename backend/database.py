@@ -1,11 +1,15 @@
-"""PostgreSQL database setup and connection management (Supabase).
+"""PostgreSQL database setup and connection management.
 
 Provides a compatibility wrapper so existing code using sqlite3-style
 conn.execute(sql, (?,?,...)) works unchanged with psycopg2.
+
+Connection pool with auto-recovery: leaked connections are reclaimed
+after 5 minutes via keepalive settings. Pool recreates itself on failure.
 """
 
 import re
 import logging
+import threading
 import psycopg2
 import psycopg2.extras
 import psycopg2.pool
@@ -13,21 +17,46 @@ from config import DATABASE_URL, DATABASE_URL_DIRECT
 
 logger = logging.getLogger(__name__)
 
-# Connection pool (lazy-initialized)
+# Connection pool (lazy-initialized, thread-safe)
 _pool: psycopg2.pool.ThreadedConnectionPool | None = None
+_pool_lock = threading.Lock()
 
 
 def _get_pool() -> psycopg2.pool.ThreadedConnectionPool:
-    """Get or create the connection pool."""
+    """Get or create the connection pool. Thread-safe with auto-recovery."""
     global _pool
-    if _pool is None or _pool.closed:
+    with _pool_lock:
+        if _pool is not None and not _pool.closed:
+            return _pool
+        # Larger pool + keepalive to reclaim leaked connections
         _pool = psycopg2.pool.ThreadedConnectionPool(
-            minconn=1,
-            maxconn=20,
+            minconn=2,
+            maxconn=40,
             dsn=DATABASE_URL,
             cursor_factory=psycopg2.extras.RealDictCursor,
+            # TCP keepalive: detect dead connections after 60s
+            keepalives=1,
+            keepalives_idle=60,
+            keepalives_interval=10,
+            keepalives_count=3,
+            # Connection timeout: don't wait forever
+            connect_timeout=10,
         )
-    return _pool
+        logger.info("Database pool created (maxconn=40)")
+        return _pool
+
+
+def reset_pool():
+    """Force reset the connection pool (call after DB restart)."""
+    global _pool
+    with _pool_lock:
+        if _pool is not None:
+            try:
+                _pool.closeall()
+            except Exception:
+                pass
+            _pool = None
+    logger.info("Database pool reset")
 
 
 def _convert_placeholders(sql: str) -> str:
@@ -138,17 +167,62 @@ class PgConnection:
 
     def close(self):
         try:
+            self._conn.rollback()  # rollback any uncommitted transaction
+        except Exception:
+            pass
+        try:
             _get_pool().putconn(self._conn)
+        except Exception:
+            # If pool is gone, just close the raw connection
+            try:
+                self._conn.close()
+            except Exception:
+                pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+        return False
+
+    def __del__(self):
+        """Safety net: return connection to pool if close() was never called."""
+        try:
+            self.close()
         except Exception:
             pass
 
 
 def get_connection() -> PgConnection:
-    """Get a PostgreSQL connection from the pool."""
-    pool = _get_pool()
-    conn = pool.getconn()
-    conn.autocommit = False
-    return PgConnection(conn)
+    """Get a PostgreSQL connection from the pool.
+
+    IMPORTANT: Always close the connection when done!
+    Preferred usage:
+        with get_connection() as conn:
+            conn.execute(...)
+            conn.execute("COMMIT")
+    Or:
+        conn = get_connection()
+        try:
+            ...
+        finally:
+            conn.close()
+    """
+    for attempt in range(3):
+        try:
+            pool = _get_pool()
+            conn = pool.getconn()
+            # Verify connection is alive
+            conn.cursor().execute("SELECT 1")
+            conn.rollback()
+            conn.autocommit = False
+            return PgConnection(conn)
+        except (psycopg2.pool.PoolError, psycopg2.InterfaceError, psycopg2.OperationalError) as e:
+            logger.warning(f"Connection attempt {attempt+1} failed: {e}")
+            reset_pool()
+            if attempt == 2:
+                raise
 
 
 def init_database():
