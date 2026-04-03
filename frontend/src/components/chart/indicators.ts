@@ -496,3 +496,77 @@ export function computeWilliamsR(
   }
   return result;
 }
+
+/** Ichimoku Cloud. Returns 5 lines + cloud boundaries.
+ * Tenkan-sen (9): short-term trend
+ * Kijun-sen (26): medium-term trend
+ * Senkou Span A: (Tenkan+Kijun)/2 shifted 26 periods ahead (future cloud top)
+ * Senkou Span B: 52-period midpoint shifted 26 periods ahead (future cloud bottom)
+ * Chikou Span: close shifted 26 periods back (lagging confirmation)
+ */
+export function computeIchimoku(
+  highs: number[],
+  lows: number[],
+  closes: number[],
+  tenkanPeriod = 9,
+  kijunPeriod = 26,
+  senkouBPeriod = 52,
+  displacement = 26,
+): {
+  tenkan: (number | null)[];
+  kijun: (number | null)[];
+  senkouA: (number | null)[];
+  senkouB: (number | null)[];
+  chikou: (number | null)[];
+} {
+  const len = closes.length;
+  const tenkan: (number | null)[] = new Array(len + displacement).fill(null);
+  const kijun: (number | null)[] = new Array(len + displacement).fill(null);
+  const senkouA: (number | null)[] = new Array(len + displacement).fill(null);
+  const senkouB: (number | null)[] = new Array(len + displacement).fill(null);
+  const chikou: (number | null)[] = new Array(len + displacement).fill(null);
+
+  // Helper: highest high and lowest low over a period ending at index i
+  const midpoint = (period: number, i: number): number | null => {
+    if (i < period - 1) return null;
+    let hh = -Infinity, ll = Infinity;
+    for (let j = i - period + 1; j <= i; j++) {
+      if (highs[j] > hh) hh = highs[j];
+      if (lows[j] < ll) ll = lows[j];
+    }
+    return (hh + ll) / 2;
+  };
+
+  for (let i = 0; i < len; i++) {
+    // Tenkan-sen (conversion line)
+    tenkan[i] = midpoint(tenkanPeriod, i);
+
+    // Kijun-sen (base line)
+    kijun[i] = midpoint(kijunPeriod, i);
+
+    // Senkou Span A: (Tenkan + Kijun) / 2, shifted forward
+    if (tenkan[i] != null && kijun[i] != null) {
+      senkouA[i + displacement] = (tenkan[i]! + kijun[i]!) / 2;
+    }
+
+    // Senkou Span B: 52-period midpoint, shifted forward
+    const sb = midpoint(senkouBPeriod, i);
+    if (sb != null) {
+      senkouB[i + displacement] = sb;
+    }
+
+    // Chikou Span: close shifted backward
+    if (i >= displacement) {
+      chikou[i - displacement] = closes[i];
+    }
+  }
+
+  // Trim to original length (drop the future extension for now — chart handles it)
+  return {
+    tenkan: tenkan.slice(0, len),
+    kijun: kijun.slice(0, len),
+    senkouA: senkouA.slice(0, len),
+    senkouB: senkouB.slice(0, len),
+    chikou: chikou.slice(0, len),
+  };
+}

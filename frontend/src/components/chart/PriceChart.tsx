@@ -21,6 +21,7 @@ import {
   computeEMA,
   computeSMA,
   computeBollingerBands,
+  computeIchimoku,
   computeRSI,
   computeMACD,
   computeStochastic,
@@ -50,6 +51,7 @@ const OVERLAY_DEFS = [
   { key: "sma200", label: "SMA 200", color: "#dc2626", tip: "200-day Simple MA — long-term trend. Price above = bull market. SMA50 crossing above SMA200 = major bullish signal." },
   { key: "bb", label: "BB", color: "#64748b", tip: "Bollinger Bands — price at lower band = oversold, upper band = overbought. Band squeeze = big move coming." },
   { key: "vwap", label: "VWAP", color: "#eab308", tip: "Volume Weighted Avg Price — fair value based on volume. Price below VWAP = undervalued today. Institutional benchmark." },
+  { key: "ichimoku", label: "Ichimoku", color: "#06b6d4", tip: "Ichimoku Cloud — price above cloud = bullish, below = bearish. Tenkan/Kijun cross = buy/sell signal. Cloud thickness = support strength." },
 ] as const;
 
 const SUB_PANE_DEFS = [
@@ -219,6 +221,13 @@ export default function PriceChart({ symbol, signal, height: fixedHeight }: Prop
     ov.bb_middle = { values: bb.middle, color: "#64748b" };
     ov.bb_lower = { values: bb.lower, color: "#64748b" };
     ov.vwap = { values: computeVWAP(highs, lows, closes, vols), color: "#eab308" };
+    // Ichimoku Cloud
+    const ichimoku = computeIchimoku(highs, lows, closes);
+    ov.ichimoku_tenkan = { values: ichimoku.tenkan, color: "#06b6d4" };
+    ov.ichimoku_kijun = { values: ichimoku.kijun, color: "#ef4444" };
+    ov.ichimoku_senkouA = { values: ichimoku.senkouA, color: "#22c55e" };
+    ov.ichimoku_senkouB = { values: ichimoku.senkouB, color: "#ef4444" };
+    ov.ichimoku_chikou = { values: ichimoku.chikou, color: "#a855f7" };
     overlayDataRef.current = ov;
 
     const ind: Record<string, (number | null)[]> = {};
@@ -247,6 +256,11 @@ export default function PriceChart({ symbol, signal, height: fixedHeight }: Prop
       if (def.key === "bb") {
         out.push({ label: "BB\u2191", value: ov.bb_upper?.values[idx] ?? null, color: "#64748b" });
         out.push({ label: "BB\u2193", value: ov.bb_lower?.values[idx] ?? null, color: "#64748b" });
+      } else if (def.key === "ichimoku") {
+        out.push({ label: "Tenkan", value: ov.ichimoku_tenkan?.values[idx] ?? null, color: "#06b6d4" });
+        out.push({ label: "Kijun", value: ov.ichimoku_kijun?.values[idx] ?? null, color: "#ef4444" });
+        out.push({ label: "SpanA", value: ov.ichimoku_senkouA?.values[idx] ?? null, color: "#22c55e" });
+        out.push({ label: "SpanB", value: ov.ichimoku_senkouB?.values[idx] ?? null, color: "#ef4444" });
       } else {
         out.push({ label: def.label, value: ov[def.key]?.values[idx] ?? null, color: def.color });
       }
@@ -412,6 +426,25 @@ export default function PriceChart({ symbol, signal, height: fixedHeight }: Prop
       if (ov.bb_lower) addOv(ov.bb_lower.values, "#64748b", 1, LineStyle.Dashed);
     }
     if (overlays.has("vwap") && ov.vwap) addOv(ov.vwap.values, "#eab308", 2);
+    // Ichimoku Cloud
+    if (overlays.has("ichimoku")) {
+      if (ov.ichimoku_tenkan) addOv(ov.ichimoku_tenkan.values, "#06b6d4", 1);  // Tenkan (cyan)
+      if (ov.ichimoku_kijun) addOv(ov.ichimoku_kijun.values, "#ef4444", 1);    // Kijun (red)
+      if (ov.ichimoku_chikou) addOv(ov.ichimoku_chikou.values, "#a855f7", 1, LineStyle.Dotted);  // Chikou (purple dotted)
+      // Cloud: Senkou A and B as area fills
+      if (ov.ichimoku_senkouA && ov.ichimoku_senkouB) {
+        // Green cloud line (Span A)
+        const sA = mainChart.addSeries(LineSeries, { color: "rgba(34,197,94,0.4)", lineWidth: 1, crosshairMarkerVisible: false, lastValueVisible: false, priceLineVisible: false });
+        const sAd: { time: Time; value: number }[] = [];
+        for (let i = 0; i < dates.length; i++) if (ov.ichimoku_senkouA.values[i] != null) sAd.push({ time: dates[i], value: ov.ichimoku_senkouA.values[i]! });
+        sA.setData(sAd);
+        // Red cloud line (Span B)
+        const sB = mainChart.addSeries(LineSeries, { color: "rgba(239,68,68,0.4)", lineWidth: 1, crosshairMarkerVisible: false, lastValueVisible: false, priceLineVisible: false });
+        const sBd: { time: Time; value: number }[] = [];
+        for (let i = 0; i < dates.length; i++) if (ov.ichimoku_senkouB.values[i] != null) sBd.push({ time: dates[i], value: ov.ichimoku_senkouB.values[i]! });
+        sB.setData(sBd);
+      }
+    }
 
     // ──── SUB-PANES ────
     const ind = indicatorDataRef.current;
