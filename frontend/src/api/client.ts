@@ -23,7 +23,7 @@ import type {
 
 const api = axios.create({
   baseURL: "/api/v1",
-  timeout: 15_000,
+  timeout: 20_000,
   headers: { "Content-Type": "application/json" },
 });
 
@@ -731,7 +731,7 @@ export interface UpcomingRecordDate {
 }
 
 export async function fetchUpcomingRecordDates(days = 30): Promise<{ upcoming: UpcomingRecordDate[] }> {
-  const { data } = await api.get("/dividends/upcoming", { params: { days } });
+  const { data } = await api.get("/dividends/upcoming", { params: { days }, timeout: 30000 });
   return data;
 }
 
