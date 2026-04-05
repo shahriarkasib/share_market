@@ -6,7 +6,6 @@ import {
   Search,
   ChevronLeft,
   ChevronRight,
-  Filter,
   ArrowUpDown,
   X,
 } from "lucide-react";
@@ -16,7 +15,6 @@ import { fetchMatrixData } from "../api/client.ts";
 import {
   formatNumber,
   formatPct,
-  formatChange,
   formatCompact,
   colorBySign,
 } from "../lib/format.ts";

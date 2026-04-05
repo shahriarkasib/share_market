@@ -813,4 +813,87 @@ export async function clearChatSession(sessionId: string): Promise<void> {
   await fetch(`${CHAT_URL}/chat/sessions/${sessionId}`, { method: "DELETE" }).catch(() => {});
 }
 
+/* ========================== AI Analysis (V2) ========================== */
+
+export interface AIStock {
+  symbol: string;
+  date: string;
+  overall_signal: "BUY" | "SELL" | "HOLD" | "WATCH" | "AVOID";
+  signal_strength: string | null;
+  confidence: string | null;
+  classification: string | null;
+  position_type: string | null;
+  score_overall: number | null;
+  score_money_flow: number | null;
+  score_momentum: number | null;
+  score_price_action: number | null;
+  score_volatility: number | null;
+  score_fundamentals: number | null;
+  score_news: number | null;
+  one_liner: string;
+  entry_low: number | null;
+  entry_high: number | null;
+  stop_loss: number | null;
+  stop_loss_method: string | null;
+  target_1: number | null;
+  target_2: number | null;
+  for_new_buyer: string;
+  for_holder: string;
+  ltp: number | null;
+  change_pct: number | null;
+  volume: number | null;
+  sector: string | null;
+  category: string | null;
+  eps_ttm: number | null;
+  pe_ratio: number | null;
+  dividend_yield_pct: number | null;
+  high_52w: number | null;
+  low_52w: number | null;
+  rsi_14: number | null;
+  cmf_20: number | null;
+  cmf_pos_streak: number | null;
+  cmf_neg_streak: number | null;
+  adx_14: number | null;
+  macd_hist: number | null;
+  ma_aligned: boolean | null;
+  atr_pct: number | null;
+  vol_ratio: number | null;
+  chg_5d: number | null;
+  chg_20d: number | null;
+  support: number | null;
+  resistance: number | null;
+}
+
+export interface AIMarket {
+  dsex: number | null;
+  dsex_change: number | null;
+  dsex_change_pct: number | null;
+  advances: number;
+  declines: number;
+  unchanged: number;
+  turnover_cr: number;
+  market_status: string;
+  regime: string | null;
+  ai_summary: string | null;
+  is_good_day_to_buy: boolean | null;
+  signal_distribution: Record<string, number>;
+  dsex_history: { date: string; dsex: number }[];
+}
+
+export async function fetchAIStocks(signal?: string): Promise<{ stocks: AIStock[]; count: number }> {
+  const params = signal ? { signal } : undefined;
+  const { data } = await api.get<{ stocks: AIStock[]; count: number }>("/ai/stocks", { params });
+  return data;
+}
+
+export async function fetchAIStockDetail(symbol: string): Promise<Record<string, unknown>> {
+  const { data } = await api.get(`/ai/stocks/${symbol}`);
+  return data;
+}
+
+export async function fetchAIMarket(): Promise<AIMarket> {
+  const { data } = await api.get<AIMarket>("/ai/market");
+  return data;
+}
+
 export default api;

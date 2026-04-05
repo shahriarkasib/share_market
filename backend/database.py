@@ -42,7 +42,7 @@ def _get_pool() -> psycopg2.pool.ThreadedConnectionPool:
             # Connection timeout: don't wait forever
             connect_timeout=10,
         )
-        logger.info("Database pool created (maxconn=40)")
+        logger.debug("Database pool created (maxconn=40)")
         return _pool
 
 
@@ -56,7 +56,7 @@ def reset_pool():
             except Exception:
                 pass
             _pool = None
-    logger.info("Database pool reset")
+    logger.debug("Database pool reset")
 
 
 def _convert_placeholders(sql: str) -> str:
@@ -134,6 +134,7 @@ class PgConnection:
 
     def __init__(self, conn):
         self._conn = conn
+        self._returned = False  # prevent double-return to pool
 
     def execute(self, sql: str, params=None) -> PgCursor:
         sql = _convert_placeholders(sql)
@@ -148,7 +149,6 @@ class PgConnection:
     def executescript(self, sql: str):
         """Execute multiple SQL statements separated by semicolons."""
         cursor = self._conn.cursor()
-        # Split by semicolon, filter empty
         statements = [s.strip() for s in sql.split(";") if s.strip()]
         for stmt in statements:
             try:
@@ -166,14 +166,16 @@ class PgConnection:
         self._conn.rollback()
 
     def close(self):
+        if self._returned:
+            return
+        self._returned = True
         try:
-            self._conn.rollback()  # rollback any uncommitted transaction
+            self._conn.rollback()
         except Exception:
             pass
         try:
             _get_pool().putconn(self._conn)
         except Exception:
-            # If pool is gone, just close the raw connection
             try:
                 self._conn.close()
             except Exception:
@@ -188,10 +190,7 @@ class PgConnection:
 
     def __del__(self):
         """Safety net: return connection to pool if close() was never called."""
-        try:
-            self.close()
-        except Exception:
-            pass
+        self.close()
 
 
 def get_connection() -> PgConnection:
@@ -210,18 +209,27 @@ def get_connection() -> PgConnection:
             conn.close()
     """
     for attempt in range(3):
+        conn = None
         try:
             pool = _get_pool()
             conn = pool.getconn()
             # Verify connection is alive
-            conn.cursor().execute("SELECT 1")
+            cur = conn.cursor()
+            cur.execute("SELECT 1")
+            cur.close()
             conn.rollback()
             conn.autocommit = False
             return PgConnection(conn)
         except (psycopg2.pool.PoolError, psycopg2.InterfaceError, psycopg2.OperationalError) as e:
-            logger.warning(f"Connection attempt {attempt+1} failed: {e}")
-            reset_pool()
-            if attempt == 2:
+            if conn is not None:
+                try:
+                    pool.putconn(conn, close=True)
+                except Exception:
+                    pass
+            if attempt < 2:
+                reset_pool()
+            else:
+                reset_pool()
                 raise
 
 

@@ -794,9 +794,9 @@ function StockCard({ stock }: { stock: BuyRadarStock }) {
                 )}
                 {/* Support/Resistance/ATR */}
                 <div className="flex flex-wrap gap-3 text-xs">
-                  {stock.support > 0 && <span className="text-[var(--text-dim)]">Support: <span className="font-medium text-green-400">{stock.support.toFixed(1)}</span></span>}
-                  {stock.resistance > 0 && <span className="text-[var(--text-dim)]">Resistance: <span className="font-medium text-red-400">{stock.resistance.toFixed(1)}</span></span>}
-                  {stock.atr > 0 && <span className="text-[var(--text-dim)]">ATR: <span className="font-medium text-[var(--text)]">{stock.atr.toFixed(1)} ({stock.atr_pct?.toFixed(1)}%)</span></span>}
+                  {(stock.support ?? 0) > 0 && <span className="text-[var(--text-dim)]">Support: <span className="font-medium text-green-400">{stock.support?.toFixed(1)}</span></span>}
+                  {(stock.resistance ?? 0) > 0 && <span className="text-[var(--text-dim)]">Resistance: <span className="font-medium text-red-400">{stock.resistance?.toFixed(1)}</span></span>}
+                  {(stock.atr ?? 0) > 0 && <span className="text-[var(--text-dim)]">ATR: <span className="font-medium text-[var(--text)]">{stock.atr?.toFixed(1)} ({stock.atr_pct?.toFixed(1)}%)</span></span>}
                   {stock.trend_50d != null && <span className="text-[var(--text-dim)]">50d Trend: <span className={clsx("font-medium", (stock.trend_50d ?? 0) >= 0 ? "text-green-400" : "text-red-400")}>{(stock.trend_50d ?? 0) > 0 ? "+" : ""}{stock.trend_50d?.toFixed(1)}%</span></span>}
                 </div>
                 {/* Risk/Reward */}
