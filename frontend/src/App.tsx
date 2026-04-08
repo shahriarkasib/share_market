@@ -7,6 +7,7 @@ import DataMatrix from "./pages/DataMatrix.tsx";
 import AdvancedChart from "./pages/AdvancedChart.tsx";
 import BuyRadar from "./pages/BuyRadar.tsx";
 import Analysis from "./pages/Analysis.tsx";
+import LiveSignals from "./pages/LiveSignals.tsx";
 import News from "./pages/News.tsx";
 import Seasonality from "./pages/Seasonality.tsx";
 import Dividends from "./pages/Dividends.tsx";
@@ -22,6 +23,7 @@ export default function App() {
         <Route path="/matrix" element={<DataMatrix />} />
         <Route path="/chart" element={<AdvancedChart />} />
         <Route path="/radar" element={<Analysis />} />
+        <Route path="/live" element={<LiveSignals />} />
         <Route path="/radar-old" element={<BuyRadar />} />
         <Route path="/news" element={<News />} />
         <Route path="/seasonality" element={<Seasonality />} />

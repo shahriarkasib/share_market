@@ -896,4 +896,37 @@ export async function fetchAIMarket(): Promise<AIMarket> {
   return data;
 }
 
+export interface LiveSignal {
+  symbol: string;
+  category: string | null;
+  ltp: number;
+  open: number;
+  prev_close: number;
+  change_pct: number;
+  high: number;
+  low: number;
+  volume: number;
+  gap_type: "GAP_UP" | "GAP_DOWN" | "FLAT";
+  gap_pct: number;
+  body: "BULLISH" | "BEARISH" | "DOJI";
+  shadow_signal: string | null;
+  vol_ratio: number;
+  vol_signal: "VERY_HIGH" | "HIGH" | "NORMAL" | "LOW";
+  momentum: string;
+  pivot_p: number | null;
+  pivot_r1: number | null;
+  pivot_s1: number | null;
+  pivot_position: string | null;
+  swing_structure: string | null;
+  yesterday_candle: string | null;
+  rsi: number | null;
+  cmf: number | null;
+  mean_reversion_score: number | null;
+}
+
+export async function fetchLiveSignals(): Promise<{ signals: LiveSignal[]; count: number }> {
+  const { data } = await api.get<{ signals: LiveSignal[]; count: number }>("/ai/live-signals");
+  return data;
+}
+
 export default api;

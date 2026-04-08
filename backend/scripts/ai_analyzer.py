@@ -197,6 +197,97 @@ def load_sector_context(conn, symbol: str) -> str:
     return "\n".join(lines)
 
 
+def load_price_structure(conn, symbol: str) -> str:
+    """Load price structure analysis (pivots, S/R, swings, Fibonacci, patterns)."""
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT * FROM price_structure
+        WHERE symbol = %s ORDER BY date DESC LIMIT 1
+    """, (symbol,))
+    row = cur.fetchone()
+    cur.close()
+    if not row:
+        return "No price structure data"
+
+    lines = []
+    lines.append(f"Swing Structure: {row.get('swing_structure', 'UNKNOWN')}")
+    lines.append(f"Last Swing High: {row.get('last_swing_high')}, Last Swing Low: {row.get('last_swing_low')}")
+
+    # Pivot points
+    pivot = row.get("pivot_daily")
+    if pivot and isinstance(pivot, dict):
+        lines.append(f"Daily Pivots: P={pivot.get('p')}, R1={pivot.get('r1')}, R2={pivot.get('r2')}, R3={pivot.get('r3')}, S1={pivot.get('s1')}, S2={pivot.get('s2')}, S3={pivot.get('s3')}")
+    wpivot = row.get("pivot_weekly")
+    if wpivot and isinstance(wpivot, dict):
+        lines.append(f"Weekly Pivots: P={wpivot.get('p')}, R1={wpivot.get('r1')}, S1={wpivot.get('s1')}, R2={wpivot.get('r2')}, S2={wpivot.get('s2')}")
+
+    # Support/Resistance
+    sr_sup = row.get("support_levels") or []
+    sr_res = row.get("resistance_levels") or []
+    if sr_sup:
+        sup_parts = [f"{s['price']} ({s['touches']} touches, {s['strength']})" for s in sr_sup[:4]]
+        lines.append(f"Historical Support: {', '.join(sup_parts)}")
+    if sr_res:
+        res_parts = [f"{r['price']} ({r['touches']} touches, {r['strength']})" for r in sr_res[:4]]
+        lines.append(f"Historical Resistance: {', '.join(res_parts)}")
+
+    # Fibonacci
+    fib = row.get("fib_levels")
+    if fib and isinstance(fib, dict):
+        trend = fib.get("trend", "")
+        lines.append(f"Fibonacci (from swing {fib.get('swing_low')} to {fib.get('swing_high')}, trend={trend}):")
+        ret = fib.get("retracement", {})
+        if ret:
+            lines.append(f"  Retracement: {', '.join(f'{k}={v}' for k, v in ret.items())}")
+        ext = fib.get("extension", {})
+        if ext:
+            lines.append(f"  Extension: {', '.join(f'{k}={v}' for k, v in ext.items())}")
+
+    # Candlestick
+    candle = row.get("candle_pattern")
+    if candle:
+        confirmed = "volume-confirmed" if row.get("candle_confirmed") else "unconfirmed"
+        lines.append(f"Candlestick Pattern: {candle} ({confirmed})")
+
+    # Volume nodes
+    vol_nodes = row.get("volume_nodes") or []
+    hvn = [v for v in vol_nodes if v.get("type") == "HVN"]
+    if hvn:
+        lines.append(f"High Volume Nodes (support/resistance): {', '.join(str(v['price']) for v in hvn[:5])}")
+
+    # Unfilled gaps
+    gaps = row.get("unfilled_gaps") or []
+    if gaps:
+        gap_parts = [f"{g['type']} gap at {g['gap_low']}-{g['gap_high']} ({g['date']})" for g in gaps[:3]]
+        lines.append(f"Unfilled Gaps: {', '.join(gap_parts)}")
+
+    # EMA dynamic
+    ema_sup = row.get("ema_support")
+    ema_res = row.get("ema_resistance")
+    if ema_sup:
+        lines.append(f"Dynamic Support: {ema_sup} (price bouncing off this EMA)")
+    if ema_res:
+        lines.append(f"Dynamic Resistance: {ema_res} (price rejected at this EMA)")
+
+    # Mean reversion
+    mr = row.get("mean_reversion_score", 0)
+    lines.append(f"Mean Reversion Score: {mr}/100 (higher = more likely to bounce)")
+
+    # Swing points for structure
+    swings = row.get("swings_json") or []
+    if swings:
+        recent = swings[-6:]
+        swing_str = " → ".join(f"{s['type']}{s['price']}" for s in recent)
+        lines.append(f"Recent Swings: {swing_str}")
+
+    return "\n".join(lines)
+
+
+def load_dsex_structure(conn) -> str:
+    """Load DSEX price structure analysis."""
+    return load_price_structure(conn, "DSEX")
+
+
 def get_position_data(symbol: str) -> str:
     """Get portfolio position info if held."""
     if symbol in PORTFOLIO:
@@ -229,6 +320,9 @@ def build_prompt(conn, symbols: list[str]) -> str:
 
     parts = [system_prompt, ""]
 
+    # Load DSEX structure once
+    dsex_structure = load_dsex_structure(conn)
+
     for symbol in symbols:
         daily_csv = load_indicators_csv(conn, symbol, "daily", 500)
         weekly_csv = load_indicators_csv(conn, symbol, "weekly", 104)
@@ -237,6 +331,7 @@ def build_prompt(conn, symbols: list[str]) -> str:
         news = load_news(conn, symbol)
         sector = load_sector_context(conn, symbol)
         position = get_position_data(symbol)
+        price_struct = load_price_structure(conn, symbol)
 
         n_daily = daily_csv.count("\n")
         n_weekly = weekly_csv.count("\n")
@@ -245,6 +340,8 @@ def build_prompt(conn, symbols: list[str]) -> str:
         parts.append(f"\n{'='*60}")
         parts.append(f"STOCK: {symbol}")
         parts.append(f"{'='*60}")
+        parts.append(f"\n=== PRICE STRUCTURE (key levels, patterns, pivots) ===")
+        parts.append(price_struct)
         parts.append(f"\n=== DAILY DATA ({n_daily} trading days) ===")
         parts.append(daily_csv)
         parts.append(f"\n=== WEEKLY DATA ({n_weekly} weeks) ===")
@@ -262,13 +359,32 @@ def build_prompt(conn, symbols: list[str]) -> str:
 
     parts.append(f"\n=== DSEX MARKET DATA (last 60 days) ===")
     parts.append(dsex_csv)
+    parts.append(f"\n=== DSEX PRICE STRUCTURE ===")
+    parts.append(dsex_structure)
     parts.append(f"\n=== MARKET BREADTH TODAY ===")
     parts.append(f"Advances: {breadth['advances']} | Declines: {breadth['declines']} | Unchanged: {breadth['unchanged']}")
     parts.append(f"Turnover: {breadth['turnover']} crore")
 
-    # Strict output format instruction at the end (where Claude pays most attention)
+    # Price-action focused analysis instruction
     output_schema = """
-Now analyze completely. Return ONLY a JSON object with EXACTLY these top-level keys (use these EXACT key names):
+ANALYSIS PRIORITIES (in order of importance):
+1. PRICE STRUCTURE — swing highs/lows, higher lows = bullish, lower highs = bearish. This overrides indicators.
+2. KEY LEVELS — use the pivot points, historical S/R, Fibonacci levels provided. Set targets and stops at THESE levels.
+3. CANDLESTICK PATTERNS — hammer at support = buy signal, shooting star at resistance = sell signal. Must be volume-confirmed.
+4. VOLUME PROFILE — high volume nodes are strong S/R. Price moves fast through low volume nodes.
+5. GAP ANALYSIS — unfilled gaps tend to fill (90% probability). If an unfilled gap exists below, price may drop to fill it.
+6. DSEX CONTEXT — if DSEX is at support and bouncing, individual bounce trades are valid. If DSEX is breaking support, avoid buys.
+7. INDICATORS — RSI, MACD, CMF confirm the price structure, they don't override it. A stock at strong support with RSI 35 = bounce trade even if CMF is negative.
+8. MEAN REVERSION — oversold at historical support with volume = high probability bounce. This is a VALID trade setup.
+
+Think like a swing trader:
+- "Buy at support, sell at resistance"
+- "If price makes higher lows, trend is up regardless of what CMF says"
+- "Pivot R1 is the first target, R2 is the stretch target"
+- "If a stock dropped 10% but support held 3 times at this level, it's a bounce play, not an AVOID"
+- Short-term trades (1-5 days) are valid. Not everything needs to be a trend trade.
+
+Return ONLY a JSON object with EXACTLY these top-level keys:
 
 {
   "ticker": "SYMBOL",
@@ -276,24 +392,37 @@ Now analyze completely. Return ONLY a JSON object with EXACTLY these top-level k
   "signal_strength": "STRONG | MEDIUM | WEAK",
   "confidence": "HIGH | MEDIUM | LOW",
   "classification": "ENTRY_ZONE | READY | APPROACHING | BUILDING | WATCHING",
-  "position_type": "STRONG_TREND | TREND | EMERGING | RANGE | CHOPPY",
-  "one_liner": "One sentence summary",
+  "position_type": "STRONG_TREND | TREND | EMERGING | RANGE | BOUNCE_PLAY | BREAKOUT | CHOPPY",
+  "one_liner": "One sentence: what setup is this and what to do (e.g. 'Bounce play at 48 support, target R1 at 50.5, SL 45')",
   "score": {
     "overall": 0, "money_flow": 0, "momentum": 0,
     "price_action": 0, "volatility": 0, "fundamentals": 0, "news_sentiment": 0
   },
   "action": {
-    "for_new_buyer": "...", "for_holder": "...",
-    "entry_range": "low-high", "stop_loss": 0, "stop_loss_method": "...",
-    "target_1": 0, "target_2": 0
+    "for_new_buyer": "Specific entry instruction with price levels",
+    "for_holder": "Hold/sell/add with specific levels",
+    "entry_range": "low-high",
+    "stop_loss": 0, "stop_loss_method": "ATR | Support | Pivot S1 | EMA",
+    "target_1": 0, "target_1_method": "Pivot R1 | Resistance | Fib 0.618",
+    "target_2": 0, "target_2_method": "Pivot R2 | Fib 1.618 | Resistance",
+    "hold_period": "1-2 days | 3-5 days | 1-2 weeks | swing"
+  },
+  "price_structure": {
+    "swing_pattern": "HH-HL (uptrend) | LH-LL (downtrend) | ...",
+    "key_support": 0, "key_resistance": 0,
+    "pivot_level": "At P | Between P and R1 | Below S1",
+    "fib_level": "At 0.618 retracement | Near 1.618 extension",
+    "pattern_detected": "Hammer at support | Engulfing | Gap fill | Breakout",
+    "dsex_context": "DSEX at support, bounce likely | DSEX breaking down, avoid"
   },
   "support_resistance": { "immediate_support": 0, "major_support": 0, "immediate_resistance": 0, "major_resistance": 0 },
   "risk_factors": ["..."],
   "favorable_factors": ["..."],
-  "ai_reasoning": "Full detailed analysis here"
+  "ai_reasoning": "Full analysis focusing on price structure, key levels, and actionable setup"
 }
 
-CRITICAL: The key MUST be "ticker" (not "symbol" or "stock"). The signal MUST be "overall_signal" (not "signal"). Scores are 0-100 integers. All prices in BDT with 0.1 precision. No markdown wrapping. Raw JSON only."""
+CRITICAL: The key MUST be "ticker" (not "symbol" or "stock"). The signal MUST be "overall_signal" (not "signal"). Scores are 0-100 integers. All prices in BDT with 0.1 precision. No markdown wrapping. Raw JSON only.
+CRITICAL: Set target_1 and target_2 from pivot points, Fibonacci levels, or historical resistance — NOT arbitrary numbers. Set stop_loss from pivot support, historical support, or EMA — NOT arbitrary."""
 
     if len(symbols) == 1:
         parts.append(output_schema)

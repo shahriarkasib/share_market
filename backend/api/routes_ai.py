@@ -242,6 +242,179 @@ async def get_ai_market():
         return {"error": str(e)}
 
 
+@router.get("/live-signals")
+async def get_live_signals():
+    """Live intraday opening signals — compare current LTP to yesterday's close.
+
+    Shows gap direction, volume pace, and momentum for all stocks.
+    Updates every time live prices refresh (every 5 min during trading).
+    """
+    conn = get_connection()
+    try:
+        rows = conn.execute("""
+            SELECT
+                lp.symbol,
+                lp.ltp,
+                lp.open,
+                lp.close_prev,
+                lp.change_pct,
+                lp.volume,
+                lp.high,
+                lp.low,
+                f.category,
+                -- Yesterday's daily data for comparison
+                si.close as prev_close,
+                si.volume as prev_volume,
+                si.avg_volume_20,
+                si.rsi_14,
+                si.cmf_20,
+                si.atr_14,
+                -- Price structure
+                ps.pivot_daily,
+                ps.candle_pattern as yesterday_candle,
+                ps.swing_structure,
+                ps.support_levels,
+                ps.resistance_levels,
+                ps.mean_reversion_score
+            FROM live_prices lp
+            LEFT JOIN fundamentals f ON lp.symbol = f.symbol
+            LEFT JOIN stock_indicators si ON lp.symbol = si.symbol
+                AND si.timeframe = 'daily'
+                AND si.date = (SELECT MAX(date) FROM stock_indicators WHERE timeframe = 'daily')
+            LEFT JOIN price_structure ps ON lp.symbol = ps.symbol
+                AND ps.date = (SELECT MAX(date) FROM price_structure)
+            WHERE lp.ltp > 0 AND f.category IN ('A', 'B')
+            ORDER BY ABS(lp.change_pct) DESC
+        """).fetchall()
+        conn.close()
+
+        signals = []
+        for r in rows:
+            ltp = float(r["ltp"] or 0)
+            open_price = float(r["open"] or 0)
+            prev_close = float(r["close_prev"] or r["prev_close"] or 0)
+            volume = int(r["volume"] or 0)
+            avg_vol = float(r["avg_volume_20"] or 0)
+            high = float(r["high"] or 0)
+            low = float(r["low"] or 0)
+            change_pct = float(r["change_pct"] or 0)
+
+            if prev_close == 0 or ltp == 0:
+                continue
+
+            # Gap analysis
+            gap_pct = (open_price - prev_close) / prev_close * 100 if prev_close > 0 else 0
+            if gap_pct > 1:
+                gap_type = "GAP_UP"
+            elif gap_pct < -1:
+                gap_type = "GAP_DOWN"
+            else:
+                gap_type = "FLAT"
+
+            # Intraday candle shape
+            if ltp > open_price:
+                body = "BULLISH"
+            elif ltp < open_price:
+                body = "BEARISH"
+            else:
+                body = "DOJI"
+
+            # Shadow analysis
+            upper_shadow = high - max(ltp, open_price) if high > 0 else 0
+            lower_shadow = min(ltp, open_price) - low if low > 0 else 0
+            body_size = abs(ltp - open_price)
+            total_range = high - low if high > low else 0.01
+
+            shadow_signal = None
+            if total_range > 0:
+                if upper_shadow > body_size * 2 and lower_shadow < body_size * 0.5:
+                    shadow_signal = "SELLING_PRESSURE"  # long upper shadow
+                elif lower_shadow > body_size * 2 and upper_shadow < body_size * 0.5:
+                    shadow_signal = "BUYING_SUPPORT"  # long lower shadow (hammer-like)
+                elif upper_shadow > body_size * 1.5 and lower_shadow > body_size * 1.5:
+                    shadow_signal = "INDECISION"  # doji-like
+
+            # Volume pace
+            # Estimate expected volume at this time of day (proportional)
+            # Market hours: 10:00-14:30 = 270 minutes
+            vol_ratio = volume / avg_vol if avg_vol > 0 else 0
+
+            if vol_ratio > 2:
+                vol_signal = "VERY_HIGH"
+            elif vol_ratio > 1.3:
+                vol_signal = "HIGH"
+            elif vol_ratio > 0.7:
+                vol_signal = "NORMAL"
+            else:
+                vol_signal = "LOW"
+
+            # Momentum verdict
+            momentum = "NEUTRAL"
+            if change_pct > 3 and vol_ratio > 1.3 and body == "BULLISH":
+                momentum = "STRONG_BULLISH"
+            elif change_pct > 1 and body == "BULLISH":
+                momentum = "BULLISH"
+            elif change_pct < -3 and vol_ratio > 1.3 and body == "BEARISH":
+                momentum = "STRONG_BEARISH"
+            elif change_pct < -1 and body == "BEARISH":
+                momentum = "BEARISH"
+            elif gap_type == "GAP_UP" and ltp < open_price:
+                momentum = "GAP_FADE"
+            elif gap_type == "GAP_DOWN" and ltp > open_price:
+                momentum = "GAP_FILL_UP"
+
+            # Pivot context
+            pivot = r["pivot_daily"] or {}
+            pivot_p = pivot.get("p")
+            pivot_r1 = pivot.get("r1")
+            pivot_s1 = pivot.get("s1")
+
+            pivot_position = None
+            if pivot_p:
+                if ltp > float(pivot_r1 or 999999):
+                    pivot_position = "ABOVE_R1"
+                elif ltp > float(pivot_p):
+                    pivot_position = "ABOVE_PIVOT"
+                elif ltp > float(pivot_s1 or 0):
+                    pivot_position = "BELOW_PIVOT"
+                else:
+                    pivot_position = "BELOW_S1"
+
+            signals.append({
+                "symbol": r["symbol"],
+                "category": r["category"],
+                "ltp": ltp,
+                "open": open_price,
+                "prev_close": prev_close,
+                "change_pct": round(change_pct, 2),
+                "high": high,
+                "low": low,
+                "volume": volume,
+                "gap_type": gap_type,
+                "gap_pct": round(gap_pct, 2),
+                "body": body,
+                "shadow_signal": shadow_signal,
+                "vol_ratio": round(vol_ratio, 2),
+                "vol_signal": vol_signal,
+                "momentum": momentum,
+                "pivot_p": pivot_p,
+                "pivot_r1": pivot_r1,
+                "pivot_s1": pivot_s1,
+                "pivot_position": pivot_position,
+                "swing_structure": r["swing_structure"],
+                "yesterday_candle": r["yesterday_candle"],
+                "rsi": _round(r["rsi_14"], 1),
+                "cmf": _round(r["cmf_20"], 3),
+                "mean_reversion_score": r["mean_reversion_score"],
+            })
+
+        return {"signals": signals, "count": len(signals)}
+
+    except Exception as e:
+        conn.close()
+        return {"signals": [], "count": 0, "error": str(e)}
+
+
 def _round(v, decimals):
     if v is None:
         return None
