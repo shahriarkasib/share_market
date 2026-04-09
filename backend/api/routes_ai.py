@@ -242,6 +242,365 @@ async def get_ai_market():
         return {"error": str(e)}
 
 
+@router.get("/summary/{symbol}")
+async def get_stock_summary(symbol: str):
+    """Auto-generated structural analysis for a stock — like a human analyst post.
+
+    No AI call needed — pure data formatting from price_structure + stock_indicators.
+    """
+    conn = get_connection()
+    try:
+        # Load all data
+        ps = conn.execute("""
+            SELECT * FROM price_structure WHERE symbol = %s
+            ORDER BY date DESC LIMIT 1
+        """, (symbol.upper(),)).fetchone()
+
+        si = conn.execute("""
+            SELECT * FROM stock_indicators WHERE symbol = %s AND timeframe = 'daily'
+            ORDER BY date DESC LIMIT 1
+        """, (symbol.upper(),)).fetchone()
+
+        lp = conn.execute("""
+            SELECT ltp, change_pct, volume, open, high, low, close_prev
+            FROM live_prices WHERE symbol = %s
+        """, (symbol.upper(),)).fetchone()
+
+        f = conn.execute("""
+            SELECT sector, category, pe_ratio, eps_ttm, dividend_yield_pct, high_52w, low_52w
+            FROM fundamentals WHERE symbol = %s
+        """, (symbol.upper(),)).fetchone()
+
+        # Load DSEX structure for market context
+        dsex_ps = conn.execute("""
+            SELECT swing_structure, pivot_daily, mean_reversion_score
+            FROM price_structure WHERE symbol = 'DSEX'
+            ORDER BY date DESC LIMIT 1
+        """).fetchone()
+
+        dsex_ms = conn.execute("""
+            SELECT dsex_index, dsex_change, dsex_change_pct, advances, declines
+            FROM market_summary WHERE id = 1
+        """).fetchone()
+
+        conn.close()
+
+        if not ps or not si or not lp:
+            return {"symbol": symbol.upper(), "summary": "Insufficient data for analysis.", "sections": {}}
+
+        ltp = float(lp["ltp"] or 0)
+        change_pct = float(lp["change_pct"] or 0)
+        volume = int(lp["volume"] or 0)
+        prev_close = float(lp["close_prev"] or 0)
+
+        rsi = _round(si["rsi_14"], 1)
+        cmf = _round(si["cmf_20"], 3)
+        cmf_pos = si.get("cmf_pos_streak", 0) or 0
+        cmf_neg = si.get("cmf_neg_streak", 0) or 0
+        adx = _round(si["adx_14"], 1)
+        ma_aligned = si.get("ma_aligned", False)
+        macd_hist = _round(si["macd_hist"], 3)
+        vol_ratio = _round(si["vol_ratio"], 2)
+        ema9 = _round(si.get("ema_9"), 1)
+        ema21 = _round(si.get("ema_21"), 1)
+        ema50 = _round(si.get("ema_50"), 1)
+        sma200 = _round(si.get("sma_200"), 1)
+        chg5d = _round(si.get("chg_5d"), 1)
+        chg20d = _round(si.get("chg_20d"), 1)
+        atr_pct = _round(si.get("atr_pct"), 2)
+
+        swing = ps.get("swing_structure", "UNKNOWN")
+        candle = ps.get("candle_pattern")
+        candle_conf = ps.get("candle_confirmed", False)
+        ema_sup = ps.get("ema_support")
+        ema_res = ps.get("ema_resistance")
+        mr_score = ps.get("mean_reversion_score", 0)
+        pivot = ps.get("pivot_daily") or {}
+        wpivot = ps.get("pivot_weekly") or {}
+        sr_sup = ps.get("support_levels") or []
+        sr_res = ps.get("resistance_levels") or []
+        fib = ps.get("fib_levels") or {}
+        gaps = ps.get("unfilled_gaps") or []
+        swings = ps.get("swings_json") or []
+
+        high_52w = float(f["high_52w"] or 0) if f else 0
+        low_52w = float(f["low_52w"] or 0) if f else 0
+        sector = f["sector"] if f else None
+        category = f["category"] if f else None
+        pe = f["pe_ratio"] if f else None
+
+        # --- Build sections ---
+        sections = {}
+
+        # 1. Structure & Trend
+        structure_lines = []
+        swing_desc = {
+            "UPTREND": "making higher highs and higher lows — bullish structure",
+            "DOWNTREND": "making lower highs and lower lows — bearish structure",
+            "HIGHER_LOWS": "forming higher lows — accumulation pattern",
+            "LOWER_HIGHS": "forming lower highs — distribution pattern",
+            "CONTRACTING": "contracting range — squeeze forming, breakout imminent",
+            "EXPANDING": "expanding range — increased volatility",
+        }.get(swing, "no clear swing pattern")
+        structure_lines.append(f"Price is {swing_desc}.")
+
+        if ma_aligned:
+            structure_lines.append(f"All moving averages aligned bullishly (EMA9 {ema9} > EMA21 {ema21} > EMA50 {ema50}).")
+        else:
+            ma_parts = []
+            if ema9 and ema21:
+                if ema9 > ema21:
+                    ma_parts.append("short-term bullish (EMA9 > EMA21)")
+                else:
+                    ma_parts.append("short-term bearish (EMA9 < EMA21)")
+            if sma200:
+                if ltp > sma200:
+                    ma_parts.append(f"above SMA200 ({sma200})")
+                else:
+                    ma_parts.append(f"below SMA200 ({sma200})")
+            if ma_parts:
+                structure_lines.append("MAs: " + ", ".join(ma_parts) + ".")
+
+        if ema_sup:
+            structure_lines.append(f"{ema_sup} acting as dynamic support — price bouncing off it.")
+        if ema_res:
+            structure_lines.append(f"{ema_res} acting as dynamic resistance — price being rejected.")
+
+        if adx:
+            if adx > 30:
+                structure_lines.append(f"ADX {adx} — strong trend in place.")
+            elif adx > 20:
+                structure_lines.append(f"ADX {adx} — moderate trend developing.")
+            else:
+                structure_lines.append(f"ADX {adx} — no clear trend, choppy conditions.")
+
+        sections["structure"] = " ".join(structure_lines)
+
+        # 2. Key Levels
+        levels_lines = []
+        p = pivot.get("p")
+        r1 = pivot.get("r1")
+        r2 = pivot.get("r2")
+        s1 = pivot.get("s1")
+        s2 = pivot.get("s2")
+        if p:
+            if ltp > float(r1 or 0):
+                levels_lines.append(f"Trading above Pivot R1 ({r1}) — bullish positioning. Next target R2 at {r2}.")
+            elif ltp > float(p):
+                levels_lines.append(f"Above pivot ({p}), targeting R1 at {r1}.")
+            elif ltp > float(s1 or 0):
+                levels_lines.append(f"Between Pivot ({p}) and S1 ({s1}) — neutral zone.")
+            else:
+                levels_lines.append(f"Below S1 ({s1}) — bearish. Watch S2 at {s2}.")
+
+        if sr_sup:
+            nearest_sup = sr_sup[0]
+            levels_lines.append(f"Nearest support: {nearest_sup['price']} ({nearest_sup['touches']} historical touches, {nearest_sup['strength']}).")
+        if sr_res:
+            nearest_res = sr_res[0]
+            levels_lines.append(f"Nearest resistance: {nearest_res['price']} ({nearest_res['touches']} historical touches, {nearest_res['strength']}).")
+
+        if fib:
+            fib_ret = fib.get("retracement", {})
+            fib_ext = fib.get("extension", {})
+            fib_trend = fib.get("trend", "")
+            if fib_trend == "UP" and fib_ext:
+                ext_1 = fib_ext.get("1.0")
+                ext_1618 = fib_ext.get("1.618")
+                if ext_1 and ltp > float(ext_1):
+                    levels_lines.append(f"Broke above Fib 1.0 extension ({ext_1}). Next Fib target: 1.618 at {ext_1618}.")
+                elif ext_1:
+                    levels_lines.append(f"Fib 1.0 extension target: {ext_1}. Stretch: 1.618 at {ext_1618}.")
+            elif fib_trend == "DOWN" and fib_ret:
+                r_382 = fib_ret.get("0.382")
+                r_618 = fib_ret.get("0.618")
+                if r_382:
+                    levels_lines.append(f"In downtrend. Fib retracement levels: 0.382 at {r_382}, 0.618 at {r_618}.")
+
+        sections["key_levels"] = " ".join(levels_lines)
+
+        # 3. Momentum & Flow
+        momentum_lines = []
+        if rsi:
+            if rsi > 70:
+                momentum_lines.append(f"RSI {rsi} — overbought. Pullback risk.")
+            elif rsi > 55:
+                momentum_lines.append(f"RSI {rsi} — bullish momentum with room to run.")
+            elif rsi > 40:
+                momentum_lines.append(f"RSI {rsi} — neutral zone.")
+            else:
+                momentum_lines.append(f"RSI {rsi} — oversold. Bounce potential.")
+
+        if cmf:
+            if cmf > 0.1 and cmf_pos > 5:
+                momentum_lines.append(f"CMF +{cmf} positive for {cmf_pos} consecutive days — strong institutional accumulation.")
+            elif cmf > 0 and cmf_pos > 0:
+                momentum_lines.append(f"CMF +{cmf} ({cmf_pos} days positive) — mild buying.")
+            elif cmf < -0.1 and cmf_neg > 5:
+                momentum_lines.append(f"CMF {cmf} negative for {cmf_neg} consecutive days — distribution.")
+            elif cmf < 0:
+                momentum_lines.append(f"CMF {cmf} ({cmf_neg} days negative) — selling pressure.")
+
+        if macd_hist:
+            if macd_hist > 0:
+                momentum_lines.append(f"MACD histogram positive ({macd_hist}) — bullish momentum.")
+            else:
+                momentum_lines.append(f"MACD histogram negative ({macd_hist}) — bearish momentum.")
+
+        if vol_ratio:
+            if vol_ratio > 2:
+                momentum_lines.append(f"Volume {vol_ratio}x average — very high activity.")
+            elif vol_ratio > 1.3:
+                momentum_lines.append(f"Volume {vol_ratio}x average — above normal.")
+            elif vol_ratio < 0.5:
+                momentum_lines.append(f"Volume {vol_ratio}x average — very low activity.")
+
+        sections["momentum"] = " ".join(momentum_lines)
+
+        # 4. Candlestick & Pattern
+        if candle:
+            conf_str = "volume-confirmed" if candle_conf else "unconfirmed"
+            pattern_map = {
+                "HAMMER": "Hammer pattern detected — bullish reversal signal at support",
+                "BULLISH_ENGULFING": "Bullish engulfing — strong reversal signal",
+                "BEARISH_ENGULFING": "Bearish engulfing — strong sell signal",
+                "SHOOTING_STAR": "Shooting star — bearish reversal at resistance",
+                "DOJI": "Doji — indecision, watch for next candle direction",
+                "BULLISH_MARUBOZU": "Bullish marubozu — strong buyer dominance, no shadows",
+                "BEARISH_MARUBOZU": "Bearish marubozu — strong seller dominance",
+                "GRAVESTONE_DOJI": "Gravestone doji — bearish reversal signal, sellers pushed price back down",
+                "DRAGONFLY_DOJI": "Dragonfly doji — bullish reversal signal, buyers defended the low",
+                "BULLISH_HARAMI": "Bullish harami — potential reversal forming",
+                "BEARISH_HARAMI": "Bearish harami — potential reversal forming",
+                "INVERTED_HAMMER": "Inverted hammer — bullish signal if confirmed next session",
+            }
+            desc = pattern_map.get(candle, candle)
+            sections["candle"] = f"{desc} ({conf_str})."
+        else:
+            sections["candle"] = "No significant candlestick pattern on the last candle."
+
+        # 5. Gaps
+        if gaps:
+            gap_lines = []
+            for g in gaps[:3]:
+                gap_lines.append(f"{g['type']} gap at {g['gap_low']}-{g['gap_high']} from {g['date']} (unfilled — may act as magnet)")
+            sections["gaps"] = ". ".join(gap_lines) + "."
+        else:
+            sections["gaps"] = "No unfilled gaps."
+
+        # 6. Market Context
+        ctx_lines = []
+        if dsex_ms:
+            dsex = dsex_ms["dsex_index"]
+            dsex_chg = dsex_ms["dsex_change_pct"]
+            adv = dsex_ms["advances"]
+            dec = dsex_ms["declines"]
+            if dsex_chg > 0:
+                ctx_lines.append(f"DSEX {dsex} (+{dsex_chg}%), {adv} advances vs {dec} declines — market supportive.")
+            else:
+                ctx_lines.append(f"DSEX {dsex} ({dsex_chg}%), {adv} advances vs {dec} declines — market weak.")
+        if dsex_ps:
+            dsex_swing = dsex_ps.get("swing_structure")
+            dsex_pivot = dsex_ps.get("pivot_daily") or {}
+            dp = dsex_pivot.get("p")
+            if dsex_swing:
+                ctx_lines.append(f"DSEX structure: {dsex_swing}.")
+            if dp:
+                ctx_lines.append(f"DSEX pivot: {dp}.")
+        sections["market_context"] = " ".join(ctx_lines)
+
+        # 7. Risk
+        risk_lines = []
+        if atr_pct:
+            risk_lines.append(f"ATR {atr_pct}% — expected daily range. T+2 max risk ~{round(atr_pct * 2, 1)}%.")
+        if high_52w and ltp > 0:
+            pct_from_high = round((ltp - high_52w) / high_52w * 100, 1)
+            pct_from_low = round((ltp - low_52w) / low_52w * 100, 1) if low_52w else 0
+            risk_lines.append(f"52W range: {low_52w}-{high_52w}. Currently {pct_from_high}% from high, +{pct_from_low}% from low.")
+        sections["risk"] = " ".join(risk_lines)
+
+        # 8. Action Summary
+        action_lines = []
+        if mr_score >= 60 and rsi and rsi < 40:
+            action_lines.append(f"Bounce setup — mean reversion score {mr_score}/100 at support with RSI {rsi}.")
+        if swing == "UPTREND" and ma_aligned:
+            action_lines.append("Uptrend intact — look for pullbacks to EMA as entry.")
+        elif swing == "DOWNTREND":
+            action_lines.append("Downtrend — avoid fresh entries unless at strong support with reversal candle.")
+        if candle in ("HAMMER", "BULLISH_ENGULFING", "DRAGONFLY_DOJI", "BULLISH_MARUBOZU") and candle_conf:
+            action_lines.append("Bullish candle confirmed — supports entry if at support level.")
+        if candle in ("SHOOTING_STAR", "BEARISH_ENGULFING", "GRAVESTONE_DOJI", "BEARISH_MARUBOZU") and candle_conf:
+            action_lines.append("Bearish candle confirmed — consider taking profit or tightening stop.")
+
+        # Targets from pivot
+        if p and r1:
+            if ltp > float(r1):
+                action_lines.append(f"Target: R2 at {r2}. SL: R1 at {r1} (now support).")
+            elif ltp > float(p):
+                action_lines.append(f"Target: R1 at {r1}. SL: Pivot at {p}.")
+            elif s1:
+                action_lines.append(f"Target: Pivot at {p}. SL: S1 at {s1}.")
+
+        sections["action"] = " ".join(action_lines) if action_lines else "No clear actionable setup. Wait for price to reach a key level."
+
+        # --- Build full summary ---
+        title = f"{symbol.upper()} at ৳{ltp} ({'+' if change_pct > 0 else ''}{change_pct}%)"
+        if sector:
+            title += f" | {sector}"
+        if category:
+            title += f" | Cat {category}"
+
+        full_summary = f"""{title}
+
+Structure: {sections['structure']}
+
+Key Levels: {sections['key_levels']}
+
+Momentum: {sections['momentum']}
+
+Pattern: {sections['candle']}
+
+{f"Gaps: {sections['gaps']}" if gaps else ""}
+
+Market: {sections['market_context']}
+
+Risk: {sections['risk']}
+
+Action: {sections['action']}""".strip()
+
+        return {
+            "symbol": symbol.upper(),
+            "ltp": ltp,
+            "change_pct": change_pct,
+            "summary": full_summary,
+            "sections": sections,
+            "data": {
+                "swing_structure": swing,
+                "pivot_daily": pivot,
+                "pivot_weekly": wpivot,
+                "support_levels": sr_sup,
+                "resistance_levels": sr_res,
+                "fib_levels": fib,
+                "candle_pattern": candle,
+                "candle_confirmed": candle_conf,
+                "ema_support": ema_sup,
+                "ema_resistance": ema_res,
+                "mean_reversion_score": mr_score,
+                "rsi": rsi,
+                "cmf": cmf,
+                "cmf_pos_streak": cmf_pos,
+                "cmf_neg_streak": cmf_neg,
+                "adx": adx,
+                "ma_aligned": ma_aligned,
+                "vol_ratio": vol_ratio,
+            },
+        }
+
+    except Exception as e:
+        conn.close()
+        return {"symbol": symbol.upper(), "summary": f"Error: {e}", "sections": {}}
+
+
 @router.get("/alerts")
 async def get_live_alerts(symbol: str = None):
     """Get live trading alerts for today."""
