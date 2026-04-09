@@ -110,7 +110,8 @@ def scan_all(conn):
             f.category, f.high_52w, f.low_52w,
             si.avg_volume_20, si.rsi_14, si.cmf_20, si.cmf_pos_streak, si.adx_14, si.ma_aligned,
             ps.pivot_daily, ps.pivot_weekly, ps.support_levels, ps.resistance_levels,
-            ps.fib_levels, ps.swing_structure, ps.mean_reversion_score
+            ps.fib_levels, ps.swing_structure, ps.mean_reversion_score,
+            ps.squeeze_active, ps.squeeze_json
         FROM live_prices lp
         LEFT JOIN fundamentals f ON lp.symbol = f.symbol
         LEFT JOIN stock_indicators si ON lp.symbol = si.symbol
@@ -258,6 +259,20 @@ def scan_all(conn):
             alert_count += fire_alert(conn, symbol, "CIRCUIT_DOWN", "HIGH", ltp,
                 "CB", ltp, f"Down {change_pct:.1f}% — approaching -10% circuit breaker",
                 {"change_pct": change_pct, "volume": volume})
+
+        # --- 10. Squeeze / Triangle Alert ---
+        squeeze_json = r.get("squeeze_json")
+        if squeeze_json and isinstance(squeeze_json, dict) and squeeze_json.get("active"):
+            sq_type = squeeze_json.get("type", "SQUEEZE")
+            compression = squeeze_json.get("compression", 0)
+            upper = squeeze_json.get("upper_bound", 0)
+            lower = squeeze_json.get("lower_bound", 0)
+            days = squeeze_json.get("days_to_apex")
+            days_str = f", ~{days} days to apex" if days and days < 20 else ""
+            alert_count += fire_alert(conn, symbol, "SQUEEZE", "MEDIUM", ltp,
+                "SQUEEZE", ltp,
+                f"SQUEEZE forming ({sq_type}, compression {compression:.0%}) — range {lower}-{upper}{days_str}. Big move coming. Watch for breakdown to support = buy signal.",
+                {"squeeze": squeeze_json, "rsi": rsi, "support": support_levels[:2] if support_levels else []})
 
     return alert_count
 

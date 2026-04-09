@@ -929,4 +929,70 @@ export async function fetchLiveSignals(): Promise<{ signals: LiveSignal[]; count
   return data;
 }
 
+export interface BuySetup {
+  symbol: string;
+  ltp: number;
+  change_pct: number | null;
+  volume: number | null;
+  rsi: number | null;
+  cmf: number | null;
+  chg_5d: number | null;
+  chg_20d: number | null;
+  support: { price: number; touches: number; strength: string } | null;
+  resistance: { price: number; touches: number } | null;
+  pivot_r1: number | null;
+  pivot_s1: number | null;
+  candle: string | null;
+  candle_confirmed: boolean;
+  mr_score: number | null;
+  sector: string | null;
+  category: string | null;
+  swing: string | null;
+  setup: string;
+  win_rate: number;
+  note: string;
+  setups_matched?: string[];
+}
+
+export interface BuySetupsResponse {
+  setups: {
+    support_oversold: BuySetup[];
+    rsi_extreme: BuySetup[];
+    mean_reversion: BuySetup[];
+    obv_divergence: BuySetup[];
+    squeeze_forming: BuySetup[];
+    multi_setup: BuySetup[];
+  };
+  total: number;
+}
+
+export async function fetchBuySetups(): Promise<BuySetupsResponse> {
+  const { data } = await api.get<BuySetupsResponse>("/ai/buy-setups", { timeout: 30000 });
+  return data;
+}
+
+export interface LiveAlert {
+  id: number;
+  symbol: string;
+  time: string;
+  alert_type: string;
+  severity: string;
+  price: number;
+  level_name: string | null;
+  level_price: number | null;
+  message: string;
+  extra: Record<string, unknown> | null;
+}
+
+export async function fetchLiveAlerts(symbol?: string): Promise<{ alerts: LiveAlert[]; count: number }> {
+  const params = symbol ? { symbol } : undefined;
+  const { data } = await api.get<{ alerts: LiveAlert[]; count: number }>("/ai/alerts", { params });
+  return data;
+}
+
+export async function fetchStockSummary(symbol: string): Promise<{ symbol: string; summary: string; sections: Record<string, string>; data: Record<string, unknown> }> {
+  const { data } = await api.get(`/ai/summary/${symbol}`);
+  return data;
+}
+
 export default api;

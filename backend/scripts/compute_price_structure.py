@@ -629,6 +629,97 @@ def process_symbol(conn, symbol: str, df: pd.DataFrame) -> dict:
         "swings_json": json.dumps(swings["swings"]),
     }
 
+    # Add squeeze detection
+    squeeze = detect_squeeze(df)
+    result["squeeze_active"] = squeeze["active"]
+    result["squeeze_json"] = json.dumps(squeeze) if squeeze["active"] else None
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# 10. Squeeze / Triangle Detection
+# ---------------------------------------------------------------------------
+
+def detect_squeeze(df: pd.DataFrame) -> dict:
+    """Detect if stock is in a consolidation squeeze (symmetrical triangle)."""
+    if len(df) < 30:
+        return {"active": False}
+
+    high = df["high"].values
+    low = df["low"].values
+
+    lookback = 15
+    h = high[-lookback:]
+    l = low[-lookback:]
+
+    third = lookback // 3
+    range1 = h[:third].max() - l[:third].min()
+    range2 = h[third:2*third].max() - l[third:2*third].min()
+    range3 = h[2*third:].max() - l[2*third:].min()
+    converging = range1 > range2 > range3
+
+    half = lookback // 2
+    lower_highs = h[half:].max() < h[:half].max()
+    higher_lows = l[half:].min() > l[:half].min()
+    symmetrical = lower_highs and higher_lows
+
+    total_range = h.max() - l.min()
+    compression = range3 / total_range if total_range > 0 else 1
+
+    bb_squeeze = False
+    bb_width_pct = 50.0
+    if len(df) >= 50:
+        from ta.volatility import BollingerBands
+        try:
+            c_series = df["close"].iloc[-50:]
+            bb = BollingerBands(c_series, window=20, window_dev=2)
+            bb_width = (bb.bollinger_hband() - bb.bollinger_lband()) / bb.bollinger_mavg() * 100
+            bw = bb_width.dropna()
+            if len(bw) > 5:
+                current_w = float(bw.iloc[-1])
+                bb_width_pct = float((bw < current_w).sum() / len(bw) * 100)
+                bb_squeeze = bb_width_pct < 20
+        except Exception:
+            pass
+
+    vol = df["volume"].astype(float).values
+    vol_first = vol[-lookback:-half].mean() if vol[-lookback:-half].mean() > 0 else 1
+    vol_second = vol[-half:].mean()
+    vol_declining = bool(vol_second < vol_first * 0.8)
+
+    active = converging or symmetrical or bb_squeeze
+    if not active:
+        return {"active": False}
+
+    # Days to apex
+    days_to_apex = None
+    if converging and range3 > 0 and range1 > range3:
+        shrink_rate = (range1 - range3) / lookback
+        days_to_apex = int(range3 / shrink_rate) if shrink_rate > 0 else 99
+
+    upper_bound = round(float(h[-5:].max()), 1)
+    lower_bound = round(float(l[-5:].min()), 1)
+
+    squeeze_type = []
+    if symmetrical:
+        squeeze_type.append("SYMMETRICAL")
+    if bb_squeeze:
+        squeeze_type.append("BB_SQUEEZE")
+    if converging:
+        squeeze_type.append("CONVERGING")
+
+    return {
+        "active": True,
+        "type": "+".join(squeeze_type),
+        "compression": round(compression, 3),
+        "bb_width_pct": round(bb_width_pct, 1),
+        "vol_declining": vol_declining,
+        "days_to_apex": days_to_apex,
+        "upper_bound": upper_bound,
+        "lower_bound": lower_bound,
+    }
+
 
 # ---------------------------------------------------------------------------
 # Database
@@ -654,6 +745,8 @@ CREATE TABLE IF NOT EXISTS price_structure (
     ema_resistance TEXT,
     mean_reversion_score INTEGER DEFAULT 0,
     swings_json JSONB,
+    squeeze_active BOOLEAN DEFAULT false,
+    squeeze_json JSONB,
     computed_at TIMESTAMPTZ DEFAULT NOW(),
     PRIMARY KEY (symbol, date)
 );
@@ -679,8 +772,8 @@ def store_result(conn, symbol: str, today: str, data: dict):
             support_levels, resistance_levels, volume_nodes, unfilled_gaps,
             fib_levels, pivot_daily, pivot_weekly,
             candle_pattern, candle_confirmed, ema_support, ema_resistance,
-            mean_reversion_score, swings_json
-        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            mean_reversion_score, swings_json, squeeze_active, squeeze_json
+        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
         ON CONFLICT (symbol, date) DO UPDATE SET
             swing_structure = EXCLUDED.swing_structure,
             last_swing_high = EXCLUDED.last_swing_high,
@@ -698,6 +791,8 @@ def store_result(conn, symbol: str, today: str, data: dict):
             ema_resistance = EXCLUDED.ema_resistance,
             mean_reversion_score = EXCLUDED.mean_reversion_score,
             swings_json = EXCLUDED.swings_json,
+            squeeze_active = EXCLUDED.squeeze_active,
+            squeeze_json = EXCLUDED.squeeze_json,
             computed_at = NOW()
     """, (
         symbol, today,
@@ -708,6 +803,7 @@ def store_result(conn, symbol: str, today: str, data: dict):
         data["candle_pattern"], data["candle_confirmed"],
         data["ema_support"], data["ema_resistance"],
         data["mean_reversion_score"], data["swings_json"],
+        data.get("squeeze_active", False), data.get("squeeze_json"),
     ))
     conn.commit()
     cur.close()

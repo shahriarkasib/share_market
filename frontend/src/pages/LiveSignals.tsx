@@ -1,8 +1,8 @@
 import { useState, useEffect, useCallback } from "react";
 import { clsx } from "clsx";
 import { Loader2, RefreshCw, Zap, TrendingUp, TrendingDown, Minus } from "lucide-react";
-import { fetchLiveSignals } from "../api/client.ts";
-import type { LiveSignal } from "../api/client.ts";
+import { fetchLiveSignals, fetchLiveAlerts } from "../api/client.ts";
+import type { LiveSignal, LiveAlert } from "../api/client.ts";
 
 const MOMENTUM_COLORS: Record<string, string> = {
   STRONG_BULLISH: "text-emerald-400 bg-emerald-400/10",
@@ -57,15 +57,21 @@ type FilterType = "ALL" | "STRONG_BULLISH" | "BULLISH" | "BEARISH" | "GAP_UP" | 
 
 export default function LiveSignals() {
   const [signals, setSignals] = useState<LiveSignal[]>([]);
+  const [alerts, setAlerts] = useState<LiveAlert[]>([]);
   const [loading, setLoading] = useState(true);
   const [lastUpdate, setLastUpdate] = useState<string>("");
   const [filter, setFilter] = useState<FilterType>("ALL");
   const [search, setSearch] = useState("");
+  const [showAlerts, setShowAlerts] = useState(true);
 
   const loadData = useCallback(async () => {
     try {
-      const res = await fetchLiveSignals();
-      setSignals(res.signals);
+      const [sigRes, alertRes] = await Promise.all([
+        fetchLiveSignals(),
+        fetchLiveAlerts(),
+      ]);
+      setSignals(sigRes.signals);
+      setAlerts(alertRes.alerts);
       setLastUpdate(new Date().toLocaleTimeString("en-GB"));
     } catch {
       // silent fail on refresh
@@ -158,6 +164,28 @@ export default function LiveSignals() {
           className="ml-auto px-2 py-1 rounded bg-[var(--surface)] border border-[var(--border)] text-xs w-24 focus:outline-none focus:border-blue-400"
         />
       </div>
+
+      {/* Alerts panel */}
+      {showAlerts && alerts.length > 0 && (
+        <div className="rounded-lg border border-amber-400/20 bg-amber-400/5 p-2 max-h-40 overflow-y-auto">
+          <div className="flex items-center justify-between mb-1">
+            <span className="text-xs font-bold text-amber-400">Live Alerts ({alerts.length})</span>
+            <button onClick={() => setShowAlerts(false)} className="text-xs text-[var(--text-dim)] hover:text-[var(--text)]">Hide</button>
+          </div>
+          {alerts.slice(0, 20).map(a => {
+            const sevColor = a.severity === "HIGH" ? "text-red-400" : "text-amber-400";
+            const time = new Date(a.time).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+            return (
+              <div key={a.id} className="flex items-start gap-2 py-0.5 text-[11px]">
+                <span className={clsx("font-bold shrink-0", sevColor)}>{a.severity}</span>
+                <span className="font-bold shrink-0">{a.symbol}</span>
+                <span className="text-[var(--text-muted)] flex-1 truncate">{a.message}</span>
+                <span className="text-[var(--text-dim)] shrink-0">{time}</span>
+              </div>
+            );
+          })}
+        </div>
+      )}
 
       {/* Table */}
       <div className="overflow-x-auto">
