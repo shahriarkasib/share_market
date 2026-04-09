@@ -62,6 +62,7 @@ async def fast_pipeline():
         await _sync_market_summary()
         await _sync_dsex_history()
         _refresh_fast_caches()
+        _run_live_alerts()
         logger.info("Fast pipeline done")
     except Exception as e:
         logger.error(f"Fast pipeline failed: {e}")
@@ -191,6 +192,22 @@ async def _sync_dsex_history():
         cache.delete("dsex_history")
     except Exception as e:
         logger.error(f"DSEX history sync failed: {e}")
+
+
+def _run_live_alerts():
+    """Run live alert scanner against current prices."""
+    try:
+        from scripts.live_alerts import scan_all, ensure_table
+        import psycopg2, psycopg2.extras
+        from config import DATABASE_URL
+        conn = psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.RealDictCursor)
+        ensure_table(conn)
+        count = scan_all(conn)
+        conn.close()
+        if count > 0:
+            logger.info(f"Live alerts: {count} new alerts fired")
+    except Exception as e:
+        logger.error(f"Live alerts failed: {e}")
 
 
 def _refresh_fast_caches():

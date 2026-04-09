@@ -242,6 +242,43 @@ async def get_ai_market():
         return {"error": str(e)}
 
 
+@router.get("/alerts")
+async def get_live_alerts(symbol: str = None):
+    """Get live trading alerts for today."""
+    conn = get_connection()
+    try:
+        if symbol:
+            result = conn.execute(
+                "SELECT * FROM live_alerts WHERE date = CURRENT_DATE AND symbol = %s ORDER BY time DESC",
+                (symbol.upper(),),
+            )
+        else:
+            result = conn.execute(
+                "SELECT * FROM live_alerts WHERE date = CURRENT_DATE ORDER BY time DESC LIMIT 100"
+            )
+        rows = result.fetchall()
+        conn.close()
+
+        alerts = []
+        for r in rows:
+            alerts.append({
+                "id": r["id"],
+                "symbol": r["symbol"],
+                "time": str(r["time"]),
+                "alert_type": r["alert_type"],
+                "severity": r["severity"],
+                "price": r["price"],
+                "level_name": r["level_name"],
+                "level_price": r["level_price"],
+                "message": r["message"],
+                "extra": r["extra"],
+            })
+        return {"alerts": alerts, "count": len(alerts)}
+    except Exception as e:
+        conn.close()
+        return {"alerts": [], "count": 0, "error": str(e)}
+
+
 @router.get("/live-signals")
 async def get_live_signals():
     """Live intraday opening signals — compare current LTP to yesterday's close.
