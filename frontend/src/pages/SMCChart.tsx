@@ -5,9 +5,12 @@ import {
   CandlestickSeries,
   HistogramSeries,
   LineSeries,
+  AreaSeries,
+  createSeriesMarkers,
   type IChartApi,
   type ISeriesApi,
   type IPriceLine,
+  type ISeriesMarkersPluginApi,
   type Time,
 } from "lightweight-charts";
 import clsx from "clsx";
@@ -47,6 +50,10 @@ const DEFAULT_TOGGLES: Toggles = {
   ma200: false,
 };
 
+// Limit visible events so the chart stays readable
+const MAX_BOS = 8;
+const MAX_FVG = 10;
+
 export default function SMCChart() {
   const { symbol = "GP" } = useParams();
   const nav = useNavigate();
@@ -54,9 +61,10 @@ export default function SMCChart() {
   const chartRef = useRef<IChartApi | null>(null);
   const candleSeriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
 
-  // Track overlay objects so we can toggle on/off without rebuilding the chart
-  const fvgLinesRef = useRef<IPriceLine[]>([]);
-  const bosLinesRef = useRef<IPriceLine[]>([]);
+  // Overlay objects to clean up on toggle off / data change
+  const fvgSeriesRef = useRef<ISeriesApi<"Area" | "Line">[]>([]);
+  const bosSeriesRef = useRef<ISeriesApi<"Line">[]>([]);
+  const bosMarkersRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
   const fibLinesRef = useRef<IPriceLine[]>([]);
   const pivotLinesRef = useRef<IPriceLine[]>([]);
   const maSeriesRef = useRef<Record<string, ISeriesApi<"Line">>>({});
@@ -69,14 +77,12 @@ export default function SMCChart() {
   const [showDropdown, setShowDropdown] = useState(false);
   const [toggles, setToggles] = useState<Toggles>(DEFAULT_TOGGLES);
 
-  // Fetch stock list once
   useEffect(() => {
     fetchAllPrices()
       .then((s) => setStocks(s))
       .catch(() => setStocks([]));
   }, []);
 
-  // Fetch chart data when symbol or period changes
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
@@ -95,7 +101,7 @@ export default function SMCChart() {
     };
   }, [symbol, period]);
 
-  // Build the base chart once when data arrives — overlays added/removed via toggles
+  // Build the base chart when data arrives
   useEffect(() => {
     if (!data || !containerRef.current) return;
 
@@ -145,8 +151,9 @@ export default function SMCChart() {
     chartRef.current = chart;
 
     // Reset overlay refs (chart was rebuilt)
-    fvgLinesRef.current = [];
-    bosLinesRef.current = [];
+    fvgSeriesRef.current = [];
+    bosSeriesRef.current = [];
+    bosMarkersRef.current = null;
     fibLinesRef.current = [];
     pivotLinesRef.current = [];
     maSeriesRef.current = {};
@@ -171,69 +178,144 @@ export default function SMCChart() {
     };
   }, [data]);
 
-  // FVG zones toggle
+  // FVG zones — localized rectangles via two line series + area fill between them
   useEffect(() => {
-    const series = candleSeriesRef.current;
-    if (!series || !data) return;
-    fvgLinesRef.current.forEach((ln) => series.removePriceLine(ln));
-    fvgLinesRef.current = [];
+    const chart = chartRef.current;
+    if (!chart || !data) return;
+
+    fvgSeriesRef.current.forEach((s) => {
+      try { chart.removeSeries(s); } catch { /* already removed */ }
+    });
+    fvgSeriesRef.current = [];
+
     if (!toggles.fvg) return;
-    data.fvgs.forEach((f) => {
-      const color =
-        f.type === "bullish"
-          ? "rgba(38, 166, 154, 0.45)"
-          : "rgba(239, 83, 80, 0.45)";
-      fvgLinesRef.current.push(
-        series.createPriceLine({
-          price: f.top,
-          color,
-          lineWidth: 1,
-          lineStyle: 2,
-          axisLabelVisible: false,
-          title: f.type === "bullish" ? "FVG↑" : "FVG↓",
-        }),
-      );
-      fvgLinesRef.current.push(
-        series.createPriceLine({
-          price: f.bottom,
-          color,
-          lineWidth: 1,
-          lineStyle: 2,
-          axisLabelVisible: false,
-          title: "",
-        }),
-      );
+
+    // Show only the most recent FVGs to keep the chart readable
+    const fvgs = data.fvgs.slice(-MAX_FVG);
+
+    fvgs.forEach((f) => {
+      const isBull = f.type === "bullish";
+      const fillColor = isBull ? "rgba(38, 166, 154, 0.15)" : "rgba(239, 83, 80, 0.15)";
+      const lineColor = isBull ? "rgba(38, 166, 154, 0.8)" : "rgba(239, 83, 80, 0.8)";
+
+      // Top line series — shows for the FVG's lifetime only
+      const topLine = chart.addSeries(LineSeries, {
+        color: lineColor,
+        lineWidth: 1,
+        lineStyle: 0,
+        priceLineVisible: false,
+        lastValueVisible: false,
+        crosshairMarkerVisible: false,
+      });
+      topLine.setData([
+        { time: f.start_time as Time, value: f.top },
+        { time: f.end_time as Time, value: f.top },
+      ]);
+      fvgSeriesRef.current.push(topLine);
+
+      // Bottom line series — at the bottom of the FVG zone
+      const botLine = chart.addSeries(LineSeries, {
+        color: lineColor,
+        lineWidth: 1,
+        lineStyle: 0,
+        priceLineVisible: false,
+        lastValueVisible: false,
+        crosshairMarkerVisible: false,
+      });
+      botLine.setData([
+        { time: f.start_time as Time, value: f.bottom },
+        { time: f.end_time as Time, value: f.bottom },
+      ]);
+      fvgSeriesRef.current.push(botLine);
+
+      // Area fill — gives the rectangle look between top and bottom
+      // Trick: AreaSeries fills between baseline and the value. We approximate
+      // by using the bottom line's price as base and a thin AreaSeries at top.
+      const areaTop = chart.addSeries(AreaSeries, {
+        topColor: fillColor,
+        bottomColor: fillColor,
+        lineColor: "rgba(0,0,0,0)",
+        lineWidth: 1,
+        priceLineVisible: false,
+        lastValueVisible: false,
+        crosshairMarkerVisible: false,
+      });
+      // Set base to bottom of FVG so the fill goes from bottom → top
+      areaTop.applyOptions({
+        // @ts-expect-error baseValue exists on AreaSeries options
+        baseValue: { type: "price", price: f.bottom },
+      });
+      areaTop.setData([
+        { time: f.start_time as Time, value: f.top },
+        { time: f.end_time as Time, value: f.top },
+      ]);
+      fvgSeriesRef.current.push(areaTop);
     });
   }, [data, toggles.fvg]);
 
-  // BOS / ChoCh toggle
+  // BOS / ChoCh — localized horizontal line from broken swing to breaking candle + marker
   useEffect(() => {
-    const series = candleSeriesRef.current;
-    if (!series || !data) return;
-    bosLinesRef.current.forEach((ln) => series.removePriceLine(ln));
-    bosLinesRef.current = [];
+    const chart = chartRef.current;
+    const candleSeries = candleSeriesRef.current;
+    if (!chart || !candleSeries || !data) return;
+
+    bosSeriesRef.current.forEach((s) => {
+      try { chart.removeSeries(s); } catch { /* already removed */ }
+    });
+    bosSeriesRef.current = [];
+
+    if (bosMarkersRef.current) {
+      try { bosMarkersRef.current.detach(); } catch { /* already removed */ }
+      bosMarkersRef.current = null;
+    }
+
     if (!toggles.bos) return;
-    data.structure.forEach((ev) => {
+
+    // Show only the most recent N events to avoid clutter
+    const events = data.structure.slice(-MAX_BOS);
+
+    events.forEach((ev) => {
+      const isBull = ev.type.startsWith("bullish");
+      const color = isBull ? "#26a69a" : "#ef5350";
+
+      // Horizontal line from broken swing time to the candle that broke it
+      const line = chart.addSeries(LineSeries, {
+        color,
+        lineWidth: 1,
+        lineStyle: 2, // dashed
+        priceLineVisible: false,
+        lastValueVisible: false,
+        crosshairMarkerVisible: false,
+      });
+      line.setData([
+        { time: ev.from_time as Time, value: ev.from_price },
+        { time: ev.time as Time, value: ev.from_price },
+      ]);
+      bosSeriesRef.current.push(line);
+    });
+
+    // Markers on the actual breaking candles with BOS / ChoCh label
+    const markers = events.map((ev) => {
       const isBull = ev.type.startsWith("bullish");
       const isBOS = ev.type.includes("BOS");
-      bosLinesRef.current.push(
-        series.createPriceLine({
-          price: ev.from_price,
-          color: isBull ? "#26a69a" : "#ef5350",
-          lineWidth: 2,
-          lineStyle: 0,
-          axisLabelVisible: true,
-          title: `${isBOS ? "BOS" : "ChoCh"} ${isBull ? "↑" : "↓"}`,
-        }),
-      );
+      return {
+        time: ev.time as Time,
+        position: isBull ? ("aboveBar" as const) : ("belowBar" as const),
+        color: isBull ? "#26a69a" : "#ef5350",
+        shape: isBull ? ("arrowDown" as const) : ("arrowUp" as const),
+        text: isBOS ? "BOS" : "ChoCh",
+      };
     });
+    bosMarkersRef.current = createSeriesMarkers(candleSeries, markers);
   }, [data, toggles.bos]);
 
   // Fibonacci toggle
   useEffect(() => {
     const series = candleSeriesRef.current;
     if (!series || !data) return;
-    fibLinesRef.current.forEach((ln) => series.removePriceLine(ln));
+    fibLinesRef.current.forEach((ln) => {
+      try { series.removePriceLine(ln); } catch { /* already removed */ }
+    });
     fibLinesRef.current = [];
     if (!toggles.fib || !data.fibonacci) return;
     const colors: Record<string, string> = {
@@ -263,7 +345,9 @@ export default function SMCChart() {
   useEffect(() => {
     const series = candleSeriesRef.current;
     if (!series || !data) return;
-    pivotLinesRef.current.forEach((ln) => series.removePriceLine(ln));
+    pivotLinesRef.current.forEach((ln) => {
+      try { series.removePriceLine(ln); } catch { /* already removed */ }
+    });
     pivotLinesRef.current = [];
     if (!toggles.pivots || !data.pivots) return;
     const p = data.pivots;
@@ -290,7 +374,7 @@ export default function SMCChart() {
     });
   }, [data, toggles.pivots]);
 
-  // Moving averages — separate line series for each
+  // Moving averages
   useEffect(() => {
     const chart = chartRef.current;
     if (!chart || !data?.moving_averages) return;
@@ -310,7 +394,6 @@ export default function SMCChart() {
           lineWidth: 1,
           priceLineVisible: false,
           lastValueVisible: false,
-          title: key.toUpperCase().replace("_", ""),
         });
         const points = (data.moving_averages?.[key] ?? []).map((pt) => ({
           time: pt.time as Time,
@@ -319,13 +402,12 @@ export default function SMCChart() {
         series.setData(points);
         maSeriesRef.current[key] = series;
       } else if (!enabled && existing) {
-        chart.removeSeries(existing);
+        try { chart.removeSeries(existing); } catch { /* already removed */ }
         delete maSeriesRef.current[key];
       }
     });
   }, [data, toggles.ma20, toggles.ma50, toggles.ma200]);
 
-  // Filtered stock list for selector
   const filteredStocks = useMemo(() => {
     if (!search.trim()) return stocks.slice(0, 50);
     const s = search.toLowerCase();
@@ -360,7 +442,6 @@ export default function SMCChart() {
 
   return (
     <div className="min-h-screen p-4">
-      {/* Header */}
       <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
         <div className="flex items-center gap-3">
           <button
@@ -442,7 +523,6 @@ export default function SMCChart() {
         </div>
       </div>
 
-      {/* Indicator toggles */}
       <div className="flex flex-wrap items-center gap-2 mb-3">
         <span className="text-xs text-gray-500">Indicators:</span>
         {toggleButtons.map((b) => {
@@ -469,7 +549,6 @@ export default function SMCChart() {
         })}
       </div>
 
-      {/* Chart */}
       <div className="bg-white dark:bg-gray-900/30 rounded-lg border border-gray-300 dark:border-gray-700/50 p-2 relative">
         <div ref={containerRef} className="w-full" />
         {loading && (
@@ -487,7 +566,6 @@ export default function SMCChart() {
         )}
       </div>
 
-      {/* FVG + Structure lists */}
       {data && (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
           <div className="bg-white dark:bg-gray-800/30 rounded-lg p-4 border border-gray-300 dark:border-gray-700/50">
@@ -498,7 +576,7 @@ export default function SMCChart() {
               {data.fvgs.length === 0 && (
                 <p className="text-xs text-gray-500">No FVG detected.</p>
               )}
-              {data.fvgs.slice(0, 12).map((f, i) => (
+              {data.fvgs.slice(-12).reverse().map((f, i) => (
                 <div
                   key={i}
                   className="text-xs flex items-center justify-between border-b border-gray-200 dark:border-gray-700/30 py-1"
@@ -529,7 +607,7 @@ export default function SMCChart() {
               {data.structure.length === 0 && (
                 <p className="text-xs text-gray-500">No BOS/ChoCh detected.</p>
               )}
-              {data.structure.slice(0, 12).map((s, i) => {
+              {data.structure.slice(-12).reverse().map((s, i) => {
                 const isBull = s.type.startsWith("bullish");
                 const isBOS = s.type.includes("BOS");
                 return (
@@ -559,8 +637,9 @@ export default function SMCChart() {
       )}
 
       <div className="mt-4 text-xs text-gray-500 text-center">
+        Showing last {MAX_BOS} BOS/ChoCh events and last {MAX_FVG} FVG zones •
         FVG = Fair Value Gap • BOS = Break of Structure • ChoCh = Change of
-        Character • Fib auto-drawn from period high to low • Pivots from last bar
+        Character
       </div>
     </div>
   );
