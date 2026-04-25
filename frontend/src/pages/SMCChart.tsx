@@ -14,6 +14,7 @@ import {
 } from "lightweight-charts";
 import { FVGPrimitive } from "./fvgPrimitive";
 import { GannPrimitive, FibCirclesPrimitive } from "./gannFibPrimitives";
+import { OrderBlockPrimitive } from "./orderBlockPrimitive";
 import clsx from "clsx";
 import {
   ArrowLeft,
@@ -36,6 +37,7 @@ type Timeframe = "daily" | "weekly";
 interface Toggles {
   fvg: boolean;
   bos: boolean;
+  ob: boolean;
   levels: boolean;
   fib: boolean;
   fibCircles: boolean;
@@ -49,6 +51,7 @@ interface Toggles {
 const DEFAULT_TOGGLES: Toggles = {
   fvg: true,
   bos: true,
+  ob: true,
   levels: true,
   fib: false,
   fibCircles: false,
@@ -97,6 +100,7 @@ export default function SMCChart() {
 
   // Refs — overlays (cleared when chart rebuilds)
   const fvgPrimitiveRef = useRef<FVGPrimitive | null>(null);
+  const obPrimitiveRef = useRef<OrderBlockPrimitive | null>(null);
   const gannPrimitiveRef = useRef<GannPrimitive | null>(null);
   const fibCirclesPrimitiveRef = useRef<FibCirclesPrimitive | null>(null);
   const bosSeriesRef = useRef<ISeriesApi<"Line">[]>([]);
@@ -244,6 +248,7 @@ export default function SMCChart() {
 
     // Reset overlay refs (chart was just rebuilt)
     fvgPrimitiveRef.current = null;
+    obPrimitiveRef.current = null;
     gannPrimitiveRef.current = null;
     fibCirclesPrimitiveRef.current = null;
     bosSeriesRef.current = [];
@@ -320,6 +325,30 @@ export default function SMCChart() {
       /* primitive failed — chart still works */
     }
   }, [chartReady, data, toggles.fvg]);
+
+  // === Order Blocks ===
+  useEffect(() => {
+    if (!chartReady || !data) return;
+    const candleSeries = candleSeriesRef.current;
+    if (!candleSeries) return;
+
+    if (obPrimitiveRef.current) {
+      try {
+        candleSeries.detachPrimitive(obPrimitiveRef.current);
+      } catch {
+        /* */
+      }
+      obPrimitiveRef.current = null;
+    }
+    if (!toggles.ob || !data.order_blocks || data.order_blocks.length === 0) return;
+    try {
+      const primitive = new OrderBlockPrimitive(data.order_blocks);
+      candleSeries.attachPrimitive(primitive);
+      obPrimitiveRef.current = primitive;
+    } catch {
+      /* */
+    }
+  }, [chartReady, data, toggles.ob]);
 
   // === Gann Fan ===
   useEffect(() => {
@@ -630,6 +659,7 @@ export default function SMCChart() {
     color: string;
   }> = [
     { key: "fvg", label: "FVG", color: "text-emerald-500" },
+    { key: "ob", label: "Order Blocks", color: "text-violet-500" },
     { key: "bos", label: "BOS/ChoCh", color: "text-yellow-500" },
     { key: "levels", label: "Key Levels", color: "text-amber-400" },
     { key: "fib", label: "Fibonacci", color: "text-purple-500" },

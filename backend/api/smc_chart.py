@@ -57,6 +57,91 @@ def detect_structure(swings):
     return events
 
 
+def detect_order_blocks(o, h, l, c, structure_events, df):
+    """
+    Order Block = last opposing candle before a BOS/ChoCh.
+
+    Bullish OB: last RED candle before a bullish BOS or ChoCh — institutions
+    bought aggressively into that bar's lows, then drove price up. Price often
+    returns to retest the OB before continuing.
+
+    Bearish OB: last GREEN candle before a bearish BOS or ChoCh — institutions
+    sold into that bar's highs.
+
+    Each OB is tagged with mitigation status:
+      - "fresh": untouched (highest probability of reaction on retest)
+      - "tested": price wicked into the OB but didn't close beyond
+      - "mitigated": price closed beyond the OB (zone is exhausted)
+    """
+    obs = []
+    for ev in structure_events:
+        ev_idx = ev["idx"]
+        is_bullish_break = ev["type"] in ("bullish_BOS", "bullish_ChoCh")
+        is_bearish_break = ev["type"] in ("bearish_BOS", "bearish_ChoCh")
+
+        # Scan backward up to 15 bars for the last opposing candle
+        for j in range(ev_idx - 1, max(ev_idx - 16, 0), -1):
+            candle_red = float(c.iloc[j]) < float(o.iloc[j])
+            candle_green = float(c.iloc[j]) > float(o.iloc[j])
+
+            if is_bullish_break and candle_red:
+                ob_top = float(h.iloc[j])
+                ob_bottom = float(l.iloc[j])
+                # Validate: must have a meaningful body
+                if ob_top <= ob_bottom or (ob_top - ob_bottom) / ob_bottom < 0.005:
+                    break
+                obs.append({
+                    "type": "bullish",
+                    "candle_idx": j,
+                    "break_idx": ev_idx,
+                    "break_type": ev["type"],
+                    "top": ob_top,
+                    "bottom": ob_bottom,
+                })
+                break
+
+            if is_bearish_break and candle_green:
+                ob_top = float(h.iloc[j])
+                ob_bottom = float(l.iloc[j])
+                if ob_top <= ob_bottom or (ob_top - ob_bottom) / ob_bottom < 0.005:
+                    break
+                obs.append({
+                    "type": "bearish",
+                    "candle_idx": j,
+                    "break_idx": ev_idx,
+                    "break_type": ev["type"],
+                    "top": ob_top,
+                    "bottom": ob_bottom,
+                })
+                break
+
+    # Tag mitigation status by scanning forward from break_idx
+    for ob in obs:
+        ob["status"] = "fresh"
+        for k in range(ob["break_idx"] + 1, len(df)):
+            row_high = float(h.iloc[k])
+            row_low = float(l.iloc[k])
+            row_close = float(c.iloc[k])
+            if ob["type"] == "bullish":
+                # Touched if low pierces the OB top (entered the zone)
+                if row_low <= ob["top"] and row_close > ob["bottom"]:
+                    if ob["status"] == "fresh":
+                        ob["status"] = "tested"
+                # Mitigated if close is below the bottom (zone broken)
+                if row_close < ob["bottom"]:
+                    ob["status"] = "mitigated"
+                    break
+            else:
+                if row_high >= ob["bottom"] and row_close < ob["top"]:
+                    if ob["status"] == "fresh":
+                        ob["status"] = "tested"
+                if row_close > ob["top"]:
+                    ob["status"] = "mitigated"
+                    break
+
+    return obs
+
+
 def detect_fvgs(h, l):
     fvgs = []
     for i in range(2, len(h)):
@@ -251,6 +336,7 @@ def get_smc_chart(symbol: str, days: int = 180, interval: str = "daily"):
     swings = find_swings(h, l, n=3)
     events = detect_structure(swings)
     fvgs = detect_fvgs(h, l)
+    raw_obs = detect_order_blocks(o, h, l, c, events, df)
 
     # Recent + meaningful: last 60 bars, size > 0.5% (filter tiny noise)
     cutoff_idx = max(0, len(df) - 60)
@@ -296,6 +382,31 @@ def get_smc_chart(symbol: str, days: int = 180, interval: str = "daily"):
                 "end_time": end_time,
                 "mitigated": f["mitigated"],
             })
+
+    # Order Block output — keep only those visible in the recent window
+    order_blocks = []
+    for ob in raw_obs:
+        if ob["candle_idx"] < cutoff_idx:
+            continue
+        # Mitigated OBs older than the visible window are noise — keep fresh + tested
+        if ob["status"] == "mitigated" and ob["candle_idx"] < len(df) - 30:
+            continue
+        start_time = idx_to_time(ob["candle_idx"])
+        # Extend the OB box forward to current bar so retest opportunities are visible
+        end_time = idx_to_time(len(df) - 1)
+        if start_time and end_time:
+            order_blocks.append({
+                "type": ob["type"],
+                "top": round(ob["top"], 2),
+                "bottom": round(ob["bottom"], 2),
+                "start_time": start_time,
+                "end_time": end_time,
+                "status": ob["status"],
+                "break_type": ob["break_type"],
+            })
+
+    # Cap to the most recent 8 OBs
+    order_blocks = order_blocks[-8:]
 
     # Cap structure events at most recent 6 for readability
     structure_events = []
@@ -405,5 +516,6 @@ def get_smc_chart(symbol: str, days: int = 180, interval: str = "daily"):
         "gann_fan": gann,
         "fib_circles": fib_circles,
         "key_levels": key_levels,
+        "order_blocks": order_blocks,
         "current_price": round(float(c.iloc[-1]), 2),
     }

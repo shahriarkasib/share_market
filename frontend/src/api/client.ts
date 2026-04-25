@@ -121,6 +121,16 @@ export interface SMCKeyLevel {
   purpose: "resistance" | "support" | "breakout_long" | "breakout_short";
 }
 
+export interface SMCOrderBlock {
+  type: "bullish" | "bearish";
+  top: number;
+  bottom: number;
+  start_time: string;
+  end_time: string;
+  status: "fresh" | "tested" | "mitigated";
+  break_type?: string;
+}
+
 export interface SMCStructureEvent {
   type: "bullish_BOS" | "bearish_BOS" | "bullish_ChoCh" | "bearish_ChoCh";
   price: number;
@@ -195,6 +205,7 @@ export interface SMCChartData {
   gann_fan?: SMCGannFan | null;
   fib_circles?: SMCFibCircles | null;
   key_levels?: SMCKeyLevel[];
+  order_blocks?: SMCOrderBlock[];
 }
 
 const smcCache = new Map<string, { data: SMCChartData; ts: number }>();
