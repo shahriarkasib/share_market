@@ -171,21 +171,46 @@ def get_smc_chart(symbol: str, days: int = 180):
     events = detect_structure(swings)
     fvgs = detect_fvgs(h, l)
 
-    # Filter to recent + meaningful (last ~80 bars, size > 0.3%)
-    cutoff_idx = max(0, len(df) - 80)
-    recent_fvgs = [f for f in fvgs if f["size_pct"] > 0.3 and f["idx"] >= cutoff_idx]
+    # Recent + meaningful: last 60 bars, size > 0.5% (filter tiny noise)
+    cutoff_idx = max(0, len(df) - 60)
+    recent_fvgs = [f for f in fvgs if f["size_pct"] > 0.5 and f["idx"] >= cutoff_idx]
     recent_events = [e for e in events if e["idx"] >= cutoff_idx]
+
+    # Filter out mitigated FVGs — if price has fully traded through the gap, hide it
+    unmitigated = []
+    for f in recent_fvgs:
+        mitigated = False
+        for j in range(f["idx"] + 1, len(df)):
+            row_high = float(h.iloc[j])
+            row_low = float(l.iloc[j])
+            if f["type"] == "bullish":
+                # Bullish FVG is mitigated when low pierces below the bottom
+                if row_low < f["bottom"]:
+                    mitigated = True
+                    break
+            else:
+                # Bearish FVG is mitigated when high pierces above the top
+                if row_high > f["top"]:
+                    mitigated = True
+                    break
+        if not mitigated:
+            unmitigated.append(f)
+
+    # Cap to the 6 most recent unmitigated zones for a clean chart
+    unmitigated = unmitigated[-6:]
 
     def idx_to_time(idx):
         if 0 <= idx < len(df):
             return df.iloc[idx]["date"].strftime("%Y-%m-%d")
         return None
 
+    last_time = df.iloc[-1]["date"].strftime("%Y-%m-%d")
+
     fvg_zones = []
-    for f in recent_fvgs:
+    for f in unmitigated:
         start_time = idx_to_time(f["start_idx"])
-        end_idx = min(f["idx"] + 30, len(df) - 1)
-        end_time = idx_to_time(end_idx)
+        # Extend to current bar so live FVGs are still visible at the right edge
+        end_time = last_time
         if start_time and end_time:
             fvg_zones.append({
                 "type": f["type"],
@@ -195,8 +220,9 @@ def get_smc_chart(symbol: str, days: int = 180):
                 "end_time": end_time,
             })
 
+    # Cap structure events at most recent 6 for readability
     structure_events = []
-    for e in recent_events:
+    for e in recent_events[-6:]:
         time = idx_to_time(e["idx"])
         from_time = idx_to_time(e["from_idx"])
         if time and from_time:

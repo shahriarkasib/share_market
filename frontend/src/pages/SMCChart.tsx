@@ -5,7 +5,6 @@ import {
   CandlestickSeries,
   HistogramSeries,
   LineSeries,
-  AreaSeries,
   createSeriesMarkers,
   type IChartApi,
   type ISeriesApi,
@@ -13,6 +12,7 @@ import {
   type ISeriesMarkersPluginApi,
   type Time,
 } from "lightweight-charts";
+import { FVGPrimitive } from "./fvgPrimitive";
 import clsx from "clsx";
 import {
   ArrowLeft,
@@ -62,7 +62,7 @@ export default function SMCChart() {
   const candleSeriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
 
   // Overlay objects to clean up on toggle off / data change
-  const fvgSeriesRef = useRef<ISeriesApi<"Area" | "Line">[]>([]);
+  const fvgPrimitiveRef = useRef<FVGPrimitive | null>(null);
   const bosSeriesRef = useRef<ISeriesApi<"Line">[]>([]);
   const bosMarkersRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
   const fibLinesRef = useRef<IPriceLine[]>([]);
@@ -151,7 +151,7 @@ export default function SMCChart() {
     chartRef.current = chart;
 
     // Reset overlay refs (chart was rebuilt)
-    fvgSeriesRef.current = [];
+    fvgPrimitiveRef.current = null;
     bosSeriesRef.current = [];
     bosMarkersRef.current = null;
     fibLinesRef.current = [];
@@ -178,82 +178,27 @@ export default function SMCChart() {
     };
   }, [data]);
 
-  // FVG zones — localized rectangles via two line series + area fill between them
+  // FVG zones — proper bounded rectangles via custom canvas primitive
   useEffect(() => {
-    const chart = chartRef.current;
-    if (!chart || !data) return;
+    const candleSeries = candleSeriesRef.current;
+    if (!candleSeries || !data) return;
 
-    fvgSeriesRef.current.forEach((s) => {
-      try { chart.removeSeries(s); } catch { /* already removed */ }
-    });
-    fvgSeriesRef.current = [];
+    if (fvgPrimitiveRef.current) {
+      try {
+        candleSeries.detachPrimitive(fvgPrimitiveRef.current);
+      } catch { /* already detached */ }
+      fvgPrimitiveRef.current = null;
+    }
 
-    if (!toggles.fvg) return;
+    if (!toggles.fvg || data.fvgs.length === 0) return;
 
-    // Show only the most recent FVGs to keep the chart readable
-    const fvgs = data.fvgs.slice(-MAX_FVG);
-
-    fvgs.forEach((f) => {
-      const isBull = f.type === "bullish";
-      const fillColor = isBull ? "rgba(38, 166, 154, 0.15)" : "rgba(239, 83, 80, 0.15)";
-      const lineColor = isBull ? "rgba(38, 166, 154, 0.8)" : "rgba(239, 83, 80, 0.8)";
-
-      // Top line series — shows for the FVG's lifetime only
-      const topLine = chart.addSeries(LineSeries, {
-        color: lineColor,
-        lineWidth: 1,
-        lineStyle: 0,
-        priceLineVisible: false,
-        lastValueVisible: false,
-        crosshairMarkerVisible: false,
-      });
-      topLine.setData([
-        { time: f.start_time as Time, value: f.top },
-        { time: f.end_time as Time, value: f.top },
-      ]);
-      fvgSeriesRef.current.push(topLine);
-
-      // Bottom line series — at the bottom of the FVG zone
-      const botLine = chart.addSeries(LineSeries, {
-        color: lineColor,
-        lineWidth: 1,
-        lineStyle: 0,
-        priceLineVisible: false,
-        lastValueVisible: false,
-        crosshairMarkerVisible: false,
-      });
-      botLine.setData([
-        { time: f.start_time as Time, value: f.bottom },
-        { time: f.end_time as Time, value: f.bottom },
-      ]);
-      fvgSeriesRef.current.push(botLine);
-
-      // Area fill — gives the rectangle look between top and bottom
-      // Trick: AreaSeries fills between baseline and the value. We approximate
-      // by using the bottom line's price as base and a thin AreaSeries at top.
-      const areaTop = chart.addSeries(AreaSeries, {
-        topColor: fillColor,
-        bottomColor: fillColor,
-        lineColor: "rgba(0,0,0,0)",
-        lineWidth: 1,
-        priceLineVisible: false,
-        lastValueVisible: false,
-        crosshairMarkerVisible: false,
-      });
-      // Set base to bottom of FVG so the fill goes from bottom → top
-      areaTop.applyOptions({
-        // @ts-expect-error baseValue exists on AreaSeries options
-        baseValue: { type: "price", price: f.bottom },
-      });
-      areaTop.setData([
-        { time: f.start_time as Time, value: f.top },
-        { time: f.end_time as Time, value: f.top },
-      ]);
-      fvgSeriesRef.current.push(areaTop);
-    });
+    const zones = data.fvgs.slice(-MAX_FVG);
+    const primitive = new FVGPrimitive(zones);
+    candleSeries.attachPrimitive(primitive);
+    fvgPrimitiveRef.current = primitive;
   }, [data, toggles.fvg]);
 
-  // BOS / ChoCh — localized horizontal line from broken swing to breaking candle + marker
+  // BOS / ChoCh — short dashed line from broken swing to break candle + arrow marker
   useEffect(() => {
     const chart = chartRef.current;
     const candleSeries = candleSeriesRef.current;
@@ -271,18 +216,16 @@ export default function SMCChart() {
 
     if (!toggles.bos) return;
 
-    // Show only the most recent N events to avoid clutter
     const events = data.structure.slice(-MAX_BOS);
 
+    // Single thin dashed segment per event (broken swing → break candle)
     events.forEach((ev) => {
       const isBull = ev.type.startsWith("bullish");
-      const color = isBull ? "#26a69a" : "#ef5350";
-
-      // Horizontal line from broken swing time to the candle that broke it
+      const color = isBull ? "rgba(38, 166, 154, 0.7)" : "rgba(239, 83, 80, 0.7)";
       const line = chart.addSeries(LineSeries, {
         color,
         lineWidth: 1,
-        lineStyle: 2, // dashed
+        lineStyle: 2,
         priceLineVisible: false,
         lastValueVisible: false,
         crosshairMarkerVisible: false,
@@ -294,15 +237,15 @@ export default function SMCChart() {
       bosSeriesRef.current.push(line);
     });
 
-    // Markers on the actual breaking candles with BOS / ChoCh label
+    // Compact markers — arrow + label on the breaking candle
     const markers = events.map((ev) => {
       const isBull = ev.type.startsWith("bullish");
       const isBOS = ev.type.includes("BOS");
       return {
         time: ev.time as Time,
-        position: isBull ? ("aboveBar" as const) : ("belowBar" as const),
+        position: isBull ? ("belowBar" as const) : ("aboveBar" as const),
         color: isBull ? "#26a69a" : "#ef5350",
-        shape: isBull ? ("arrowDown" as const) : ("arrowUp" as const),
+        shape: isBull ? ("arrowUp" as const) : ("arrowDown" as const),
         text: isBOS ? "BOS" : "ChoCh",
       };
     });
