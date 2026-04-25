@@ -4,12 +4,20 @@ import {
   createChart,
   CandlestickSeries,
   HistogramSeries,
+  LineSeries,
   type IChartApi,
   type ISeriesApi,
+  type IPriceLine,
   type Time,
 } from "lightweight-charts";
 import clsx from "clsx";
-import { ArrowLeft, RefreshCw, Search } from "lucide-react";
+import {
+  ArrowLeft,
+  RefreshCw,
+  Search,
+  Eye,
+  EyeOff,
+} from "lucide-react";
 import {
   fetchSMCChart,
   fetchAllPrices,
@@ -19,12 +27,39 @@ import type { StockPrice } from "../types/index";
 
 type Period = "1m" | "3m" | "6m" | "1y" | "2y";
 
+interface Toggles {
+  fvg: boolean;
+  bos: boolean;
+  fib: boolean;
+  pivots: boolean;
+  ma20: boolean;
+  ma50: boolean;
+  ma200: boolean;
+}
+
+const DEFAULT_TOGGLES: Toggles = {
+  fvg: true,
+  bos: true,
+  fib: false,
+  pivots: false,
+  ma20: false,
+  ma50: false,
+  ma200: false,
+};
+
 export default function SMCChart() {
   const { symbol = "GP" } = useParams();
   const nav = useNavigate();
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
-  const seriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
+  const candleSeriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
+
+  // Track overlay objects so we can toggle on/off without rebuilding the chart
+  const fvgLinesRef = useRef<IPriceLine[]>([]);
+  const bosLinesRef = useRef<IPriceLine[]>([]);
+  const fibLinesRef = useRef<IPriceLine[]>([]);
+  const pivotLinesRef = useRef<IPriceLine[]>([]);
+  const maSeriesRef = useRef<Record<string, ISeriesApi<"Line">>>({});
 
   const [data, setData] = useState<SMCChartData | null>(null);
   const [stocks, setStocks] = useState<StockPrice[]>([]);
@@ -32,6 +67,7 @@ export default function SMCChart() {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [showDropdown, setShowDropdown] = useState(false);
+  const [toggles, setToggles] = useState<Toggles>(DEFAULT_TOGGLES);
 
   // Fetch stock list once
   useEffect(() => {
@@ -40,7 +76,7 @@ export default function SMCChart() {
       .catch(() => setStocks([]));
   }, []);
 
-  // Fetch chart data when symbol/period changes
+  // Fetch chart data when symbol or period changes
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
@@ -59,7 +95,7 @@ export default function SMCChart() {
     };
   }, [symbol, period]);
 
-  // Render chart
+  // Build the base chart once when data arrives — overlays added/removed via toggles
   useEffect(() => {
     if (!data || !containerRef.current) return;
 
@@ -98,53 +134,23 @@ export default function SMCChart() {
       priceFormat: { type: "volume" },
       priceScaleId: "volume",
     });
-    volumeSeries
-      .priceScale()
-      .applyOptions({ scaleMargins: { top: 0.85, bottom: 0 } });
+    volumeSeries.priceScale().applyOptions({
+      scaleMargins: { top: 0.85, bottom: 0 },
+    });
     volumeSeries.setData(
       data.volumes.map((v) => ({ ...v, time: v.time as Time })),
     );
 
-    // FVG bands as price lines
-    data.fvgs.forEach((fvg) => {
-      const color =
-        fvg.type === "bullish"
-          ? "rgba(38, 166, 154, 0.4)"
-          : "rgba(239, 83, 80, 0.4)";
-      candleSeries.createPriceLine({
-        price: fvg.top,
-        color,
-        lineWidth: 1,
-        lineStyle: 2,
-        axisLabelVisible: false,
-        title: fvg.type === "bullish" ? "FVG↑" : "FVG↓",
-      });
-      candleSeries.createPriceLine({
-        price: fvg.bottom,
-        color,
-        lineWidth: 1,
-        lineStyle: 2,
-        axisLabelVisible: false,
-        title: "",
-      });
-    });
-
-    // BOS / ChoCh structure markers
-    data.structure.forEach((ev) => {
-      const isBullish = ev.type.startsWith("bullish");
-      const isBOS = ev.type.includes("BOS");
-      candleSeries.createPriceLine({
-        price: ev.from_price,
-        color: isBullish ? "#26a69a" : "#ef5350",
-        lineWidth: 2,
-        lineStyle: 0,
-        axisLabelVisible: true,
-        title: `${isBOS ? "BOS" : "ChoCh"} ${isBullish ? "↑" : "↓"}`,
-      });
-    });
-
-    seriesRef.current = candleSeries;
+    candleSeriesRef.current = candleSeries;
     chartRef.current = chart;
+
+    // Reset overlay refs (chart was rebuilt)
+    fvgLinesRef.current = [];
+    bosLinesRef.current = [];
+    fibLinesRef.current = [];
+    pivotLinesRef.current = [];
+    maSeriesRef.current = {};
+
     chart.timeScale().fitContent();
 
     const ro = new ResizeObserver(() => {
@@ -165,6 +171,160 @@ export default function SMCChart() {
     };
   }, [data]);
 
+  // FVG zones toggle
+  useEffect(() => {
+    const series = candleSeriesRef.current;
+    if (!series || !data) return;
+    fvgLinesRef.current.forEach((ln) => series.removePriceLine(ln));
+    fvgLinesRef.current = [];
+    if (!toggles.fvg) return;
+    data.fvgs.forEach((f) => {
+      const color =
+        f.type === "bullish"
+          ? "rgba(38, 166, 154, 0.45)"
+          : "rgba(239, 83, 80, 0.45)";
+      fvgLinesRef.current.push(
+        series.createPriceLine({
+          price: f.top,
+          color,
+          lineWidth: 1,
+          lineStyle: 2,
+          axisLabelVisible: false,
+          title: f.type === "bullish" ? "FVG↑" : "FVG↓",
+        }),
+      );
+      fvgLinesRef.current.push(
+        series.createPriceLine({
+          price: f.bottom,
+          color,
+          lineWidth: 1,
+          lineStyle: 2,
+          axisLabelVisible: false,
+          title: "",
+        }),
+      );
+    });
+  }, [data, toggles.fvg]);
+
+  // BOS / ChoCh toggle
+  useEffect(() => {
+    const series = candleSeriesRef.current;
+    if (!series || !data) return;
+    bosLinesRef.current.forEach((ln) => series.removePriceLine(ln));
+    bosLinesRef.current = [];
+    if (!toggles.bos) return;
+    data.structure.forEach((ev) => {
+      const isBull = ev.type.startsWith("bullish");
+      const isBOS = ev.type.includes("BOS");
+      bosLinesRef.current.push(
+        series.createPriceLine({
+          price: ev.from_price,
+          color: isBull ? "#26a69a" : "#ef5350",
+          lineWidth: 2,
+          lineStyle: 0,
+          axisLabelVisible: true,
+          title: `${isBOS ? "BOS" : "ChoCh"} ${isBull ? "↑" : "↓"}`,
+        }),
+      );
+    });
+  }, [data, toggles.bos]);
+
+  // Fibonacci toggle
+  useEffect(() => {
+    const series = candleSeriesRef.current;
+    if (!series || !data) return;
+    fibLinesRef.current.forEach((ln) => series.removePriceLine(ln));
+    fibLinesRef.current = [];
+    if (!toggles.fib || !data.fibonacci) return;
+    const colors: Record<string, string> = {
+      "0%": "#9ca3af",
+      "23.6%": "#fbbf24",
+      "38.2%": "#fb923c",
+      "50%": "#a855f7",
+      "61.8%": "#f472b6",
+      "78.6%": "#60a5fa",
+      "100%": "#9ca3af",
+    };
+    data.fibonacci.levels.forEach((lvl) => {
+      fibLinesRef.current.push(
+        series.createPriceLine({
+          price: lvl.price,
+          color: colors[lvl.label] ?? "#a78bfa",
+          lineWidth: 1,
+          lineStyle: 1,
+          axisLabelVisible: true,
+          title: `Fib ${lvl.label}`,
+        }),
+      );
+    });
+  }, [data, toggles.fib]);
+
+  // Pivot points toggle
+  useEffect(() => {
+    const series = candleSeriesRef.current;
+    if (!series || !data) return;
+    pivotLinesRef.current.forEach((ln) => series.removePriceLine(ln));
+    pivotLinesRef.current = [];
+    if (!toggles.pivots || !data.pivots) return;
+    const p = data.pivots;
+    const lines: Array<[string, number, string]> = [
+      ["R3", p.r3, "#ef4444"],
+      ["R2", p.r2, "#f87171"],
+      ["R1", p.r1, "#fca5a5"],
+      ["P", p.pivot, "#facc15"],
+      ["S1", p.s1, "#86efac"],
+      ["S2", p.s2, "#4ade80"],
+      ["S3", p.s3, "#22c55e"],
+    ];
+    lines.forEach(([label, price, color]) => {
+      pivotLinesRef.current.push(
+        series.createPriceLine({
+          price,
+          color,
+          lineWidth: 1,
+          lineStyle: 3,
+          axisLabelVisible: true,
+          title: label,
+        }),
+      );
+    });
+  }, [data, toggles.pivots]);
+
+  // Moving averages — separate line series for each
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart || !data?.moving_averages) return;
+
+    const maConfigs: Array<[string, keyof Toggles, string]> = [
+      ["ma_20", "ma20", "#facc15"],
+      ["ma_50", "ma50", "#60a5fa"],
+      ["ma_200", "ma200", "#f472b6"],
+    ];
+
+    maConfigs.forEach(([key, toggleKey, color]) => {
+      const enabled = toggles[toggleKey];
+      const existing = maSeriesRef.current[key];
+      if (enabled && !existing) {
+        const series = chart.addSeries(LineSeries, {
+          color,
+          lineWidth: 1,
+          priceLineVisible: false,
+          lastValueVisible: false,
+          title: key.toUpperCase().replace("_", ""),
+        });
+        const points = (data.moving_averages?.[key] ?? []).map((pt) => ({
+          time: pt.time as Time,
+          value: pt.value,
+        }));
+        series.setData(points);
+        maSeriesRef.current[key] = series;
+      } else if (!enabled && existing) {
+        chart.removeSeries(existing);
+        delete maSeriesRef.current[key];
+      }
+    });
+  }, [data, toggles.ma20, toggles.ma50, toggles.ma200]);
+
   // Filtered stock list for selector
   const filteredStocks = useMemo(() => {
     if (!search.trim()) return stocks.slice(0, 50);
@@ -184,6 +344,20 @@ export default function SMCChart() {
     nav(`/smc-chart/${sym}`);
   }
 
+  function toggle(key: keyof Toggles) {
+    setToggles((t) => ({ ...t, [key]: !t[key] }));
+  }
+
+  const toggleButtons: Array<{ key: keyof Toggles; label: string; color: string }> = [
+    { key: "fvg", label: "FVG", color: "text-emerald-500" },
+    { key: "bos", label: "BOS/ChoCh", color: "text-yellow-500" },
+    { key: "fib", label: "Fibonacci", color: "text-purple-500" },
+    { key: "pivots", label: "Pivots", color: "text-orange-500" },
+    { key: "ma20", label: "MA20", color: "text-yellow-400" },
+    { key: "ma50", label: "MA50", color: "text-blue-400" },
+    { key: "ma200", label: "MA200", color: "text-pink-400" },
+  ];
+
   return (
     <div className="min-h-screen p-4">
       {/* Header */}
@@ -191,7 +365,7 @@ export default function SMCChart() {
         <div className="flex items-center gap-3">
           <button
             onClick={() => nav("/")}
-            className="p-2 rounded bg-gray-800 hover:bg-gray-700 dark:bg-gray-800 dark:hover:bg-gray-700"
+            className="p-2 rounded bg-gray-200 hover:bg-gray-300 dark:bg-gray-800 dark:hover:bg-gray-700"
           >
             <ArrowLeft className="w-4 h-4" />
           </button>
@@ -205,7 +379,6 @@ export default function SMCChart() {
           </div>
         </div>
 
-        {/* Stock selector */}
         <div className="relative flex-1 max-w-xs">
           <div className="flex items-center gap-2 bg-gray-100 dark:bg-gray-800 rounded px-3 py-1.5 border border-gray-300 dark:border-gray-700">
             <Search className="w-4 h-4 text-gray-500" />
@@ -238,16 +411,13 @@ export default function SMCChart() {
                       </span>
                     )}
                   </div>
-                  <span className="font-mono text-xs">
-                    {s.ltp.toFixed(1)}
-                  </span>
+                  <span className="font-mono text-xs">{s.ltp.toFixed(1)}</span>
                 </button>
               ))}
             </div>
           )}
         </div>
 
-        {/* Period selector */}
         <div className="flex items-center gap-1 bg-gray-100 dark:bg-gray-800/50 rounded p-1">
           {(["1m", "3m", "6m", "1y", "2y"] as const).map((p) => (
             <button
@@ -267,18 +437,48 @@ export default function SMCChart() {
             onClick={() => fetchSMCChart(symbol, period).then(setData)}
             className="p-1 rounded hover:bg-gray-200 dark:hover:bg-gray-700"
           >
-            <RefreshCw
-              className={clsx("w-4 h-4", loading && "animate-spin")}
-            />
+            <RefreshCw className={clsx("w-4 h-4", loading && "animate-spin")} />
           </button>
         </div>
       </div>
 
+      {/* Indicator toggles */}
+      <div className="flex flex-wrap items-center gap-2 mb-3">
+        <span className="text-xs text-gray-500">Indicators:</span>
+        {toggleButtons.map((b) => {
+          const on = toggles[b.key];
+          return (
+            <button
+              key={b.key}
+              onClick={() => toggle(b.key)}
+              className={clsx(
+                "flex items-center gap-1 px-2.5 py-1 rounded text-xs border transition",
+                on
+                  ? "bg-gray-100 dark:bg-gray-800 border-gray-300 dark:border-gray-600"
+                  : "bg-transparent border-gray-200 dark:border-gray-800 opacity-60",
+              )}
+            >
+              {on ? (
+                <Eye className="w-3 h-3" />
+              ) : (
+                <EyeOff className="w-3 h-3" />
+              )}
+              <span className={on ? b.color : "text-gray-500"}>{b.label}</span>
+            </button>
+          );
+        })}
+      </div>
+
       {/* Chart */}
-      <div className="bg-white dark:bg-gray-900/30 rounded-lg border border-gray-300 dark:border-gray-700/50 p-2">
+      <div className="bg-white dark:bg-gray-900/30 rounded-lg border border-gray-300 dark:border-gray-700/50 p-2 relative">
         <div ref={containerRef} className="w-full" />
         {loading && (
-          <div className="text-center py-20 text-gray-500">Loading chart...</div>
+          <div className="absolute inset-0 flex items-center justify-center bg-white/70 dark:bg-gray-900/70 rounded-lg">
+            <div className="text-center">
+              <RefreshCw className="w-8 h-8 animate-spin mx-auto text-emerald-500 mb-2" />
+              <p className="text-sm text-gray-500">Loading {symbol}...</p>
+            </div>
+          </div>
         )}
         {!loading && !data && (
           <div className="text-center py-20 text-red-400">
@@ -330,7 +530,7 @@ export default function SMCChart() {
                 <p className="text-xs text-gray-500">No BOS/ChoCh detected.</p>
               )}
               {data.structure.slice(0, 12).map((s, i) => {
-                const isBullish = s.type.startsWith("bullish");
+                const isBull = s.type.startsWith("bullish");
                 const isBOS = s.type.includes("BOS");
                 return (
                   <div
@@ -339,12 +539,12 @@ export default function SMCChart() {
                   >
                     <span
                       className={
-                        isBullish
+                        isBull
                           ? "text-emerald-600 dark:text-emerald-400"
                           : "text-red-500 dark:text-red-400"
                       }
                     >
-                      {isBullish ? "↑" : "↓"} {isBOS ? "BOS" : "ChoCh"}
+                      {isBull ? "↑" : "↓"} {isBOS ? "BOS" : "ChoCh"}
                     </span>
                     <span className="font-mono text-gray-500 dark:text-gray-400">
                       {s.price.toFixed(1)} ৳
@@ -359,8 +559,8 @@ export default function SMCChart() {
       )}
 
       <div className="mt-4 text-xs text-gray-500 text-center">
-        FVG = Fair Value Gap (3-candle imbalance) • BOS = Break of Structure •
-        ChoCh = Change of Character
+        FVG = Fair Value Gap • BOS = Break of Structure • ChoCh = Change of
+        Character • Fib auto-drawn from period high to low • Pivots from last bar
       </div>
     </div>
   );

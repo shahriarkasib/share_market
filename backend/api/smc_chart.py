@@ -75,8 +75,64 @@ def detect_fvgs(h, l):
     return fvgs
 
 
+def calc_fibonacci(h, l):
+    """Auto Fib retracement from highest high to lowest low in the visible window."""
+    if len(h) < 5:
+        return None
+    hi = float(h.max())
+    lo = float(l.min())
+    rng = hi - lo
+    if rng <= 0:
+        return None
+    return {
+        "high": round(hi, 2),
+        "low": round(lo, 2),
+        "levels": [
+            {"label": "0%", "price": round(hi, 2)},
+            {"label": "23.6%", "price": round(hi - rng * 0.236, 2)},
+            {"label": "38.2%", "price": round(hi - rng * 0.382, 2)},
+            {"label": "50%", "price": round(hi - rng * 0.5, 2)},
+            {"label": "61.8%", "price": round(hi - rng * 0.618, 2)},
+            {"label": "78.6%", "price": round(hi - rng * 0.786, 2)},
+            {"label": "100%", "price": round(lo, 2)},
+        ],
+    }
+
+
+def calc_pivot_points(h, l, c):
+    """Classic floor-trader pivot points using last bar's H/L/C."""
+    if len(h) < 1:
+        return None
+    hi = float(h.iloc[-1])
+    lo = float(l.iloc[-1])
+    cl = float(c.iloc[-1])
+    p = (hi + lo + cl) / 3
+    r1 = 2 * p - lo
+    s1 = 2 * p - hi
+    r2 = p + (hi - lo)
+    s2 = p - (hi - lo)
+    r3 = hi + 2 * (p - lo)
+    s3 = lo - 2 * (hi - p)
+    return {
+        "pivot": round(p, 2),
+        "r1": round(r1, 2), "r2": round(r2, 2), "r3": round(r3, 2),
+        "s1": round(s1, 2), "s2": round(s2, 2), "s3": round(s3, 2),
+    }
+
+
+def calc_moving_averages(c, periods=(20, 50, 200)):
+    """Returns MA series aligned to candle indices (None for warm-up)."""
+    out = {}
+    for p in periods:
+        ma = c.rolling(p).mean()
+        out[f"ma_{p}"] = [
+            None if pd.isna(v) else round(float(v), 2) for v in ma
+        ]
+    return out
+
+
 def get_smc_chart(symbol: str, days: int = 180):
-    """Returns OHLCV candles + volume + FVG zones + BOS/ChoCh events."""
+    """Returns OHLCV candles + volume + FVG zones + BOS/ChoCh + Fib + Pivot + MAs."""
     df = read_historical_for_symbol(symbol, min_rows=int(days * 1.5))
     if df.empty:
         return None
@@ -152,11 +208,28 @@ def get_smc_chart(symbol: str, days: int = 180):
                 "from_time": from_time,
             })
 
+    # Optional indicators (cheap to compute, sent in same payload for instant toggle)
+    fibonacci = calc_fibonacci(h, l)
+    pivots = calc_pivot_points(h, l, c)
+    mas = calc_moving_averages(c, periods=(20, 50, 200))
+
+    # Add MA values aligned to candle times
+    ma_lines = {}
+    for key, vals in mas.items():
+        ma_lines[key] = [
+            {"time": df.iloc[i]["date"].strftime("%Y-%m-%d"), "value": vals[i]}
+            for i in range(len(vals))
+            if vals[i] is not None
+        ]
+
     return {
         "symbol": symbol.upper(),
         "candles": candles,
         "volumes": volumes,
         "fvgs": fvg_zones,
         "structure": structure_events,
+        "fibonacci": fibonacci,
+        "pivots": pivots,
+        "moving_averages": ma_lines,
         "current_price": round(float(c.iloc[-1]), 2),
     }

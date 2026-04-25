@@ -121,6 +121,32 @@ export interface SMCStructureEvent {
   from_time: string;
 }
 
+export interface SMCFibLevel {
+  label: string;
+  price: number;
+}
+
+export interface SMCFibonacci {
+  high: number;
+  low: number;
+  levels: SMCFibLevel[];
+}
+
+export interface SMCPivots {
+  pivot: number;
+  r1: number;
+  r2: number;
+  r3: number;
+  s1: number;
+  s2: number;
+  s3: number;
+}
+
+export interface SMCMaLinePoint {
+  time: string;
+  value: number;
+}
+
 export interface SMCChartData {
   symbol: string;
   current_price: number;
@@ -128,16 +154,27 @@ export interface SMCChartData {
   volumes: SMCVolume[];
   fvgs: SMCFvg[];
   structure: SMCStructureEvent[];
+  fibonacci?: SMCFibonacci | null;
+  pivots?: SMCPivots | null;
+  moving_averages?: Record<string, SMCMaLinePoint[]>;
 }
+
+const smcCache = new Map<string, { data: SMCChartData; ts: number }>();
+const SMC_CACHE_TTL = 60_000; // 60s — quick toggling won't refetch
 
 export async function fetchSMCChart(
   symbol: string,
   period: "1m" | "3m" | "6m" | "1y" | "2y" = "6m",
 ): Promise<SMCChartData> {
+  const key = `${symbol.toUpperCase()}_${period}`;
+  const hit = smcCache.get(key);
+  if (hit && Date.now() - hit.ts < SMC_CACHE_TTL) return hit.data;
+
   const { data } = await api.get<SMCChartData>(
     `/stock/${symbol.toUpperCase()}/smc-chart`,
     { params: { period } },
   );
+  smcCache.set(key, { data, ts: Date.now() });
   return data;
 }
 
