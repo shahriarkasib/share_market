@@ -5,6 +5,7 @@ import StockDetail from "./pages/StockDetail.tsx";
 import Heatmap from "./pages/Heatmap.tsx";
 import DataMatrix from "./pages/DataMatrix.tsx";
 import AdvancedChart from "./pages/AdvancedChart.tsx";
+import SMCChart from "./pages/SMCChart.tsx";
 import BuyRadar from "./pages/BuyRadar.tsx";
 import Analysis from "./pages/Analysis.tsx";
 import LiveSignals from "./pages/LiveSignals.tsx";
@@ -22,6 +23,7 @@ export default function App() {
         <Route path="/heatmap" element={<Heatmap />} />
         <Route path="/matrix" element={<DataMatrix />} />
         <Route path="/chart" element={<AdvancedChart />} />
+        <Route path="/smc-chart/:symbol?" element={<SMCChart />} />
         <Route path="/radar" element={<Analysis />} />
         <Route path="/live" element={<LiveSignals />} />
         <Route path="/radar-old" element={<BuyRadar />} />

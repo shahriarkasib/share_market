@@ -91,6 +91,56 @@ export async function fetchDSEXChart(): Promise<DSEXChartBar[]> {
   return data;
 }
 
+export interface SMCCandle {
+  time: string;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+}
+
+export interface SMCVolume {
+  time: string;
+  value: number;
+  color: string;
+}
+
+export interface SMCFvg {
+  type: "bullish" | "bearish";
+  top: number;
+  bottom: number;
+  start_time: string;
+  end_time: string;
+}
+
+export interface SMCStructureEvent {
+  type: "bullish_BOS" | "bearish_BOS" | "bullish_ChoCh" | "bearish_ChoCh";
+  price: number;
+  from_price: number;
+  time: string;
+  from_time: string;
+}
+
+export interface SMCChartData {
+  symbol: string;
+  current_price: number;
+  candles: SMCCandle[];
+  volumes: SMCVolume[];
+  fvgs: SMCFvg[];
+  structure: SMCStructureEvent[];
+}
+
+export async function fetchSMCChart(
+  symbol: string,
+  period: "1m" | "3m" | "6m" | "1y" | "2y" = "6m",
+): Promise<SMCChartData> {
+  const { data } = await api.get<SMCChartData>(
+    `/stocks/${symbol.toUpperCase()}/smc-chart`,
+    { params: { period } },
+  );
+  return data;
+}
+
 export async function fetchSignalsSummary(): Promise<SignalsSummary> {
   const { data } = await api.get<SignalsSummary>("/signals/summary");
   return data;

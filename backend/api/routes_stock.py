@@ -246,3 +246,22 @@ async def get_stock_peers(symbol: str, limit: int = 8):
 
     result = [dict(p) for p in peers]
     return {"sector": sector, "peers": _clean_nan(result)}
+
+
+@router.get("/{symbol}/smc-chart")
+async def get_stock_smc_chart(symbol: str, period: str = "6m"):
+    """Get OHLCV + FVG zones + BOS/ChoCh events for SMC-style charting."""
+    from api.smc_chart import get_smc_chart
+    period_days = {"1m": 30, "3m": 90, "6m": 180, "1y": 365, "2y": 730}
+    days = period_days.get(period, 180)
+
+    cache_key = f"smc_chart_{symbol.upper()}_{period}"
+    cached = cache.get(cache_key)
+    if cached:
+        return cached
+
+    data = get_smc_chart(symbol.upper(), days=days)
+    if data is None:
+        raise HTTPException(status_code=404, detail=f"No data for {symbol}")
+    cache.set(cache_key, data, CACHE_TTL_HISTORICAL)
+    return data
