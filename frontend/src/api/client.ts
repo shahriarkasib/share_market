@@ -200,18 +200,31 @@ export interface SMCChartData {
 const smcCache = new Map<string, { data: SMCChartData; ts: number }>();
 const SMC_CACHE_TTL = 60_000; // 60s — quick toggling won't refetch
 
+export interface FetchSMCChartOptions {
+  /** Bypass the in-memory cache and re-fetch from server. */
+  force?: boolean;
+  /** AbortSignal so callers can cancel in-flight requests. */
+  signal?: AbortSignal;
+}
+
 export async function fetchSMCChart(
   symbol: string,
   period: "1m" | "3m" | "6m" | "1y" | "2y" = "6m",
-  interval: "daily" | "weekly" = "daily",
+  timeframe: "daily" | "weekly" = "daily",
+  options: FetchSMCChartOptions = {},
 ): Promise<SMCChartData> {
-  const key = `${symbol.toUpperCase()}_${period}_${interval}`;
-  const hit = smcCache.get(key);
-  if (hit && Date.now() - hit.ts < SMC_CACHE_TTL) return hit.data;
+  const key = `${symbol.toUpperCase()}_${period}_${timeframe}`;
+  if (!options.force) {
+    const hit = smcCache.get(key);
+    if (hit && Date.now() - hit.ts < SMC_CACHE_TTL) return hit.data;
+  }
 
   const { data } = await api.get<SMCChartData>(
     `/stock/${symbol.toUpperCase()}/smc-chart`,
-    { params: { period, interval } },
+    {
+      params: { period, interval: timeframe },
+      signal: options.signal,
+    },
   );
   smcCache.set(key, { data, ts: Date.now() });
   return data;
