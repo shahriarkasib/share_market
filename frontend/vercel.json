@@ -5,7 +5,7 @@
   "rewrites": [
     {
       "source": "/api/:path*",
-      "destination": "https://34.126.128.18.nip.io/api/:path*"
+      "destination": "https://34.126.141.16.nip.io/api/:path*"
     },
     {
       "source": "/((?!assets/).*)",
