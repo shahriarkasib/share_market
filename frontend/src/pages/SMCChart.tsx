@@ -35,6 +35,7 @@ type Interval = "daily" | "weekly";
 interface Toggles {
   fvg: boolean;
   bos: boolean;
+  levels: boolean;
   fib: boolean;
   fibCircles: boolean;
   gann: boolean;
@@ -47,6 +48,7 @@ interface Toggles {
 const DEFAULT_TOGGLES: Toggles = {
   fvg: true,
   bos: true,
+  levels: true,
   fib: false,
   fibCircles: false,
   gann: false,
@@ -58,7 +60,7 @@ const DEFAULT_TOGGLES: Toggles = {
 
 // Limit visible events so the chart stays readable
 const MAX_BOS = 8;
-const MAX_FVG = 10;
+const MAX_FVG = 30; // show all returned FVGs (backend caps at 30)
 
 export default function SMCChart() {
   const { symbol = "GP" } = useParams();
@@ -73,6 +75,7 @@ export default function SMCChart() {
   const fibCirclesPrimitiveRef = useRef<FibCirclesPrimitive | null>(null);
   const bosSeriesRef = useRef<ISeriesApi<"Line">[]>([]);
   const bosMarkersRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
+  const levelsLinesRef = useRef<IPriceLine[]>([]);
   const fibLinesRef = useRef<IPriceLine[]>([]);
   const pivotLinesRef = useRef<IPriceLine[]>([]);
   const maSeriesRef = useRef<Record<string, ISeriesApi<"Line">>>({});
@@ -165,6 +168,7 @@ export default function SMCChart() {
     fibCirclesPrimitiveRef.current = null;
     bosSeriesRef.current = [];
     bosMarkersRef.current = null;
+    levelsLinesRef.current = [];
     fibLinesRef.current = [];
     pivotLinesRef.current = [];
     maSeriesRef.current = {};
@@ -293,6 +297,32 @@ export default function SMCChart() {
     bosMarkersRef.current = createSeriesMarkers(candleSeries, markers);
   }, [data, toggles.bos]);
 
+  // Key Levels (swing highs/lows + breakout triggers)
+  useEffect(() => {
+    const series = candleSeriesRef.current;
+    if (!series || !data) return;
+    levelsLinesRef.current.forEach((ln) => {
+      try { series.removePriceLine(ln); } catch { /* already removed */ }
+    });
+    levelsLinesRef.current = [];
+    if (!toggles.levels || !data.key_levels) return;
+
+    data.key_levels.forEach((lvl) => {
+      const isBreakout =
+        lvl.purpose === "breakout_long" || lvl.purpose === "breakout_short";
+      levelsLinesRef.current.push(
+        series.createPriceLine({
+          price: lvl.price,
+          color: lvl.color,
+          lineWidth: isBreakout ? 2 : 1,
+          lineStyle: isBreakout ? 0 : 2, // breakout solid, swings dashed
+          axisLabelVisible: true,
+          title: lvl.label,
+        }),
+      );
+    });
+  }, [data, toggles.levels]);
+
   // Fibonacci toggle
   useEffect(() => {
     const series = candleSeriesRef.current;
@@ -417,6 +447,7 @@ export default function SMCChart() {
   const toggleButtons: Array<{ key: keyof Toggles; label: string; color: string }> = [
     { key: "fvg", label: "FVG", color: "text-emerald-500" },
     { key: "bos", label: "BOS/ChoCh", color: "text-yellow-500" },
+    { key: "levels", label: "Key Levels", color: "text-amber-400" },
     { key: "fib", label: "Fibonacci", color: "text-purple-500" },
     { key: "fibCircles", label: "Fib Circles", color: "text-pink-500" },
     { key: "gann", label: "Gann Fan", color: "text-amber-500" },

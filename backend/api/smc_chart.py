@@ -257,28 +257,23 @@ def get_smc_chart(symbol: str, days: int = 180, interval: str = "daily"):
     recent_fvgs = [f for f in fvgs if f["size_pct"] > 0.5 and f["idx"] >= cutoff_idx]
     recent_events = [e for e in events if e["idx"] >= cutoff_idx]
 
-    # Filter out mitigated FVGs — if price has fully traded through the gap, hide it
-    unmitigated = []
-    for f in recent_fvgs:
-        mitigated = False
+    # Tag each FVG with mitigation state but return them all so the user can see
+    # the full history. Mitigated zones rendered dimmer in the UI.
+    def _is_mitigated(f):
         for j in range(f["idx"] + 1, len(df)):
             row_high = float(h.iloc[j])
             row_low = float(l.iloc[j])
-            if f["type"] == "bullish":
-                # Bullish FVG is mitigated when low pierces below the bottom
-                if row_low < f["bottom"]:
-                    mitigated = True
-                    break
-            else:
-                # Bearish FVG is mitigated when high pierces above the top
-                if row_high > f["top"]:
-                    mitigated = True
-                    break
-        if not mitigated:
-            unmitigated.append(f)
+            if f["type"] == "bullish" and row_low < f["bottom"]:
+                return True
+            if f["type"] == "bearish" and row_high > f["top"]:
+                return True
+        return False
 
-    # Cap to the 6 most recent unmitigated zones for a clean chart
-    unmitigated = unmitigated[-6:]
+    for f in recent_fvgs:
+        f["mitigated"] = _is_mitigated(f)
+
+    # Cap to last 30 to avoid an absurd number of overlapping zones
+    recent_fvgs = recent_fvgs[-30:]
 
     def idx_to_time(idx):
         if 0 <= idx < len(df):
@@ -286,9 +281,10 @@ def get_smc_chart(symbol: str, days: int = 180, interval: str = "daily"):
         return None
 
     fvg_zones = []
-    for f in unmitigated:
+    for f in recent_fvgs:
         start_time = idx_to_time(f["start_idx"])
-        # Tight forward extent: 12 bars max (matches TradingView FVG indicator look)
+        # Forward extent: 12 bars (matches TradingView look). Mitigated zones
+        # are still drawn so the user can see where price filled the gap.
         end_idx = min(f["idx"] + 12, len(df) - 1)
         end_time = idx_to_time(end_idx)
         if start_time and end_time:
@@ -298,6 +294,7 @@ def get_smc_chart(symbol: str, days: int = 180, interval: str = "daily"):
                 "bottom": round(f["bottom"], 2),
                 "start_time": start_time,
                 "end_time": end_time,
+                "mitigated": f["mitigated"],
             })
 
     # Cap structure events at most recent 6 for readability
@@ -318,6 +315,49 @@ def get_smc_chart(symbol: str, days: int = 180, interval: str = "daily"):
     fibonacci = calc_fibonacci(h, l)
     pivots = calc_pivot_points(h, l, c)
     mas = calc_moving_averages(c, periods=(20, 50, 200))
+
+    # Key levels for trade decisions: recent swing high/low, breakout trigger,
+    # support break, and current price reference.
+    key_levels = []
+    try:
+        recent_swings = find_swings(h, l, n=3)
+        last_n = 12  # look at last ~12 swings for "recent" structure
+        recent_swings = recent_swings[-last_n:] if len(recent_swings) > last_n else recent_swings
+
+        recent_highs = [s for s in recent_swings if s["type"] == "high"]
+        recent_lows = [s for s in recent_swings if s["type"] == "low"]
+
+        if recent_highs:
+            sh = max(recent_highs, key=lambda s: s["price"])
+            key_levels.append({
+                "label": "Swing High",
+                "price": round(sh["price"], 2),
+                "color": "#fbbf24",
+                "purpose": "resistance",
+            })
+            key_levels.append({
+                "label": "Breakout Trigger",
+                "price": round(sh["price"] * 1.02, 2),
+                "color": "#22c55e",
+                "purpose": "breakout_long",
+            })
+
+        if recent_lows:
+            sl = min(recent_lows, key=lambda s: s["price"])
+            key_levels.append({
+                "label": "Swing Low",
+                "price": round(sl["price"], 2),
+                "color": "#fbbf24",
+                "purpose": "support",
+            })
+            key_levels.append({
+                "label": "Breakdown Trigger",
+                "price": round(sl["price"] * 0.98, 2),
+                "color": "#ef4444",
+                "purpose": "breakout_short",
+            })
+    except Exception:
+        pass
 
     # Gann Fan + Fib Circles use the period's most extreme swing as pivot
     gann = None
@@ -364,5 +404,6 @@ def get_smc_chart(symbol: str, days: int = 180, interval: str = "daily"):
         "moving_averages": ma_lines,
         "gann_fan": gann,
         "fib_circles": fib_circles,
+        "key_levels": key_levels,
         "current_price": round(float(c.iloc[-1]), 2),
     }

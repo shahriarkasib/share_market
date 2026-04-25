@@ -19,6 +19,7 @@ export interface FVGZone {
   bottom: number;
   start_time: string;
   end_time: string;
+  mitigated?: boolean;
 }
 
 interface BitmapScope {
@@ -57,26 +58,54 @@ class FVGPaneRenderer implements IPrimitivePaneRenderer {
 
         if (x1 === null || x2 === null || yTop === null || yBot === null) return;
 
+        // Mitigated zones rendered with much lower opacity
+        const mit = z.mitigated === true;
+        const fillAlpha = mit ? 0.06 : 0.2;
+        const strokeAlpha = mit ? 0.25 : 0.65;
+        const textAlpha = mit ? 0.5 : 0.95;
+
         const fillColor =
           z.type === "bullish"
-            ? "rgba(38, 166, 154, 0.18)"
-            : "rgba(239, 83, 80, 0.18)";
+            ? `rgba(38, 166, 154, ${fillAlpha})`
+            : `rgba(239, 83, 80, ${fillAlpha})`;
         const strokeColor =
           z.type === "bullish"
-            ? "rgba(38, 166, 154, 0.55)"
-            : "rgba(239, 83, 80, 0.55)";
+            ? `rgba(38, 166, 154, ${strokeAlpha})`
+            : `rgba(239, 83, 80, ${strokeAlpha})`;
+        const textColor =
+          z.type === "bullish"
+            ? `rgba(110, 231, 183, ${textAlpha})`
+            : `rgba(252, 165, 165, ${textAlpha})`;
 
-        const px1 = x1 * scope.horizontalPixelRatio;
-        const px2 = x2 * scope.horizontalPixelRatio;
-        const py1 = yTop * scope.verticalPixelRatio;
-        const py2 = yBot * scope.verticalPixelRatio;
+        const hpr = scope.horizontalPixelRatio;
+        const vpr = scope.verticalPixelRatio;
+        const px1 = x1 * hpr;
+        const px2 = x2 * hpr;
+        const py1 = yTop * vpr;
+        const py2 = yBot * vpr;
 
         ctx.fillStyle = fillColor;
         ctx.fillRect(px1, py1, px2 - px1, py2 - py1);
 
         ctx.strokeStyle = strokeColor;
-        ctx.lineWidth = 1 * scope.horizontalPixelRatio;
+        ctx.lineWidth = 1 * hpr;
+        if (mit) ctx.setLineDash([3 * hpr, 3 * hpr]);
         ctx.strokeRect(px1, py1, px2 - px1, py2 - py1);
+        ctx.setLineDash([]);
+
+        // "FVG" label inside the zone (top-left corner). Skip if zone too small.
+        const w = px2 - px1;
+        const hgt = Math.abs(py2 - py1);
+        if (w >= 28 * hpr && hgt >= 12 * vpr) {
+          ctx.fillStyle = textColor;
+          ctx.font = `${10 * hpr}px monospace`;
+          ctx.textBaseline = "top";
+          ctx.textAlign = "left";
+          const labelY = Math.min(py1, py2) + 2 * vpr;
+          const labelX = px1 + 3 * hpr;
+          const label = mit ? "FVG·mit" : "FVG";
+          ctx.fillText(label, labelX, labelY);
+        }
       });
     });
   }

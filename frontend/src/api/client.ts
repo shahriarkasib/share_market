@@ -111,6 +111,14 @@ export interface SMCFvg {
   bottom: number;
   start_time: string;
   end_time: string;
+  mitigated?: boolean;
+}
+
+export interface SMCKeyLevel {
+  label: string;
+  price: number;
+  color: string;
+  purpose: "resistance" | "support" | "breakout_long" | "breakout_short";
 }
 
 export interface SMCStructureEvent {
@@ -186,6 +194,7 @@ export interface SMCChartData {
   moving_averages?: Record<string, SMCMaLinePoint[]>;
   gann_fan?: SMCGannFan | null;
   fib_circles?: SMCFibCircles | null;
+  key_levels?: SMCKeyLevel[];
 }
 
 const smcCache = new Map<string, { data: SMCChartData; ts: number }>();
