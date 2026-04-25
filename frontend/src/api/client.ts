@@ -135,7 +135,7 @@ export async function fetchSMCChart(
   period: "1m" | "3m" | "6m" | "1y" | "2y" = "6m",
 ): Promise<SMCChartData> {
   const { data } = await api.get<SMCChartData>(
-    `/stocks/${symbol.toUpperCase()}/smc-chart`,
+    `/stock/${symbol.toUpperCase()}/smc-chart`,
     { params: { period } },
   );
   return data;
