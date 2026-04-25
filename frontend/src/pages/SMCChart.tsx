@@ -13,6 +13,7 @@ import {
   type Time,
 } from "lightweight-charts";
 import { FVGPrimitive } from "./fvgPrimitive";
+import { GannPrimitive, FibCirclesPrimitive } from "./gannFibPrimitives";
 import clsx from "clsx";
 import {
   ArrowLeft,
@@ -29,11 +30,14 @@ import {
 import type { StockPrice } from "../types/index";
 
 type Period = "1m" | "3m" | "6m" | "1y" | "2y";
+type Interval = "daily" | "weekly";
 
 interface Toggles {
   fvg: boolean;
   bos: boolean;
   fib: boolean;
+  fibCircles: boolean;
+  gann: boolean;
   pivots: boolean;
   ma20: boolean;
   ma50: boolean;
@@ -44,6 +48,8 @@ const DEFAULT_TOGGLES: Toggles = {
   fvg: true,
   bos: true,
   fib: false,
+  fibCircles: false,
+  gann: false,
   pivots: false,
   ma20: false,
   ma50: false,
@@ -63,6 +69,8 @@ export default function SMCChart() {
 
   // Overlay objects to clean up on toggle off / data change
   const fvgPrimitiveRef = useRef<FVGPrimitive | null>(null);
+  const gannPrimitiveRef = useRef<GannPrimitive | null>(null);
+  const fibCirclesPrimitiveRef = useRef<FibCirclesPrimitive | null>(null);
   const bosSeriesRef = useRef<ISeriesApi<"Line">[]>([]);
   const bosMarkersRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
   const fibLinesRef = useRef<IPriceLine[]>([]);
@@ -72,6 +80,7 @@ export default function SMCChart() {
   const [data, setData] = useState<SMCChartData | null>(null);
   const [stocks, setStocks] = useState<StockPrice[]>([]);
   const [period, setPeriod] = useState<Period>("6m");
+  const [interval, setInterval] = useState<Interval>("daily");
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [showDropdown, setShowDropdown] = useState(false);
@@ -86,7 +95,7 @@ export default function SMCChart() {
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    fetchSMCChart(symbol, period)
+    fetchSMCChart(symbol, period, interval)
       .then((d) => {
         if (!cancelled) setData(d);
       })
@@ -99,7 +108,7 @@ export default function SMCChart() {
     return () => {
       cancelled = true;
     };
-  }, [symbol, period]);
+  }, [symbol, period, interval]);
 
   // Build the base chart when data arrives
   useEffect(() => {
@@ -152,6 +161,8 @@ export default function SMCChart() {
 
     // Reset overlay refs (chart was rebuilt)
     fvgPrimitiveRef.current = null;
+    gannPrimitiveRef.current = null;
+    fibCirclesPrimitiveRef.current = null;
     bosSeriesRef.current = [];
     bosMarkersRef.current = null;
     fibLinesRef.current = [];
@@ -197,6 +208,36 @@ export default function SMCChart() {
     candleSeries.attachPrimitive(primitive);
     fvgPrimitiveRef.current = primitive;
   }, [data, toggles.fvg]);
+
+  // Gann Fan
+  useEffect(() => {
+    const candleSeries = candleSeriesRef.current;
+    if (!candleSeries || !data) return;
+
+    if (gannPrimitiveRef.current) {
+      try { candleSeries.detachPrimitive(gannPrimitiveRef.current); } catch { /* */ }
+      gannPrimitiveRef.current = null;
+    }
+    if (!toggles.gann || !data.gann_fan) return;
+    const primitive = new GannPrimitive(data.gann_fan);
+    candleSeries.attachPrimitive(primitive);
+    gannPrimitiveRef.current = primitive;
+  }, [data, toggles.gann]);
+
+  // Fibonacci Circles
+  useEffect(() => {
+    const candleSeries = candleSeriesRef.current;
+    if (!candleSeries || !data) return;
+
+    if (fibCirclesPrimitiveRef.current) {
+      try { candleSeries.detachPrimitive(fibCirclesPrimitiveRef.current); } catch { /* */ }
+      fibCirclesPrimitiveRef.current = null;
+    }
+    if (!toggles.fibCircles || !data.fib_circles) return;
+    const primitive = new FibCirclesPrimitive(data.fib_circles);
+    candleSeries.attachPrimitive(primitive);
+    fibCirclesPrimitiveRef.current = primitive;
+  }, [data, toggles.fibCircles]);
 
   // BOS / ChoCh — short dashed line from broken swing to break candle + arrow marker
   useEffect(() => {
@@ -377,6 +418,8 @@ export default function SMCChart() {
     { key: "fvg", label: "FVG", color: "text-emerald-500" },
     { key: "bos", label: "BOS/ChoCh", color: "text-yellow-500" },
     { key: "fib", label: "Fibonacci", color: "text-purple-500" },
+    { key: "fibCircles", label: "Fib Circles", color: "text-pink-500" },
+    { key: "gann", label: "Gann Fan", color: "text-amber-500" },
     { key: "pivots", label: "Pivots", color: "text-orange-500" },
     { key: "ma20", label: "MA20", color: "text-yellow-400" },
     { key: "ma50", label: "MA50", color: "text-blue-400" },
@@ -458,11 +501,29 @@ export default function SMCChart() {
             </button>
           ))}
           <button
-            onClick={() => fetchSMCChart(symbol, period).then(setData)}
+            onClick={() => fetchSMCChart(symbol, period, interval).then(setData)}
             className="p-1 rounded hover:bg-gray-200 dark:hover:bg-gray-700"
           >
             <RefreshCw className={clsx("w-4 h-4", loading && "animate-spin")} />
           </button>
+        </div>
+
+        {/* Interval (Daily / Weekly) */}
+        <div className="flex items-center gap-1 bg-gray-100 dark:bg-gray-800/50 rounded p-1">
+          {(["daily", "weekly"] as const).map((iv) => (
+            <button
+              key={iv}
+              onClick={() => setInterval(iv)}
+              className={clsx(
+                "px-3 py-1 rounded text-xs capitalize",
+                interval === iv
+                  ? "bg-blue-500/20 text-blue-600 dark:text-blue-400"
+                  : "text-gray-500 dark:text-gray-400",
+              )}
+            >
+              {iv === "daily" ? "1D" : "1W"}
+            </button>
+          ))}
         </div>
       </div>
 

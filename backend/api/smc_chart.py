@@ -131,19 +131,100 @@ def calc_moving_averages(c, periods=(20, 50, 200)):
     return out
 
 
-def get_smc_chart(symbol: str, days: int = 180):
-    """Returns OHLCV candles + volume + FVG zones + BOS/ChoCh + Fib + Pivot + MAs."""
-    df = read_historical_for_symbol(symbol, min_rows=int(days * 1.5))
+def calc_gann_fan(df, pivot_idx, pivot_price, direction="up"):
+    """
+    Gann Fan from a pivot point. Returns 9 angle lines at the classic ratios.
+    Each line is defined by start point + slope (price-per-bar).
+    Scale = average bar range so the 1x1 line draws at a meaningful 45° slope.
+    """
+    h = df["high"]; l = df["low"]
+    avg_range = float((h - l).rolling(20).mean().iloc[-1] or (h.iloc[-20:] - l.iloc[-20:]).mean())
+    if not avg_range or avg_range <= 0:
+        avg_range = float(df["close"].std() or 1)
+
+    # Classic Gann ratios — slope = ratio * avg_range per bar
+    ratios = [
+        ("1x8", 0.125),
+        ("1x4", 0.25),
+        ("1x3", 0.333),
+        ("1x2", 0.5),
+        ("1x1", 1.0),
+        ("2x1", 2.0),
+        ("3x1", 3.0),
+        ("4x1", 4.0),
+        ("8x1", 8.0),
+    ]
+    sign = 1 if direction == "up" else -1
+    pivot_time = df.iloc[pivot_idx]["date"].strftime("%Y-%m-%d")
+    end_idx = len(df) - 1
+    end_time = df.iloc[end_idx]["date"].strftime("%Y-%m-%d")
+    bars_forward = end_idx - pivot_idx
+
+    lines = []
+    for label, ratio in ratios:
+        end_price = pivot_price + sign * ratio * avg_range * bars_forward
+        lines.append({
+            "label": label,
+            "start_time": pivot_time,
+            "start_price": round(pivot_price, 2),
+            "end_time": end_time,
+            "end_price": round(end_price, 2),
+        })
+    return {
+        "pivot_time": pivot_time,
+        "pivot_price": round(pivot_price, 2),
+        "direction": direction,
+        "lines": lines,
+    }
+
+
+def calc_fib_circles(df, pivot_idx, pivot_price, ref_idx, ref_price):
+    """
+    Fibonacci circles from pivot point with radius based on swing range.
+    Radius is in price units; circles are drawn proportionally on chart.
+    """
+    base_radius = abs(pivot_price - ref_price)
+    if base_radius <= 0:
+        return None
+    pivot_time = df.iloc[pivot_idx]["date"].strftime("%Y-%m-%d")
+    ratios = [0.382, 0.5, 0.618, 1.0, 1.272, 1.618, 2.618]
+    return {
+        "center_time": pivot_time,
+        "center_price": round(pivot_price, 2),
+        "base_radius": round(base_radius, 2),
+        "circles": [
+            {"ratio": r, "radius": round(r * base_radius, 2)} for r in ratios
+        ],
+    }
+
+
+def get_smc_chart(symbol: str, days: int = 180, interval: str = "daily"):
+    """Returns OHLCV candles + volume + FVG zones + BOS/ChoCh + Fib + Pivot + MAs.
+
+    interval: 'daily' (1 candle = 1 day) or 'weekly' (resampled to ISO weeks).
+    For weekly, fetch ~6x more rows so we still have ~30+ weekly candles to analyze.
+    """
+    fetch_days = days * 2 if interval == "weekly" else days
+    min_rows_needed = int(fetch_days * 1.5)
+    df = read_historical_for_symbol(symbol, min_rows=min_rows_needed)
     if df.empty:
         return None
 
     df["date"] = pd.to_datetime(df["date"])
     df = df.sort_values("date").reset_index(drop=True)
 
+    # Resample to weekly if requested (Mon-Sun ISO weeks)
+    if interval == "weekly":
+        df = df.set_index("date")
+        agg = {"open": "first", "high": "max", "low": "min", "close": "last"}
+        if "volume" in df.columns:
+            agg["volume"] = "sum"
+        df = df.resample("W-FRI").agg(agg).dropna(subset=["open"]).reset_index()
+
     # Limit to requested period
     cutoff = df["date"].max() - pd.Timedelta(days=days)
     df = df[df["date"] >= cutoff].reset_index(drop=True)
-    if len(df) < 30:
+    if len(df) < 20:
         return None
 
     o, h, l, c = df["open"], df["high"], df["low"], df["close"]
@@ -204,13 +285,12 @@ def get_smc_chart(symbol: str, days: int = 180):
             return df.iloc[idx]["date"].strftime("%Y-%m-%d")
         return None
 
-    last_time = df.iloc[-1]["date"].strftime("%Y-%m-%d")
-
     fvg_zones = []
     for f in unmitigated:
         start_time = idx_to_time(f["start_idx"])
-        # Extend to current bar so live FVGs are still visible at the right edge
-        end_time = last_time
+        # Tight forward extent: 12 bars max (matches TradingView FVG indicator look)
+        end_idx = min(f["idx"] + 12, len(df) - 1)
+        end_time = idx_to_time(end_idx)
         if start_time and end_time:
             fvg_zones.append({
                 "type": f["type"],
@@ -239,6 +319,31 @@ def get_smc_chart(symbol: str, days: int = 180):
     pivots = calc_pivot_points(h, l, c)
     mas = calc_moving_averages(c, periods=(20, 50, 200))
 
+    # Gann Fan + Fib Circles use the period's most extreme swing as pivot
+    gann = None
+    fib_circles = None
+    try:
+        period_swings = find_swings(h, l, n=5)
+        if period_swings:
+            highs = [s for s in period_swings if s["type"] == "high"]
+            lows = [s for s in period_swings if s["type"] == "low"]
+            if lows and highs:
+                lowest = min(lows, key=lambda x: x["price"])
+                highest = max(highs, key=lambda x: x["price"])
+                # Pick the more recent extreme as Gann pivot (project forward)
+                if lowest["idx"] >= highest["idx"]:
+                    gann = calc_gann_fan(df, lowest["idx"], lowest["price"], direction="up")
+                else:
+                    gann = calc_gann_fan(df, highest["idx"], highest["price"], direction="down")
+                # Fib circles centered on lowest, ref to highest (covers the full swing)
+                fib_circles = calc_fib_circles(
+                    df,
+                    lowest["idx"], lowest["price"],
+                    highest["idx"], highest["price"],
+                )
+    except Exception:
+        pass
+
     # Add MA values aligned to candle times
     ma_lines = {}
     for key, vals in mas.items():
@@ -257,5 +362,7 @@ def get_smc_chart(symbol: str, days: int = 180):
         "fibonacci": fibonacci,
         "pivots": pivots,
         "moving_averages": ma_lines,
+        "gann_fan": gann,
+        "fib_circles": fib_circles,
         "current_price": round(float(c.iloc[-1]), 2),
     }

@@ -147,6 +147,33 @@ export interface SMCMaLinePoint {
   value: number;
 }
 
+export interface SMCGannLine {
+  label: string;
+  start_time: string;
+  start_price: number;
+  end_time: string;
+  end_price: number;
+}
+
+export interface SMCGannFan {
+  pivot_time: string;
+  pivot_price: number;
+  direction: "up" | "down";
+  lines: SMCGannLine[];
+}
+
+export interface SMCFibCircle {
+  ratio: number;
+  radius: number;
+}
+
+export interface SMCFibCircles {
+  center_time: string;
+  center_price: number;
+  base_radius: number;
+  circles: SMCFibCircle[];
+}
+
 export interface SMCChartData {
   symbol: string;
   current_price: number;
@@ -157,6 +184,8 @@ export interface SMCChartData {
   fibonacci?: SMCFibonacci | null;
   pivots?: SMCPivots | null;
   moving_averages?: Record<string, SMCMaLinePoint[]>;
+  gann_fan?: SMCGannFan | null;
+  fib_circles?: SMCFibCircles | null;
 }
 
 const smcCache = new Map<string, { data: SMCChartData; ts: number }>();
@@ -165,14 +194,15 @@ const SMC_CACHE_TTL = 60_000; // 60s — quick toggling won't refetch
 export async function fetchSMCChart(
   symbol: string,
   period: "1m" | "3m" | "6m" | "1y" | "2y" = "6m",
+  interval: "daily" | "weekly" = "daily",
 ): Promise<SMCChartData> {
-  const key = `${symbol.toUpperCase()}_${period}`;
+  const key = `${symbol.toUpperCase()}_${period}_${interval}`;
   const hit = smcCache.get(key);
   if (hit && Date.now() - hit.ts < SMC_CACHE_TTL) return hit.data;
 
   const { data } = await api.get<SMCChartData>(
     `/stock/${symbol.toUpperCase()}/smc-chart`,
-    { params: { period } },
+    { params: { period, interval } },
   );
   smcCache.set(key, { data, ts: Date.now() });
   return data;
