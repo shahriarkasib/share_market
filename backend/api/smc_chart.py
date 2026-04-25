@@ -283,6 +283,262 @@ def calc_fib_circles(df, pivot_idx, pivot_price, ref_idx, ref_price):
     }
 
 
+def generate_analysis(structure_events, fvgs, order_blocks, key_levels, current_price, df):
+    """
+    Translate structural data into a plain-language trade card:
+    bias, confidence, recommended action, entry/stop/targets, tomorrow's triggers.
+    """
+    swing_high = next(
+        (k["price"] for k in key_levels if k["label"] == "Swing High"),
+        current_price * 1.05,
+    )
+    swing_low = next(
+        (k["price"] for k in key_levels if k["label"] == "Swing Low"),
+        current_price * 0.95,
+    )
+    breakout_trigger = next(
+        (k["price"] for k in key_levels if k["label"] == "Breakout Trigger"),
+        round(swing_high * 1.02, 2),
+    )
+    breakdown_trigger = next(
+        (k["price"] for k in key_levels if k["label"] == "Breakdown Trigger"),
+        round(swing_low * 0.98, 2),
+    )
+
+    fresh_bull_fvgs_below = sorted(
+        [f for f in fvgs if f.get("type") == "bullish" and not f.get("mitigated")
+         and f["top"] < current_price],
+        key=lambda x: -x["top"],
+    )
+    fresh_bear_fvgs_above = sorted(
+        [f for f in fvgs if f.get("type") == "bearish" and not f.get("mitigated")
+         and f["bottom"] > current_price],
+        key=lambda x: x["bottom"],
+    )
+    fresh_bull_obs = [o for o in order_blocks if o["type"] == "bullish"
+                      and o["status"] == "fresh" and o["top"] < current_price]
+    fresh_bear_obs = [o for o in order_blocks if o["type"] == "bearish"
+                      and o["status"] == "fresh" and o["bottom"] > current_price]
+
+    # === Bias ===
+    bias = "NEUTRAL"
+    if structure_events:
+        latest = structure_events[-1]
+        if latest["type"].startswith("bullish"):
+            bias = "BULLISH"
+        elif latest["type"].startswith("bearish"):
+            bias = "BEARISH"
+
+    # Whipsaw detection: 4+ ChoCh in last 60 bars, alternating
+    recent_chochs = [e for e in structure_events if "ChoCh" in e["type"]]
+    if len(recent_chochs) >= 4:
+        types = [e["type"] for e in recent_chochs[-4:]]
+        alternations = sum(
+            1 for i in range(1, len(types))
+            if types[i].startswith("bullish") != types[i - 1].startswith("bullish")
+        )
+        if alternations >= 3:
+            bias = "WHIPSAW"
+
+    # Parabolic check: too extended from SMA50
+    parabolic = False
+    if len(df) >= 50:
+        sma50 = float(df["close"].iloc[-50:].mean())
+        if sma50 > 0:
+            extension = (current_price - sma50) / sma50 * 100
+            if extension > 30:
+                parabolic = True
+
+    # === Confidence ===
+    confidence = "LOW"
+    if bias == "BULLISH":
+        bull_count_recent = sum(
+            1 for e in structure_events[-3:]
+            if e["type"].startswith("bullish")
+        )
+        bos_count_recent = sum(
+            1 for e in structure_events[-3:]
+            if "BOS" in e["type"] and e["type"].startswith("bullish")
+        )
+        if bull_count_recent >= 3 and bos_count_recent >= 2 and len(fresh_bull_fvgs_below) >= 2:
+            confidence = "HIGH"
+        elif bull_count_recent >= 2 and len(fresh_bull_fvgs_below) >= 1:
+            confidence = "MEDIUM"
+        else:
+            confidence = "LOW"
+    elif bias == "BEARISH":
+        bear_count = sum(
+            1 for e in structure_events[-3:]
+            if e["type"].startswith("bearish")
+        )
+        confidence = "MEDIUM" if bear_count >= 2 else "LOW"
+    elif bias == "WHIPSAW":
+        confidence = "LOW"
+
+    # === Action ===
+    action = "WAIT"
+    action_color = "gray"
+    summary = ""
+
+    if parabolic and bias == "BULLISH":
+        action = "TAKE PROFIT / DO NOT BUY"
+        action_color = "orange"
+        summary = "Stock is parabolic — too extended from average. Don't chase, wait for pullback."
+    elif bias == "WHIPSAW":
+        action = "AVOID"
+        action_color = "red"
+        summary = "Whipsaw pattern — multiple reversals, no clean trend. No edge in trading."
+    elif bias == "BEARISH":
+        action = "AVOID / EXIT"
+        action_color = "red"
+        summary = "Latest structure is bearish. Don't catch falling knives — wait for reversal signal."
+    elif bias == "BULLISH":
+        if current_price >= breakout_trigger:
+            action = "BUY (BREAKOUT ACTIVE)"
+            action_color = "green"
+            summary = "Price has cleared the breakout trigger. Trend confirmed bullish."
+        elif current_price > swing_high * 0.98:
+            action = "BUY ON CLOSE ABOVE TRIGGER"
+            action_color = "yellow"
+            summary = f"Price testing breakout level. Wait for daily close above ৳{breakout_trigger}."
+        elif fresh_bull_fvgs_below:
+            action = "BUY ON DIP TO FVG"
+            action_color = "yellow"
+            top_fvg = fresh_bull_fvgs_below[0]
+            summary = f"Bullish bias intact. Best entry on pullback to FVG ৳{top_fvg['bottom']}-{top_fvg['top']}."
+        else:
+            action = "WAIT FOR SETUP"
+            action_color = "gray"
+            summary = "Bullish bias but no clear entry. Wait for pullback or breakout."
+    else:
+        summary = "No clear directional signal. Wait for structure to develop."
+
+    # === Reasons (max 4 bullet points) ===
+    reasons = []
+    if structure_events:
+        latest = structure_events[-1]
+        type_label = latest["type"].replace("_", " ").replace("bullish", "↑").replace("bearish", "↓")
+        reasons.append(f"Latest structure: {type_label} @ ৳{latest['price']}")
+    if fresh_bull_fvgs_below and bias == "BULLISH":
+        reasons.append(
+            f"{len(fresh_bull_fvgs_below)} fresh bullish FVG(s) below = layered support"
+        )
+    if fresh_bear_fvgs_above and bias != "BULLISH":
+        reasons.append(
+            f"{len(fresh_bear_fvgs_above)} bearish FVG(s) above = institutional resistance"
+        )
+    if fresh_bull_obs:
+        ob = fresh_bull_obs[0]
+        reasons.append(
+            f"Smart money buying zone: ৳{ob['bottom']}-{ob['top']} (fresh OB)"
+        )
+    if fresh_bear_obs:
+        ob = fresh_bear_obs[0]
+        reasons.append(
+            f"Smart money selling zone: ৳{ob['bottom']}-{ob['top']} (fresh bearish OB)"
+        )
+    if bias == "WHIPSAW":
+        reasons.append("⚠ Whipsaw pattern detected — multiple alternating reversals")
+    if parabolic:
+        reasons.append(f"⚠ Price is +{round(extension)}% above SMA50 — parabolic risk")
+
+    # === Trade levels ===
+    entry = None
+    entry_label = None
+    stop_loss = None
+    target1 = None
+    target2 = None
+    rr = None
+
+    if action.startswith("BUY"):
+        # Pick entry
+        if "DIP" in action and fresh_bull_fvgs_below:
+            entry = round(fresh_bull_fvgs_below[0]["top"], 2)
+            entry_label = f"Limit ৳{entry} (FVG retest)"
+        elif "BREAKOUT" in action and current_price >= breakout_trigger:
+            entry = round(current_price, 2)
+            entry_label = f"Market ৳{entry} (chase ok, in breakout)"
+        elif "ABOVE TRIGGER" in action:
+            entry = round(breakout_trigger, 2)
+            entry_label = f"Stop-buy at ৳{entry} (only fires above trigger)"
+        else:
+            entry = round(current_price, 2)
+            entry_label = f"Market ৳{entry}"
+
+        # Stop loss: use deepest fresh support
+        if fresh_bull_obs:
+            stop_loss = round(fresh_bull_obs[0]["bottom"] * 0.985, 2)
+        elif fresh_bull_fvgs_below:
+            deepest_fvg = fresh_bull_fvgs_below[-1]
+            stop_loss = round(deepest_fvg["bottom"] * 0.985, 2)
+        else:
+            stop_loss = round(swing_low * 0.98, 2)
+
+        # Targets
+        target1 = round(swing_high * 1.05, 2)
+        target2 = round(swing_high * 1.12, 2)
+
+        # R/R
+        risk = entry - stop_loss
+        reward = target1 - entry
+        if risk > 0:
+            rr = round(reward / risk, 2)
+
+    # === Tomorrow's triggers ===
+    triggers = []
+    if bias == "BULLISH":
+        if current_price < breakout_trigger:
+            triggers.append({
+                "icon": "🟢",
+                "text": f"Daily close above ৳{breakout_trigger} = breakout confirmed → buy/add",
+            })
+        if fresh_bull_fvgs_below:
+            top_fvg = fresh_bull_fvgs_below[0]
+            triggers.append({
+                "icon": "🎯",
+                "text": f"Pullback to ৳{top_fvg['bottom']}-{top_fvg['top']} = high-probability entry",
+            })
+        triggers.append({
+            "icon": "🔴",
+            "text": f"Daily close below ৳{swing_low} = trend failed, exit immediately",
+        })
+    elif bias == "BEARISH":
+        triggers.append({
+            "icon": "🟢",
+            "text": f"Daily close above ৳{swing_high} (clears resistance) = re-evaluate",
+        })
+        triggers.append({
+            "icon": "🔴",
+            "text": f"Daily close below ৳{breakdown_trigger} = downtrend confirmed → avoid/short",
+        })
+    elif bias == "WHIPSAW":
+        triggers.append({
+            "icon": "⏸",
+            "text": f"Wait for daily close above ৳{swing_high} OR below ৳{swing_low} to pick a side",
+        })
+    else:
+        triggers.append({
+            "icon": "⏸",
+            "text": "Watch for first ChoCh / BOS event to develop bias",
+        })
+
+    return {
+        "bias": bias,
+        "confidence": confidence,
+        "action": action,
+        "action_color": action_color,
+        "summary": summary,
+        "reasons": reasons,
+        "entry": entry,
+        "entry_label": entry_label,
+        "stop_loss": stop_loss,
+        "target1": target1,
+        "target2": target2,
+        "risk_reward": rr,
+        "triggers": triggers,
+    }
+
+
 def get_smc_chart(symbol: str, days: int = 180, interval: str = "daily"):
     """Returns OHLCV candles + volume + FVG zones + BOS/ChoCh + Fib + Pivot + MAs.
 
@@ -504,6 +760,15 @@ def get_smc_chart(symbol: str, days: int = 180, interval: str = "daily"):
             if vals[i] is not None
         ]
 
+    analysis = generate_analysis(
+        structure_events,
+        fvg_zones,
+        order_blocks,
+        key_levels,
+        round(float(c.iloc[-1]), 2),
+        df,
+    )
+
     return {
         "symbol": symbol.upper(),
         "candles": candles,
@@ -517,5 +782,6 @@ def get_smc_chart(symbol: str, days: int = 180, interval: str = "daily"):
         "fib_circles": fib_circles,
         "key_levels": key_levels,
         "order_blocks": order_blocks,
+        "analysis": analysis,
         "current_price": round(float(c.iloc[-1]), 2),
     }

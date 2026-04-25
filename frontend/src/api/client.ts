@@ -131,6 +131,53 @@ export interface SMCOrderBlock {
   break_type?: string;
 }
 
+export interface SMCAnalysisTrigger {
+  icon: string;
+  text: string;
+}
+
+export interface SMCAnalysis {
+  bias: "BULLISH" | "BEARISH" | "NEUTRAL" | "WHIPSAW";
+  confidence: "HIGH" | "MEDIUM" | "LOW";
+  action: string;
+  action_color: "green" | "yellow" | "red" | "orange" | "gray";
+  summary: string;
+  reasons: string[];
+  entry: number | null;
+  entry_label: string | null;
+  stop_loss: number | null;
+  target1: number | null;
+  target2: number | null;
+  risk_reward: number | null;
+  triggers: SMCAnalysisTrigger[];
+}
+
+export interface SMCScreenerCandidate {
+  symbol: string;
+  price: number;
+  bias: string;
+  confidence: string;
+  action: string;
+  summary: string;
+  entry: number | null;
+  entry_label: string | null;
+  stop_loss: number | null;
+  target1: number | null;
+  target2: number | null;
+  risk_reward: number | null;
+  reasons: string[];
+}
+
+export async function fetchSMCScreener(
+  minConfidence: "HIGH" | "MEDIUM" | "LOW" = "MEDIUM",
+): Promise<SMCScreenerCandidate[]> {
+  const { data } = await api.get<SMCScreenerCandidate[]>(
+    "/market/smc-screener",
+    { params: { min_confidence: minConfidence } },
+  );
+  return data;
+}
+
 export interface SMCStructureEvent {
   type: "bullish_BOS" | "bearish_BOS" | "bullish_ChoCh" | "bearish_ChoCh";
   price: number;
@@ -206,6 +253,7 @@ export interface SMCChartData {
   fib_circles?: SMCFibCircles | null;
   key_levels?: SMCKeyLevel[];
   order_blocks?: SMCOrderBlock[];
+  analysis?: SMCAnalysis;
 }
 
 const smcCache = new Map<string, { data: SMCChartData; ts: number }>();

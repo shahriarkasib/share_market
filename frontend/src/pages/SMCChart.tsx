@@ -802,6 +802,127 @@ export default function SMCChart() {
         })}
       </div>
 
+      {data?.analysis && (
+        <div className="mb-4 rounded-lg border-2 overflow-hidden"
+          style={{
+            borderColor:
+              data.analysis.action_color === "green" ? "#10b981" :
+              data.analysis.action_color === "yellow" ? "#f59e0b" :
+              data.analysis.action_color === "orange" ? "#f97316" :
+              data.analysis.action_color === "red" ? "#ef4444" :
+              "#6b7280",
+          }}
+        >
+          <div
+            className="px-4 py-3 flex items-center justify-between flex-wrap gap-3"
+            style={{
+              background:
+                data.analysis.action_color === "green" ? "rgba(16,185,129,0.12)" :
+                data.analysis.action_color === "yellow" ? "rgba(245,158,11,0.12)" :
+                data.analysis.action_color === "orange" ? "rgba(249,115,22,0.12)" :
+                data.analysis.action_color === "red" ? "rgba(239,68,68,0.12)" :
+                "rgba(107,114,128,0.12)",
+            }}
+          >
+            <div className="flex items-center gap-3 flex-wrap">
+              <span className={clsx(
+                "inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold tracking-wide",
+                data.analysis.bias === "BULLISH" && "bg-emerald-500/25 text-emerald-700 dark:text-emerald-300",
+                data.analysis.bias === "BEARISH" && "bg-red-500/25 text-red-700 dark:text-red-300",
+                data.analysis.bias === "WHIPSAW" && "bg-amber-500/25 text-amber-700 dark:text-amber-300",
+                data.analysis.bias === "NEUTRAL" && "bg-gray-500/25 text-gray-700 dark:text-gray-300",
+              )}>
+                BIAS: {data.analysis.bias}
+              </span>
+              <span className="text-xs text-gray-500">
+                Confidence: <strong className={clsx(
+                  data.analysis.confidence === "HIGH" && "text-emerald-500",
+                  data.analysis.confidence === "MEDIUM" && "text-yellow-500",
+                  data.analysis.confidence === "LOW" && "text-gray-500",
+                )}>{data.analysis.confidence}</strong>
+              </span>
+              <span className="text-base font-bold"
+                style={{
+                  color:
+                    data.analysis.action_color === "green" ? "#10b981" :
+                    data.analysis.action_color === "yellow" ? "#f59e0b" :
+                    data.analysis.action_color === "orange" ? "#f97316" :
+                    data.analysis.action_color === "red" ? "#ef4444" :
+                    "#9ca3af",
+                }}
+              >
+                → {data.analysis.action}
+              </span>
+            </div>
+          </div>
+          <div className="px-4 py-3 bg-white/80 dark:bg-gray-900/40">
+            <p className="text-sm mb-3">{data.analysis.summary}</p>
+            {data.analysis.reasons.length > 0 && (
+              <ul className="text-xs text-gray-600 dark:text-gray-400 space-y-1 mb-3">
+                {data.analysis.reasons.map((r, i) => (
+                  <li key={i} className="flex gap-2">
+                    <span>•</span>
+                    <span>{r}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+            {data.analysis.entry !== null && (
+              <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 text-xs mb-3">
+                <div className="bg-emerald-500/10 border border-emerald-500/30 rounded px-2 py-1.5">
+                  <div className="text-gray-500 text-[10px]">Entry</div>
+                  <div className="font-mono font-bold text-emerald-600 dark:text-emerald-400">
+                    ৳{data.analysis.entry}
+                  </div>
+                </div>
+                <div className="bg-red-500/10 border border-red-500/30 rounded px-2 py-1.5">
+                  <div className="text-gray-500 text-[10px]">Stop Loss</div>
+                  <div className="font-mono font-bold text-red-600 dark:text-red-400">
+                    ৳{data.analysis.stop_loss}
+                  </div>
+                </div>
+                <div className="bg-blue-500/10 border border-blue-500/30 rounded px-2 py-1.5">
+                  <div className="text-gray-500 text-[10px]">Target 1</div>
+                  <div className="font-mono font-bold text-blue-600 dark:text-blue-400">
+                    ৳{data.analysis.target1}
+                  </div>
+                </div>
+                <div className="bg-purple-500/10 border border-purple-500/30 rounded px-2 py-1.5">
+                  <div className="text-gray-500 text-[10px]">Target 2</div>
+                  <div className="font-mono font-bold text-purple-600 dark:text-purple-400">
+                    ৳{data.analysis.target2}
+                  </div>
+                </div>
+                <div className="bg-gray-500/10 border border-gray-500/30 rounded px-2 py-1.5">
+                  <div className="text-gray-500 text-[10px]">R/R</div>
+                  <div className="font-mono font-bold">
+                    1 : {data.analysis.risk_reward}
+                  </div>
+                </div>
+              </div>
+            )}
+            {data.analysis.entry_label && (
+              <p className="text-xs text-gray-500 italic mb-2">
+                {data.analysis.entry_label}
+              </p>
+            )}
+            {data.analysis.triggers.length > 0 && (
+              <div className="border-t border-gray-200 dark:border-gray-700/50 pt-2">
+                <p className="text-[11px] uppercase tracking-wide text-gray-500 mb-1">
+                  Tomorrow — what to watch
+                </p>
+                {data.analysis.triggers.map((t, i) => (
+                  <div key={i} className="text-xs flex gap-2 py-0.5">
+                    <span>{t.icon}</span>
+                    <span>{t.text}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       <div className="bg-white dark:bg-gray-900/30 rounded-lg border border-gray-300 dark:border-gray-700/50 p-2 relative">
         <div
           ref={containerRef}

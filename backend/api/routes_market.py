@@ -523,3 +523,75 @@ async def get_heatmap_data(size_by: str = "turnover"):
     result.sort(key=lambda x: x["total_size"], reverse=True)
     cache.set(cache_key, result, CACHE_TTL_LIVE_PRICES)
     return result
+
+
+@router.get("/smc-screener")
+async def get_smc_screener(min_confidence: str = "MEDIUM"):
+    """
+    Run SMC analysis on every stock and return ranked buy candidates.
+
+    Each row contains: symbol, current price, bias, confidence, action,
+    entry price, stop loss, target1, target2, R/R, summary reason.
+
+    Filter by min_confidence: HIGH | MEDIUM | LOW (default: MEDIUM).
+    """
+    from api.smc_chart import get_smc_chart
+
+    confidence_rank = {"HIGH": 3, "MEDIUM": 2, "LOW": 1}
+    min_rank = confidence_rank.get(min_confidence.upper(), 2)
+    cache_key = f"smc_screener_{min_confidence.upper()}"
+    cached = cache.get(cache_key)
+    if cached:
+        return cached
+
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT DISTINCT symbol FROM live_prices WHERE ltp > 0 ORDER BY symbol"
+    ).fetchall()
+    symbols = [r[0] for r in rows]
+    conn.close()
+
+    candidates = []
+    for sym in symbols:
+        try:
+            data = get_smc_chart(sym, days=180, interval="daily")
+            if data is None:
+                continue
+            a = data.get("analysis")
+            if not a:
+                continue
+            # Only show actionable buy signals
+            if not a["action"].startswith("BUY"):
+                continue
+            if confidence_rank.get(a["confidence"], 0) < min_rank:
+                continue
+            candidates.append({
+                "symbol": data["symbol"],
+                "price": data["current_price"],
+                "bias": a["bias"],
+                "confidence": a["confidence"],
+                "action": a["action"],
+                "summary": a["summary"],
+                "entry": a["entry"],
+                "entry_label": a["entry_label"],
+                "stop_loss": a["stop_loss"],
+                "target1": a["target1"],
+                "target2": a["target2"],
+                "risk_reward": a["risk_reward"],
+                "reasons": a["reasons"][:3],
+            })
+        except Exception:
+            continue
+
+    # Rank: HIGH confidence first, then by R/R, then by % from entry to target1
+    def rank_key(c):
+        conf_score = confidence_rank.get(c["confidence"], 0)
+        rr = c.get("risk_reward") or 0
+        upside = 0
+        if c.get("entry") and c.get("target1") and c["entry"] > 0:
+            upside = (c["target1"] - c["entry"]) / c["entry"] * 100
+        return (-conf_score, -rr, -upside)
+
+    candidates.sort(key=rank_key)
+    cache.set(cache_key, candidates, CACHE_TTL_LIVE_PRICES)
+    return candidates
