@@ -250,7 +250,12 @@ async def get_stock_peers(symbol: str, limit: int = 8):
 
 @router.get("/{symbol}/smc-chart")
 async def get_stock_smc_chart(symbol: str, period: str = "6m", interval: str = "daily"):
-    """Get OHLCV + FVG + BOS/ChoCh + Fib + Gann + Pivots for SMC-style charting."""
+    """Get OHLCV + FVG + BOS/ChoCh + Fib + Gann + Pivots for SMC-style charting.
+
+    Cache TTL is short (60s) because today's bar is built from live_prices
+    and updates as the market ticks. Without this, the chart shows yesterday's
+    close instead of today's intraday OHLC.
+    """
     from api.smc_chart import get_smc_chart
     period_days = {"1m": 30, "3m": 90, "6m": 180, "1y": 365, "2y": 730}
     days = period_days.get(period, 180)
@@ -265,5 +270,6 @@ async def get_stock_smc_chart(symbol: str, period: str = "6m", interval: str = "
     data = get_smc_chart(symbol.upper(), days=days, interval=interval)
     if data is None:
         raise HTTPException(status_code=404, detail=f"No data for {symbol}")
-    cache.set(cache_key, data, CACHE_TTL_HISTORICAL)
+    # Short TTL so live bar refreshes during market hours
+    cache.set(cache_key, data, 60)
     return data

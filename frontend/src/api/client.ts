@@ -257,7 +257,9 @@ export interface SMCChartData {
 }
 
 const smcCache = new Map<string, { data: SMCChartData; ts: number }>();
-const SMC_CACHE_TTL = 60_000; // 60s — quick toggling won't refetch
+// 15s — short enough to feel live, long enough to prevent burst requests when
+// toggling indicators. Backend caches for 60s so most fetches are server-cached.
+const SMC_CACHE_TTL = 15_000;
 
 export interface FetchSMCChartOptions {
   /** Bypass the in-memory cache and re-fetch from server. */

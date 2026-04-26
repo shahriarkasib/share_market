@@ -200,6 +200,34 @@ export default function SMCChart() {
     };
   }, [symbol, period, timeframe]);
 
+  // === LIVE AUTO-REFRESH during DSE market hours (Sun-Thu, 10:00-14:30 BST) ===
+  // Polls every 30s so the live bar updates while the market is open.
+  useEffect(() => {
+    function isMarketOpen(): boolean {
+      const now = new Date();
+      // Convert to BST (UTC+6)
+      const bstOffset = 6 * 60;
+      const utcMinutes = now.getUTCHours() * 60 + now.getUTCMinutes();
+      const bstMinutes = (utcMinutes + bstOffset) % (24 * 60);
+      const bstDay = (now.getUTCDay() + (utcMinutes + bstOffset >= 24 * 60 ? 1 : 0)) % 7;
+      // 0=Sun, 1=Mon, ..., 4=Thu, 5=Fri, 6=Sat
+      // DSE: Sunday(0) - Thursday(4), 10:00 - 14:30
+      const isWeekday = bstDay >= 0 && bstDay <= 4;
+      const inHours = bstMinutes >= 10 * 60 && bstMinutes <= 14 * 60 + 30;
+      return isWeekday && inHours;
+    }
+
+    const tick = window.setInterval(() => {
+      if (!isMarketOpen()) return;
+      const ac = new AbortController();
+      fetchSMCChart(symbol, period, timeframe, { force: true, signal: ac.signal })
+        .then((d) => setData(d))
+        .catch(() => { /* silent during background refresh */ });
+    }, 30_000); // 30s
+
+    return () => window.clearInterval(tick);
+  }, [symbol, period, timeframe]);
+
   // === Chart skeleton: build once per symbol/timeframe (NOT per data refresh) ===
   useEffect(() => {
     if (!containerRef.current) return;
@@ -682,7 +710,13 @@ export default function SMCChart() {
             <ArrowLeft className="w-4 h-4" />
           </button>
           <div>
-            <h1 className="text-2xl font-bold">{data?.symbol || symbol}</h1>
+            <h1 className="text-2xl font-bold flex items-center gap-2">
+              {data?.symbol || symbol}
+              <span className="inline-flex items-center gap-1 text-[10px] font-normal px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-500 border border-emerald-500/30">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                LIVE
+              </span>
+            </h1>
             {data && (
               <span className="text-emerald-500 text-lg font-mono">
                 {data.current_price.toFixed(1)} ৳

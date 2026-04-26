@@ -1,7 +1,53 @@
 """SMC chart data — OHLCV + FVG zones + BOS/ChoCh events for DSE stocks."""
 
 import pandas as pd
+from datetime import datetime
 from data.repository import read_historical_for_symbol
+from database import get_connection
+
+
+def _append_live_bar_if_missing(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
+    """If today's bar isn't in daily_prices yet, append it from live_prices.
+
+    This makes intraday SMC analysis reflect today's actual OHLC instead of
+    yesterday's EOD numbers. Without this, charts show stale data until EOD
+    daily bar lands in the DB.
+    """
+    if df.empty:
+        return df
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    df["date"] = pd.to_datetime(df["date"])
+    last_date_str = df["date"].max().strftime("%Y-%m-%d")
+    if last_date_str == today_str:
+        return df  # already have today's bar
+
+    try:
+        conn = get_connection()
+        row = conn.execute(
+            "SELECT symbol, ltp, open, high, low, close_prev, volume "
+            "FROM live_prices WHERE symbol = ? AND ltp > 0",
+            (symbol.upper(),),
+        ).fetchone()
+        conn.close()
+        if not row:
+            return df
+
+        live = dict(row)
+        # Construct today's bar from live data — close = LTP (last traded price)
+        live_bar = pd.DataFrame([{
+            "date": pd.to_datetime(today_str),
+            "symbol": symbol.upper(),
+            "open": float(live["open"] or live["close_prev"] or live["ltp"]),
+            "high": float(live["high"] or live["ltp"]),
+            "low": float(live["low"] or live["ltp"]),
+            "close": float(live["ltp"]),
+            "volume": float(live.get("volume") or 0),
+        }])
+        df = pd.concat([df, live_bar], ignore_index=True)
+        df = df.sort_values("date").reset_index(drop=True)
+    except Exception:
+        pass
+    return df
 
 
 def find_swings(h, l, n=3):
@@ -553,6 +599,10 @@ def get_smc_chart(symbol: str, days: int = 180, interval: str = "daily"):
 
     df["date"] = pd.to_datetime(df["date"])
     df = df.sort_values("date").reset_index(drop=True)
+
+    # Append today's live bar if missing — this is what makes the chart reflect
+    # the actual current session instead of being stuck on yesterday's EOD data.
+    df = _append_live_bar_if_missing(df, symbol)
 
     # Resample to weekly if requested (Mon-Sun ISO weeks)
     if interval == "weekly":
