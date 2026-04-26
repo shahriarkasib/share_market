@@ -298,6 +298,202 @@ def calc_stochastic(h, l, c, k_period=14, d_period=3):
     }
 
 
+def detect_double_top(swings, df, tolerance_pct=2.0, min_separation=5):
+    """Two highs within tolerance% of each other, with a valley between."""
+    patterns = []
+    highs = [s for s in swings if s["type"] == "high"]
+    for i in range(len(highs)):
+        for j in range(i + 1, len(highs)):
+            h1, h2 = highs[i], highs[j]
+            sep = h2["idx"] - h1["idx"]
+            if sep < min_separation or sep > 50:
+                continue
+            avg = (h1["price"] + h2["price"]) / 2
+            if abs(h1["price"] - h2["price"]) / avg * 100 > tolerance_pct:
+                continue
+            # Valley between them
+            valley_low = float(df["low"].iloc[h1["idx"]:h2["idx"]].min())
+            if valley_low > min(h1["price"], h2["price"]) * 0.97:
+                continue  # not enough valley depth
+            neckline = valley_low
+            target = neckline - (avg - neckline)  # measured move
+            patterns.append({
+                "type": "double_top",
+                "p1_idx": h1["idx"], "p1_price": round(h1["price"], 2),
+                "p2_idx": h2["idx"], "p2_price": round(h2["price"], 2),
+                "neckline": round(neckline, 2),
+                "target": round(target, 2),
+                "bias": "bearish",
+            })
+    return patterns
+
+
+def detect_double_bottom(swings, df, tolerance_pct=2.0, min_separation=5):
+    """Two lows within tolerance% of each other, with a peak between."""
+    patterns = []
+    lows = [s for s in swings if s["type"] == "low"]
+    for i in range(len(lows)):
+        for j in range(i + 1, len(lows)):
+            l1, l2 = lows[i], lows[j]
+            sep = l2["idx"] - l1["idx"]
+            if sep < min_separation or sep > 50:
+                continue
+            avg = (l1["price"] + l2["price"]) / 2
+            if abs(l1["price"] - l2["price"]) / avg * 100 > tolerance_pct:
+                continue
+            peak_high = float(df["high"].iloc[l1["idx"]:l2["idx"]].max())
+            if peak_high < max(l1["price"], l2["price"]) * 1.03:
+                continue
+            neckline = peak_high
+            target = neckline + (neckline - avg)
+            patterns.append({
+                "type": "double_bottom",
+                "p1_idx": l1["idx"], "p1_price": round(l1["price"], 2),
+                "p2_idx": l2["idx"], "p2_price": round(l2["price"], 2),
+                "neckline": round(neckline, 2),
+                "target": round(target, 2),
+                "bias": "bullish",
+            })
+    return patterns
+
+
+def detect_triangle(swings, df, lookback=40):
+    """Converging triangle: highs descending + lows ascending (or one flat)."""
+    patterns = []
+    if len(df) < lookback:
+        return patterns
+    recent = [s for s in swings if s["idx"] >= len(df) - lookback]
+    highs = [s for s in recent if s["type"] == "high"]
+    lows = [s for s in recent if s["type"] == "low"]
+    if len(highs) < 2 or len(lows) < 2:
+        return patterns
+
+    # Take last 3 of each
+    highs = highs[-3:]; lows = lows[-3:]
+
+    # Check trends
+    h_descending = all(highs[i]["price"] < highs[i-1]["price"] * 1.01 for i in range(1, len(highs)))
+    l_ascending = all(lows[i]["price"] > lows[i-1]["price"] * 0.99 for i in range(1, len(lows)))
+
+    if h_descending and l_ascending and len(highs) >= 2 and len(lows) >= 2:
+        triangle_type = "symmetric"
+        bias = "neutral"
+        if highs[-1]["price"] - highs[0]["price"] > -0.005 * highs[0]["price"]:
+            triangle_type = "ascending"
+            bias = "bullish"
+        elif lows[-1]["price"] - lows[0]["price"] < 0.005 * lows[0]["price"]:
+            triangle_type = "descending"
+            bias = "bearish"
+
+        patterns.append({
+            "type": f"triangle_{triangle_type}",
+            "upper_start_idx": highs[0]["idx"], "upper_start_price": round(highs[0]["price"], 2),
+            "upper_end_idx": highs[-1]["idx"], "upper_end_price": round(highs[-1]["price"], 2),
+            "lower_start_idx": lows[0]["idx"], "lower_start_price": round(lows[0]["price"], 2),
+            "lower_end_idx": lows[-1]["idx"], "lower_end_price": round(lows[-1]["price"], 2),
+            "bias": bias,
+        })
+    return patterns
+
+
+def detect_flag(df, swings, lookback=20):
+    """Flag pattern: sharp move (the pole) followed by tight consolidation."""
+    patterns = []
+    if len(df) < lookback + 5:
+        return patterns
+
+    c = df["close"]; h = df["high"]; l = df["low"]
+    # Look at most recent lookback bars for consolidation
+    recent_h = float(h.iloc[-lookback:].max())
+    recent_l = float(l.iloc[-lookback:].min())
+    range_pct = (recent_h - recent_l) / recent_l * 100
+    if range_pct > 8:  # too volatile, not a flag
+        return patterns
+
+    # Check the pole — last 5-15 bars before the consolidation
+    pole_start = max(0, len(df) - lookback - 15)
+    pole_end = len(df) - lookback
+    if pole_end - pole_start < 5:
+        return patterns
+    pole_low = float(l.iloc[pole_start:pole_end].min())
+    pole_high = float(h.iloc[pole_start:pole_end].max())
+
+    # Bull flag: strong up move + tight consolidation drift down
+    if pole_high > recent_h * 0.99 and (pole_high - pole_low) / pole_low * 100 > 8:
+        target = recent_h + (pole_high - pole_low)
+        patterns.append({
+            "type": "bull_flag",
+            "pole_start_idx": pole_start, "pole_high": round(pole_high, 2),
+            "pole_low": round(pole_low, 2),
+            "flag_top_idx": len(df) - 1, "flag_top": round(recent_h, 2),
+            "flag_bottom": round(recent_l, 2),
+            "target": round(target, 2),
+            "bias": "bullish",
+        })
+    # Bear flag: strong down move + tight consolidation drift up
+    elif pole_low < recent_l * 1.01 and (pole_high - pole_low) / pole_low * 100 > 8:
+        target = recent_l - (pole_high - pole_low)
+        patterns.append({
+            "type": "bear_flag",
+            "pole_start_idx": pole_start, "pole_high": round(pole_high, 2),
+            "pole_low": round(pole_low, 2),
+            "flag_top_idx": len(df) - 1, "flag_top": round(recent_h, 2),
+            "flag_bottom": round(recent_l, 2),
+            "target": round(max(target, 0), 2),
+            "bias": "bearish",
+        })
+    return patterns
+
+
+def detect_cup_and_handle(df, swings, min_cup_bars=15, max_cup_bars=120):
+    """Cup & handle: U-shape recovery to previous high + small handle pullback."""
+    patterns = []
+    if len(df) < min_cup_bars + 5:
+        return patterns
+
+    c = df["close"]; h = df["high"]; l = df["low"]
+    highs = [s for s in swings if s["type"] == "high"]
+    lows = [s for s in swings if s["type"] == "low"]
+
+    # Look for: high → low (cup bottom) → high near first → small dip (handle)
+    for i in range(len(highs) - 1):
+        for j in range(i + 1, len(highs)):
+            left_rim = highs[i]
+            right_rim = highs[j]
+            cup_bars = right_rim["idx"] - left_rim["idx"]
+            if cup_bars < min_cup_bars or cup_bars > max_cup_bars:
+                continue
+            # Rims should be similar height
+            avg_rim = (left_rim["price"] + right_rim["price"]) / 2
+            if abs(left_rim["price"] - right_rim["price"]) / avg_rim > 0.05:
+                continue
+            # Cup bottom — find lowest low between rims
+            cup_low_idx = int(l.iloc[left_rim["idx"]:right_rim["idx"]].idxmin())
+            cup_bottom = float(l.iloc[cup_low_idx])
+            cup_depth = (avg_rim - cup_bottom) / avg_rim
+            if cup_depth < 0.10 or cup_depth > 0.50:  # 10-50% depth
+                continue
+            # Handle: small pullback after right rim, max 20% of cup depth
+            handle_end_idx = min(right_rim["idx"] + 15, len(df) - 1)
+            handle_low = float(l.iloc[right_rim["idx"]:handle_end_idx + 1].min())
+            handle_pullback = (avg_rim - handle_low) / avg_rim
+            if handle_pullback < 0.02 or handle_pullback > cup_depth * 0.5:
+                continue
+            target = avg_rim + (avg_rim - cup_bottom)
+            patterns.append({
+                "type": "cup_and_handle",
+                "left_rim_idx": left_rim["idx"], "left_rim_price": round(left_rim["price"], 2),
+                "cup_bottom_idx": cup_low_idx, "cup_bottom_price": round(cup_bottom, 2),
+                "right_rim_idx": right_rim["idx"], "right_rim_price": round(right_rim["price"], 2),
+                "handle_end_idx": handle_end_idx, "handle_low": round(handle_low, 2),
+                "neckline": round(avg_rim, 2),
+                "target": round(target, 2),
+                "bias": "bullish",
+            })
+    # Return only the most recent
+    return patterns[-2:] if patterns else []
+
+
 def calc_bollinger_bands(c, period=20, num_std=2):
     """Bollinger Bands: middle (SMA), upper, lower."""
     middle = c.rolling(period).mean()
@@ -788,6 +984,30 @@ def get_smc_chart(symbol: str, days: int = 180, interval: str = "daily"):
     stoch_data = calc_stochastic(h, l, c)
     bb_data = calc_bollinger_bands(c, period=20, num_std=2)
 
+    # Phase 2 chart patterns
+    period_swings = find_swings(h, l, n=3)
+    chart_patterns = []
+    try:
+        chart_patterns.extend(detect_double_top(period_swings, df))
+        chart_patterns.extend(detect_double_bottom(period_swings, df))
+        chart_patterns.extend(detect_triangle(period_swings, df))
+        chart_patterns.extend(detect_flag(df, period_swings))
+        chart_patterns.extend(detect_cup_and_handle(df, period_swings))
+    except Exception:
+        pass
+
+    # Convert pattern indices to times
+    def _idx_t(i):
+        if 0 <= i < len(df):
+            return df.iloc[i]["date"].strftime("%Y-%m-%d")
+        return None
+    for p in chart_patterns:
+        for k in list(p.keys()):
+            if k.endswith("_idx"):
+                tk = k.replace("_idx", "_time")
+                p[tk] = _idx_t(p[k])
+    chart_patterns = chart_patterns[-6:]  # cap visible patterns
+
     # Build aligned indicator series with timestamps
     times_iso = [df.iloc[i]["date"].strftime("%Y-%m-%d") for i in range(len(df))]
     rsi_series = [
@@ -922,5 +1142,6 @@ def get_smc_chart(symbol: str, days: int = 180, interval: str = "daily"):
         "macd": macd_series,
         "stochastic": stoch_series,
         "bollinger_bands": bb_series,
+        "chart_patterns": chart_patterns,
         "current_price": round(float(c.iloc[-1]), 2),
     }

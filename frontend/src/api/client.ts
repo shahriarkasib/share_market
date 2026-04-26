@@ -269,6 +269,13 @@ export interface SMCChartData {
     middle: { time: string; value: number }[];
     lower: { time: string; value: number }[];
   };
+  chart_patterns?: Array<{
+    type: string;
+    bias: "bullish" | "bearish" | "neutral";
+    neckline?: number;
+    target?: number;
+    [k: string]: unknown;
+  }>;
 }
 
 const smcCache = new Map<string, { data: SMCChartData; ts: number }>();

@@ -15,6 +15,7 @@ import {
 import { FVGPrimitive } from "./fvgPrimitive";
 import { GannPrimitive, FibCirclesPrimitive } from "./gannFibPrimitives";
 import { OrderBlockPrimitive } from "./orderBlockPrimitive";
+import { PatternPrimitive, type ChartPattern } from "./patternPrimitive";
 import clsx from "clsx";
 import {
   ArrowLeft,
@@ -50,6 +51,7 @@ interface Toggles {
   rsi: boolean;
   macd: boolean;
   stoch: boolean;
+  patterns: boolean;
 }
 
 const DEFAULT_TOGGLES: Toggles = {
@@ -68,6 +70,7 @@ const DEFAULT_TOGGLES: Toggles = {
   rsi: false,
   macd: false,
   stoch: false,
+  patterns: true,
 };
 
 const TOGGLES_STORAGE_KEY = "smc-chart-toggles-v1";
@@ -111,6 +114,7 @@ export default function SMCChart() {
   const obPrimitiveRef = useRef<OrderBlockPrimitive | null>(null);
   const gannPrimitiveRef = useRef<GannPrimitive | null>(null);
   const fibCirclesPrimitiveRef = useRef<FibCirclesPrimitive | null>(null);
+  const patternPrimitiveRef = useRef<PatternPrimitive | null>(null);
   const bosSeriesRef = useRef<ISeriesApi<"Line">[]>([]);
   const bosMarkersRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
   const levelsLinesRef = useRef<IPriceLine[]>([]);
@@ -295,6 +299,7 @@ export default function SMCChart() {
     obPrimitiveRef.current = null;
     gannPrimitiveRef.current = null;
     fibCirclesPrimitiveRef.current = null;
+    patternPrimitiveRef.current = null;
     bosSeriesRef.current = [];
     bosMarkersRef.current = null;
     levelsLinesRef.current = [];
@@ -441,6 +446,24 @@ export default function SMCChart() {
       /* */
     }
   }, [chartReady, data, toggles.fibCircles]);
+
+  // === Chart Patterns (Cup & Handle / Flag / Triangle / Double Top/Bottom) ===
+  useEffect(() => {
+    if (!chartReady || !data) return;
+    const candleSeries = candleSeriesRef.current;
+    if (!candleSeries) return;
+
+    if (patternPrimitiveRef.current) {
+      try { candleSeries.detachPrimitive(patternPrimitiveRef.current); } catch { /* */ }
+      patternPrimitiveRef.current = null;
+    }
+    if (!toggles.patterns || !data.chart_patterns?.length) return;
+    try {
+      const primitive = new PatternPrimitive(data.chart_patterns as ChartPattern[]);
+      candleSeries.attachPrimitive(primitive);
+      patternPrimitiveRef.current = primitive;
+    } catch { /* */ }
+  }, [chartReady, data, toggles.patterns]);
 
   // === BOS / ChoCh ===
   useEffect(() => {
@@ -935,6 +958,7 @@ export default function SMCChart() {
     { key: "ma50", label: "MA50", color: "text-blue-400" },
     { key: "ma200", label: "MA200", color: "text-pink-400" },
     { key: "bb", label: "Boll Bands", color: "text-violet-300" },
+    { key: "patterns", label: "Patterns", color: "text-cyan-400" },
     { key: "rsi", label: "RSI", color: "text-purple-300" },
     { key: "macd", label: "MACD", color: "text-blue-300" },
     { key: "stoch", label: "Stoch", color: "text-cyan-300" },
