@@ -276,6 +276,11 @@ export interface SMCChartData {
     target?: number;
     [k: string]: unknown;
   }>;
+  harmonic_patterns?: Array<{
+    type: string;
+    bias: "bullish" | "bearish";
+    [k: string]: unknown;
+  }>;
 }
 
 const smcCache = new Map<string, { data: SMCChartData; ts: number }>();

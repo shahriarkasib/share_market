@@ -16,6 +16,7 @@ import { FVGPrimitive } from "./fvgPrimitive";
 import { GannPrimitive, FibCirclesPrimitive } from "./gannFibPrimitives";
 import { OrderBlockPrimitive } from "./orderBlockPrimitive";
 import { PatternPrimitive, type ChartPattern } from "./patternPrimitive";
+import { HarmonicPrimitive, type HarmonicPattern } from "./harmonicPrimitive";
 import clsx from "clsx";
 import {
   ArrowLeft,
@@ -52,6 +53,7 @@ interface Toggles {
   macd: boolean;
   stoch: boolean;
   patterns: boolean;
+  harmonics: boolean;
 }
 
 const DEFAULT_TOGGLES: Toggles = {
@@ -71,6 +73,7 @@ const DEFAULT_TOGGLES: Toggles = {
   macd: false,
   stoch: false,
   patterns: true,
+  harmonics: true,
 };
 
 const TOGGLES_STORAGE_KEY = "smc-chart-toggles-v1";
@@ -115,6 +118,7 @@ export default function SMCChart() {
   const gannPrimitiveRef = useRef<GannPrimitive | null>(null);
   const fibCirclesPrimitiveRef = useRef<FibCirclesPrimitive | null>(null);
   const patternPrimitiveRef = useRef<PatternPrimitive | null>(null);
+  const harmonicPrimitiveRef = useRef<HarmonicPrimitive | null>(null);
   const bosSeriesRef = useRef<ISeriesApi<"Line">[]>([]);
   const bosMarkersRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
   const levelsLinesRef = useRef<IPriceLine[]>([]);
@@ -300,6 +304,7 @@ export default function SMCChart() {
     gannPrimitiveRef.current = null;
     fibCirclesPrimitiveRef.current = null;
     patternPrimitiveRef.current = null;
+    harmonicPrimitiveRef.current = null;
     bosSeriesRef.current = [];
     bosMarkersRef.current = null;
     levelsLinesRef.current = [];
@@ -464,6 +469,24 @@ export default function SMCChart() {
       patternPrimitiveRef.current = primitive;
     } catch { /* */ }
   }, [chartReady, data, toggles.patterns]);
+
+  // === Harmonic Patterns (XABCD) ===
+  useEffect(() => {
+    if (!chartReady || !data) return;
+    const candleSeries = candleSeriesRef.current;
+    if (!candleSeries) return;
+
+    if (harmonicPrimitiveRef.current) {
+      try { candleSeries.detachPrimitive(harmonicPrimitiveRef.current); } catch { /* */ }
+      harmonicPrimitiveRef.current = null;
+    }
+    if (!toggles.harmonics || !data.harmonic_patterns?.length) return;
+    try {
+      const primitive = new HarmonicPrimitive(data.harmonic_patterns as HarmonicPattern[]);
+      candleSeries.attachPrimitive(primitive);
+      harmonicPrimitiveRef.current = primitive;
+    } catch { /* */ }
+  }, [chartReady, data, toggles.harmonics]);
 
   // === BOS / ChoCh ===
   useEffect(() => {
@@ -959,6 +982,7 @@ export default function SMCChart() {
     { key: "ma200", label: "MA200", color: "text-pink-400" },
     { key: "bb", label: "Boll Bands", color: "text-violet-300" },
     { key: "patterns", label: "Patterns", color: "text-cyan-400" },
+    { key: "harmonics", label: "Harmonics", color: "text-rose-400" },
     { key: "rsi", label: "RSI", color: "text-purple-300" },
     { key: "macd", label: "MACD", color: "text-blue-300" },
     { key: "stoch", label: "Stoch", color: "text-cyan-300" },

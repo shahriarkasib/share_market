@@ -298,6 +298,145 @@ def calc_stochastic(h, l, c, k_period=14, d_period=3):
     }
 
 
+def detect_harmonic_patterns(swings, df, tolerance=0.05):
+    """
+    Detect XABCD harmonic patterns (Butterfly, Gartley, Bat, Crab, Shark).
+
+    Each pattern requires 5 alternating swing points with specific Fib ratio
+    relationships between the legs:
+        XA  : initial leg
+        AB  : retracement of XA
+        BC  : retracement of AB (toward A)
+        CD  : extension toward / past X
+        AD  : projection from A through D
+
+    `tolerance` is +/- band on the ideal ratios.
+    """
+    patterns = []
+    if len(swings) < 5:
+        return patterns
+
+    # Filter to alternating high/low swings only (real zigzag)
+    cleaned = []
+    for s in swings:
+        if not cleaned or cleaned[-1]["type"] != s["type"]:
+            cleaned.append(s)
+        else:
+            # Same direction — keep the more extreme
+            if s["type"] == "high" and s["price"] > cleaned[-1]["price"]:
+                cleaned[-1] = s
+            elif s["type"] == "low" and s["price"] < cleaned[-1]["price"]:
+                cleaned[-1] = s
+
+    def near(value, target, tol=tolerance):
+        return abs(value - target) <= tol
+
+    # Each harmonic pattern is defined by 4 ratio bands:
+    # AB/XA, BC/AB, CD/BC, AD/XA
+    DEFINITIONS = {
+        "gartley": {
+            "AB_XA": (0.618, 0.05),
+            "BC_AB": ((0.382, 0.886), 0.05),
+            "CD_BC": ((1.13, 1.618), 0.10),
+            "AD_XA": (0.786, 0.05),
+        },
+        "bat": {
+            "AB_XA": ((0.382, 0.50), 0.05),
+            "BC_AB": ((0.382, 0.886), 0.05),
+            "CD_BC": ((1.618, 2.618), 0.10),
+            "AD_XA": (0.886, 0.05),
+        },
+        "butterfly": {
+            "AB_XA": (0.786, 0.05),
+            "BC_AB": ((0.382, 0.886), 0.05),
+            "CD_BC": ((1.618, 2.618), 0.10),
+            "AD_XA": (1.27, 0.10),
+        },
+        "crab": {
+            "AB_XA": ((0.382, 0.618), 0.05),
+            "BC_AB": ((0.382, 0.886), 0.05),
+            "CD_BC": ((2.24, 3.618), 0.20),
+            "AD_XA": (1.618, 0.10),
+        },
+        "shark": {
+            "AB_XA": ((0.382, 0.618), 0.05),
+            "BC_AB": ((1.13, 1.618), 0.05),
+            "CD_BC": ((1.618, 2.24), 0.10),
+            "AD_XA": ((0.886, 1.13), 0.05),
+        },
+    }
+
+    def matches(ratio, spec):
+        target, tol = spec
+        if isinstance(target, tuple):
+            lo, hi = target
+            return (lo - tol) <= ratio <= (hi + tol)
+        return abs(ratio - target) <= tol
+
+    # Slide a 5-point window across swing zigzag
+    for i in range(len(cleaned) - 4):
+        X, A, B, C, D = cleaned[i:i + 5]
+        # Bullish pattern: X-high, A-low, B-high, C-low, D-low (final low)
+        # Bearish pattern: opposite
+        seq = [X["type"], A["type"], B["type"], C["type"], D["type"]]
+        if seq == ["high", "low", "high", "low", "low"]:
+            bias = "bearish"
+        elif seq == ["low", "high", "low", "high", "high"]:
+            bias = "bullish"
+        else:
+            continue
+        # Skip — actually XABCD harmonic alternates X→A→B→C→D
+        # so X_high -> A_low -> B_high -> C_low -> D_low (bull) or
+        # X_low -> A_high -> B_low -> C_high -> D_high (bear)
+        # The above seq has D=C type which is wrong. Re-check:
+
+    # Cleaner: alternate XABC then D extends past A (in same direction as XA)
+    for i in range(len(cleaned) - 4):
+        X, A, B, C, D = cleaned[i:i + 5]
+        types = [s["type"] for s in (X, A, B, C, D)]
+        # Strict zigzag: high-low-high-low-high or low-high-low-high-low
+        if not (types == ["high", "low", "high", "low", "high"] or
+                types == ["low", "high", "low", "high", "low"]):
+            continue
+        bias = "bearish" if types[-1] == "high" else "bullish"
+
+        XA = abs(A["price"] - X["price"])
+        AB = abs(B["price"] - A["price"])
+        BC = abs(C["price"] - B["price"])
+        CD = abs(D["price"] - C["price"])
+        AD = abs(D["price"] - A["price"])
+        if XA == 0 or AB == 0 or BC == 0:
+            continue
+
+        ab_xa = AB / XA
+        bc_ab = BC / AB
+        cd_bc = CD / BC
+        ad_xa = AD / XA
+
+        for name, spec in DEFINITIONS.items():
+            if (matches(ab_xa, spec["AB_XA"]) and
+                matches(bc_ab, spec["BC_AB"]) and
+                matches(cd_bc, spec["CD_BC"]) and
+                matches(ad_xa, spec["AD_XA"])):
+                patterns.append({
+                    "type": f"harmonic_{name}",
+                    "bias": bias,
+                    "x_idx": X["idx"], "x_price": round(X["price"], 2),
+                    "a_idx": A["idx"], "a_price": round(A["price"], 2),
+                    "b_idx": B["idx"], "b_price": round(B["price"], 2),
+                    "c_idx": C["idx"], "c_price": round(C["price"], 2),
+                    "d_idx": D["idx"], "d_price": round(D["price"], 2),
+                    "ratios": {
+                        "AB/XA": round(ab_xa, 3),
+                        "BC/AB": round(bc_ab, 3),
+                        "CD/BC": round(cd_bc, 3),
+                        "AD/XA": round(ad_xa, 3),
+                    },
+                })
+                break  # one pattern per window
+    return patterns[-3:]  # cap to most recent 3
+
+
 def detect_double_top(swings, df, tolerance_pct=2.0, min_separation=5):
     """Two highs within tolerance% of each other, with a valley between."""
     patterns = []
@@ -996,6 +1135,13 @@ def get_smc_chart(symbol: str, days: int = 180, interval: str = "daily"):
     except Exception:
         pass
 
+    # Phase 3 harmonic patterns
+    harmonic_patterns = []
+    try:
+        harmonic_patterns = detect_harmonic_patterns(period_swings, df)
+    except Exception:
+        pass
+
     # Convert pattern indices to times
     def _idx_t(i):
         if 0 <= i < len(df):
@@ -1007,6 +1153,13 @@ def get_smc_chart(symbol: str, days: int = 180, interval: str = "daily"):
                 tk = k.replace("_idx", "_time")
                 p[tk] = _idx_t(p[k])
     chart_patterns = chart_patterns[-6:]  # cap visible patterns
+
+    # Convert harmonic indices to times
+    for p in harmonic_patterns:
+        for k in list(p.keys()):
+            if k.endswith("_idx"):
+                tk = k.replace("_idx", "_time")
+                p[tk] = _idx_t(p[k])
 
     # Build aligned indicator series with timestamps
     times_iso = [df.iloc[i]["date"].strftime("%Y-%m-%d") for i in range(len(df))]
@@ -1143,5 +1296,6 @@ def get_smc_chart(symbol: str, days: int = 180, interval: str = "daily"):
         "stochastic": stoch_series,
         "bollinger_bands": bb_series,
         "chart_patterns": chart_patterns,
+        "harmonic_patterns": harmonic_patterns,
         "current_price": round(float(c.iloc[-1]), 2),
     }
