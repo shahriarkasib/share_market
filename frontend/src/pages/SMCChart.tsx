@@ -61,8 +61,8 @@ interface Toggles {
 const DEFAULT_TOGGLES: Toggles = {
   fvg: true,
   bos: true,
-  ob: true,
-  levels: true,
+  ob: false,
+  levels: false,
   fib: false,
   fibCircles: false,
   gann: false,
@@ -74,15 +74,15 @@ const DEFAULT_TOGGLES: Toggles = {
   rsi: false,
   macd: false,
   stoch: false,
-  patterns: true,
-  harmonics: true,
-  candles: true,
-  sr: true,
+  patterns: false,
+  harmonics: false,
+  candles: false,
+  sr: false,
 };
 
-const TOGGLES_STORAGE_KEY = "smc-chart-toggles-v1";
-const MAX_BOS = 8;
-const MAX_FVG = 30;
+const TOGGLES_STORAGE_KEY = "smc-chart-toggles-v2";
+const MAX_BOS = 2;
+const MAX_FVG = 6;
 const CHART_HEIGHT = 600;
 
 function loadToggles(): Toggles {
@@ -143,7 +143,7 @@ export default function SMCChart() {
   // State
   const [data, setData] = useState<SMCChartData | null>(null);
   const [stocks, setStocks] = useState<StockPrice[]>([]);
-  const [period, setPeriod] = useState<Period>("6m");
+  const [period, setPeriod] = useState<Period>("2y");
   const [timeframe, setTimeframe] = useState<Timeframe>("daily");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -379,8 +379,16 @@ export default function SMCChart() {
     if (!toggles.fvg || data.fvgs.length === 0) return;
 
     try {
-      const zones = data.fvgs.slice(-MAX_FVG);
-      const primitive = new FVGPrimitive(zones);
+      // Show only unmitigated FVGs near current price (≤15% away), most recent first
+      const cp = data.current_price;
+      const filtered = data.fvgs
+        .filter((f) => !f.mitigated)
+        .filter((f) => {
+          const mid = (f.top + f.bottom) / 2;
+          return Math.abs(mid - cp) / cp < 0.15;
+        })
+        .slice(-MAX_FVG);
+      const primitive = new FVGPrimitive(filtered);
       candleSeries.attachPrimitive(primitive);
       fvgPrimitiveRef.current = primitive;
     } catch {
@@ -524,15 +532,22 @@ export default function SMCChart() {
     };
     const allMarkers: Marker[] = [];
 
-    // BOS / ChoCh segments + markers
-    if (toggles.bos) {
-      const events = data.structure.slice(-MAX_BOS);
+    // BOS / ChoCh — show only the LATEST BOS and LATEST ChoCh (matches TradingView SMC indicator)
+    if (toggles.bos && data.structure.length > 0) {
+      const latestBOS = [...data.structure].reverse().find((e) => e.type.includes("BOS"));
+      const latestChoCh = [...data.structure].reverse().find((e) => e.type.includes("ChoCh"));
+      const events = [latestBOS, latestChoCh].filter(Boolean) as typeof data.structure;
+
       events.forEach((ev) => {
         try {
           const isBull = ev.type.startsWith("bullish");
-          const color = isBull ? "rgba(38, 166, 154, 0.7)" : "rgba(239, 83, 80, 0.7)";
+          const isBOS = ev.type.includes("BOS");
+          // BOS = solid green, ChoCh = solid pink (matches reference)
+          const color = isBOS
+            ? (isBull ? "rgba(38, 166, 154, 0.9)" : "rgba(239, 83, 80, 0.9)")
+            : (isBull ? "rgba(38, 166, 154, 0.9)" : "rgba(236, 72, 153, 0.9)");
           const line = chart.addSeries(LineSeries, {
-            color, lineWidth: 1, lineStyle: 2,
+            color, lineWidth: 1, lineStyle: 0,  // solid line
             priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
           });
           line.setData([
@@ -542,15 +557,16 @@ export default function SMCChart() {
           bosSeriesRef.current.push(line);
         } catch {}
       });
+
       events.forEach((ev) => {
         const isBull = ev.type.startsWith("bullish");
         const isBOS = ev.type.includes("BOS");
         allMarkers.push({
-          time: ev.time as Time,
-          position: isBull ? ("belowBar" as const) : ("aboveBar" as const),
-          color: isBull ? "#26a69a" : "#ef5350",
-          shape: isBull ? ("arrowUp" as const) : ("arrowDown" as const),
-          text: isBOS ? "BOS" : "ChoCh",
+          time: ev.from_time as Time,
+          position: isBull ? ("aboveBar" as const) : ("belowBar" as const),
+          color: isBOS ? (isBull ? "#26a69a" : "#ef5350") : (isBull ? "#26a69a" : "#ec4899"),
+          shape: "circle" as const,
+          text: isBOS ? "bos" : "ChoCh",
         });
       });
     }
@@ -1183,6 +1199,13 @@ export default function SMCChart() {
         <span className="text-xs text-gray-500">Indicators:</span>
         {toggleButtons.map((b) => {
           const on = toggles[b.key];
+          let count: number | null = null;
+          if (b.key === "patterns") count = data?.chart_patterns?.length ?? null;
+          else if (b.key === "harmonics") count = data?.harmonic_patterns?.length ?? null;
+          else if (b.key === "candles") count = data?.candle_patterns?.length ?? null;
+          else if (b.key === "fvg") count = data?.fvgs?.length ?? null;
+          else if (b.key === "ob") count = data?.order_blocks?.length ?? null;
+          else if (b.key === "sr") count = data?.support_resistance?.length ?? null;
           return (
             <button
               key={b.key}
@@ -1200,6 +1223,14 @@ export default function SMCChart() {
                 <EyeOff className="w-3 h-3" />
               )}
               <span className={on ? b.color : "text-gray-500"}>{b.label}</span>
+              {count !== null && (
+                <span className={clsx(
+                  "px-1 rounded text-[10px] font-mono",
+                  count > 0 ? "bg-gray-200 dark:bg-gray-700" : "text-gray-400",
+                )}>
+                  {count}
+                </span>
+              )}
             </button>
           );
         })}

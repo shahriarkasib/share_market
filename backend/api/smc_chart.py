@@ -1330,9 +1330,13 @@ def generate_analysis(structure_events, fvgs, order_blocks, key_levels, current_
             "text": f"Daily close below ৳{breakdown_trigger} = downtrend confirmed → avoid/short",
         })
     elif bias == "WHIPSAW":
+        # Use last 20 bars range for actionable near-term levels (not full-window swings)
+        recent_window = min(20, len(df))
+        recent_high = round(float(df["high"].iloc[-recent_window:].max()), 2)
+        recent_low = round(float(df["low"].iloc[-recent_window:].min()), 2)
         triggers.append({
             "icon": "⏸",
-            "text": f"Wait for daily close above ৳{swing_high} OR below ৳{swing_low} to pick a side",
+            "text": f"Wait for daily close above ৳{recent_high} OR below ৳{recent_low} (20-day range) to pick a side",
         })
     else:
         triggers.append({
