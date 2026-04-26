@@ -262,6 +262,55 @@ def calc_moving_averages(c, periods=(20, 50, 200)):
     return out
 
 
+def calc_rsi(c, period=14):
+    """Wilder's RSI."""
+    delta = c.diff()
+    gain = delta.where(delta > 0, 0).ewm(alpha=1/period, adjust=False).mean()
+    loss = (-delta.where(delta < 0, 0)).ewm(alpha=1/period, adjust=False).mean()
+    rs = gain / loss.replace(0, 1e-10)
+    rsi = 100 - (100 / (1 + rs))
+    return [None if pd.isna(v) else round(float(v), 2) for v in rsi]
+
+
+def calc_macd(c, fast=12, slow=26, signal=9):
+    """MACD line, signal line, histogram."""
+    ema_fast = c.ewm(span=fast, adjust=False).mean()
+    ema_slow = c.ewm(span=slow, adjust=False).mean()
+    macd_line = ema_fast - ema_slow
+    signal_line = macd_line.ewm(span=signal, adjust=False).mean()
+    hist = macd_line - signal_line
+    return {
+        "macd": [None if pd.isna(v) else round(float(v), 3) for v in macd_line],
+        "signal": [None if pd.isna(v) else round(float(v), 3) for v in signal_line],
+        "histogram": [None if pd.isna(v) else round(float(v), 3) for v in hist],
+    }
+
+
+def calc_stochastic(h, l, c, k_period=14, d_period=3):
+    """Stochastic oscillator (%K and %D)."""
+    lowest = l.rolling(k_period).min()
+    highest = h.rolling(k_period).max()
+    k = 100 * (c - lowest) / (highest - lowest).replace(0, 1e-10)
+    d = k.rolling(d_period).mean()
+    return {
+        "k": [None if pd.isna(v) else round(float(v), 2) for v in k],
+        "d": [None if pd.isna(v) else round(float(v), 2) for v in d],
+    }
+
+
+def calc_bollinger_bands(c, period=20, num_std=2):
+    """Bollinger Bands: middle (SMA), upper, lower."""
+    middle = c.rolling(period).mean()
+    std = c.rolling(period).std()
+    upper = middle + num_std * std
+    lower = middle - num_std * std
+    return {
+        "upper": [None if pd.isna(v) else round(float(v), 2) for v in upper],
+        "middle": [None if pd.isna(v) else round(float(v), 2) for v in middle],
+        "lower": [None if pd.isna(v) else round(float(v), 2) for v in lower],
+    }
+
+
 def calc_gann_fan(df, pivot_idx, pivot_price, direction="up"):
     """
     Gann Fan from a pivot point. Returns 9 angle lines at the classic ratios.
@@ -733,6 +782,42 @@ def get_smc_chart(symbol: str, days: int = 180, interval: str = "daily"):
     pivots = calc_pivot_points(h, l, c)
     mas = calc_moving_averages(c, periods=(20, 50, 200))
 
+    # Phase 1 indicators
+    rsi_vals = calc_rsi(c, period=14)
+    macd_data = calc_macd(c)
+    stoch_data = calc_stochastic(h, l, c)
+    bb_data = calc_bollinger_bands(c, period=20, num_std=2)
+
+    # Build aligned indicator series with timestamps
+    times_iso = [df.iloc[i]["date"].strftime("%Y-%m-%d") for i in range(len(df))]
+    rsi_series = [
+        {"time": times_iso[i], "value": rsi_vals[i]}
+        for i in range(len(df)) if rsi_vals[i] is not None
+    ]
+    macd_series = {
+        "macd": [{"time": times_iso[i], "value": macd_data["macd"][i]}
+                 for i in range(len(df)) if macd_data["macd"][i] is not None],
+        "signal": [{"time": times_iso[i], "value": macd_data["signal"][i]}
+                   for i in range(len(df)) if macd_data["signal"][i] is not None],
+        "histogram": [{"time": times_iso[i], "value": macd_data["histogram"][i],
+                       "color": "#26a69a" if macd_data["histogram"][i] >= 0 else "#ef5350"}
+                      for i in range(len(df)) if macd_data["histogram"][i] is not None],
+    }
+    stoch_series = {
+        "k": [{"time": times_iso[i], "value": stoch_data["k"][i]}
+              for i in range(len(df)) if stoch_data["k"][i] is not None],
+        "d": [{"time": times_iso[i], "value": stoch_data["d"][i]}
+              for i in range(len(df)) if stoch_data["d"][i] is not None],
+    }
+    bb_series = {
+        "upper": [{"time": times_iso[i], "value": bb_data["upper"][i]}
+                  for i in range(len(df)) if bb_data["upper"][i] is not None],
+        "middle": [{"time": times_iso[i], "value": bb_data["middle"][i]}
+                   for i in range(len(df)) if bb_data["middle"][i] is not None],
+        "lower": [{"time": times_iso[i], "value": bb_data["lower"][i]}
+                  for i in range(len(df)) if bb_data["lower"][i] is not None],
+    }
+
     # Key levels for trade decisions: recent swing high/low, breakout trigger,
     # support break, and current price reference.
     key_levels = []
@@ -833,5 +918,9 @@ def get_smc_chart(symbol: str, days: int = 180, interval: str = "daily"):
         "key_levels": key_levels,
         "order_blocks": order_blocks,
         "analysis": analysis,
+        "rsi": rsi_series,
+        "macd": macd_series,
+        "stochastic": stoch_series,
+        "bollinger_bands": bb_series,
         "current_price": round(float(c.iloc[-1]), 2),
     }

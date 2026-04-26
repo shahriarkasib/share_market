@@ -254,6 +254,21 @@ export interface SMCChartData {
   key_levels?: SMCKeyLevel[];
   order_blocks?: SMCOrderBlock[];
   analysis?: SMCAnalysis;
+  rsi?: { time: string; value: number }[];
+  macd?: {
+    macd: { time: string; value: number }[];
+    signal: { time: string; value: number }[];
+    histogram: { time: string; value: number; color: string }[];
+  };
+  stochastic?: {
+    k: { time: string; value: number }[];
+    d: { time: string; value: number }[];
+  };
+  bollinger_bands?: {
+    upper: { time: string; value: number }[];
+    middle: { time: string; value: number }[];
+    lower: { time: string; value: number }[];
+  };
 }
 
 const smcCache = new Map<string, { data: SMCChartData; ts: number }>();

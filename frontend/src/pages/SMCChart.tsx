@@ -46,6 +46,10 @@ interface Toggles {
   ma20: boolean;
   ma50: boolean;
   ma200: boolean;
+  bb: boolean;
+  rsi: boolean;
+  macd: boolean;
+  stoch: boolean;
 }
 
 const DEFAULT_TOGGLES: Toggles = {
@@ -60,6 +64,10 @@ const DEFAULT_TOGGLES: Toggles = {
   ma20: false,
   ma50: false,
   ma200: false,
+  bb: false,
+  rsi: false,
+  macd: false,
+  stoch: false,
 };
 
 const TOGGLES_STORAGE_KEY = "smc-chart-toggles-v1";
@@ -109,6 +117,14 @@ export default function SMCChart() {
   const fibLinesRef = useRef<IPriceLine[]>([]);
   const pivotLinesRef = useRef<IPriceLine[]>([]);
   const maSeriesRef = useRef<Record<string, ISeriesApi<"Line">>>({});
+  const bbSeriesRef = useRef<{ upper?: ISeriesApi<"Line">; middle?: ISeriesApi<"Line">; lower?: ISeriesApi<"Line"> }>({});
+  // Sub-pane charts: each in its own DOM container, time-synced with main
+  const rsiContainerRef = useRef<HTMLDivElement>(null);
+  const macdContainerRef = useRef<HTMLDivElement>(null);
+  const stochContainerRef = useRef<HTMLDivElement>(null);
+  const rsiChartRef = useRef<IChartApi | null>(null);
+  const macdChartRef = useRef<IChartApi | null>(null);
+  const stochChartRef = useRef<IChartApi | null>(null);
 
   // State
   const [data, setData] = useState<SMCChartData | null>(null);
@@ -648,6 +664,227 @@ export default function SMCChart() {
     });
   }, [chartReady, data, toggles.ma20, toggles.ma50, toggles.ma200]);
 
+  // === Bollinger Bands overlay ===
+  useEffect(() => {
+    if (!chartReady || !data?.bollinger_bands) return;
+    const chart = chartRef.current;
+    if (!chart) return;
+    const enabled = toggles.bb;
+    const ref = bbSeriesRef.current;
+
+    if (enabled && !ref.upper) {
+      try {
+        const up = chart.addSeries(LineSeries, {
+          color: "rgba(167, 139, 250, 0.7)",
+          lineWidth: 1,
+          priceLineVisible: false,
+          lastValueVisible: false,
+        });
+        up.setData(data.bollinger_bands.upper.map((p) => ({ ...p, time: p.time as Time })));
+        const mid = chart.addSeries(LineSeries, {
+          color: "rgba(167, 139, 250, 0.4)",
+          lineWidth: 1,
+          lineStyle: 2,
+          priceLineVisible: false,
+          lastValueVisible: false,
+        });
+        mid.setData(data.bollinger_bands.middle.map((p) => ({ ...p, time: p.time as Time })));
+        const lo = chart.addSeries(LineSeries, {
+          color: "rgba(167, 139, 250, 0.7)",
+          lineWidth: 1,
+          priceLineVisible: false,
+          lastValueVisible: false,
+        });
+        lo.setData(data.bollinger_bands.lower.map((p) => ({ ...p, time: p.time as Time })));
+        bbSeriesRef.current = { upper: up, middle: mid, lower: lo };
+      } catch { /* */ }
+    } else if (!enabled && ref.upper) {
+      try { chart.removeSeries(ref.upper); } catch {}
+      try { ref.middle && chart.removeSeries(ref.middle); } catch {}
+      try { ref.lower && chart.removeSeries(ref.lower); } catch {}
+      bbSeriesRef.current = {};
+    }
+  }, [chartReady, data, toggles.bb]);
+
+  // === Sub-pane: RSI ===
+  useEffect(() => {
+    if (!toggles.rsi || !data?.rsi) {
+      if (rsiChartRef.current) {
+        try { rsiChartRef.current.remove(); } catch {}
+        rsiChartRef.current = null;
+      }
+      return;
+    }
+    if (!rsiContainerRef.current) return;
+    if (rsiChartRef.current) {
+      try { rsiChartRef.current.remove(); } catch {}
+      rsiChartRef.current = null;
+    }
+
+    const chart = createChart(rsiContainerRef.current, {
+      width: rsiContainerRef.current.clientWidth || 800,
+      height: 140,
+      layout: { background: { color: "transparent" }, textColor: "#9ca3af" },
+      grid: { vertLines: { color: "#1f2937" }, horzLines: { color: "#1f2937" } },
+      crosshair: { mode: 1 },
+      rightPriceScale: { borderColor: "#374151" },
+      timeScale: { borderColor: "#374151", timeVisible: true },
+    });
+
+    const rsiSeries = chart.addSeries(LineSeries, {
+      color: "#a78bfa",
+      lineWidth: 1,
+      priceLineVisible: false,
+      lastValueVisible: true,
+    });
+    rsiSeries.setData(data.rsi.map((p) => ({ ...p, time: p.time as Time })));
+
+    // 70 / 30 reference lines
+    rsiSeries.createPriceLine({
+      price: 70, color: "rgba(239, 83, 80, 0.5)", lineWidth: 1, lineStyle: 2,
+      axisLabelVisible: true, title: "70",
+    });
+    rsiSeries.createPriceLine({
+      price: 30, color: "rgba(38, 166, 154, 0.5)", lineWidth: 1, lineStyle: 2,
+      axisLabelVisible: true, title: "30",
+    });
+
+    rsiChartRef.current = chart;
+    chart.timeScale().fitContent();
+
+    const ro = new ResizeObserver(() => {
+      if (rsiContainerRef.current && rsiChartRef.current) {
+        rsiChartRef.current.applyOptions({ width: rsiContainerRef.current.clientWidth });
+      }
+    });
+    ro.observe(rsiContainerRef.current);
+    return () => {
+      ro.disconnect();
+      if (rsiChartRef.current) {
+        try { rsiChartRef.current.remove(); } catch {}
+        rsiChartRef.current = null;
+      }
+    };
+  }, [data, toggles.rsi]);
+
+  // === Sub-pane: MACD ===
+  useEffect(() => {
+    if (!toggles.macd || !data?.macd) {
+      if (macdChartRef.current) {
+        try { macdChartRef.current.remove(); } catch {}
+        macdChartRef.current = null;
+      }
+      return;
+    }
+    if (!macdContainerRef.current) return;
+    if (macdChartRef.current) {
+      try { macdChartRef.current.remove(); } catch {}
+      macdChartRef.current = null;
+    }
+
+    const chart = createChart(macdContainerRef.current, {
+      width: macdContainerRef.current.clientWidth || 800,
+      height: 140,
+      layout: { background: { color: "transparent" }, textColor: "#9ca3af" },
+      grid: { vertLines: { color: "#1f2937" }, horzLines: { color: "#1f2937" } },
+      crosshair: { mode: 1 },
+      rightPriceScale: { borderColor: "#374151" },
+      timeScale: { borderColor: "#374151", timeVisible: true },
+    });
+
+    const histSeries = chart.addSeries(HistogramSeries, {
+      priceFormat: { type: "price", precision: 3, minMove: 0.001 },
+    });
+    histSeries.setData(data.macd.histogram.map((p) => ({ ...p, time: p.time as Time })));
+
+    const macdLine = chart.addSeries(LineSeries, {
+      color: "#60a5fa", lineWidth: 1,
+      priceLineVisible: false, lastValueVisible: true,
+    });
+    macdLine.setData(data.macd.macd.map((p) => ({ ...p, time: p.time as Time })));
+
+    const sigLine = chart.addSeries(LineSeries, {
+      color: "#f97316", lineWidth: 1,
+      priceLineVisible: false, lastValueVisible: true,
+    });
+    sigLine.setData(data.macd.signal.map((p) => ({ ...p, time: p.time as Time })));
+
+    macdChartRef.current = chart;
+    chart.timeScale().fitContent();
+
+    const ro = new ResizeObserver(() => {
+      if (macdContainerRef.current && macdChartRef.current) {
+        macdChartRef.current.applyOptions({ width: macdContainerRef.current.clientWidth });
+      }
+    });
+    ro.observe(macdContainerRef.current);
+    return () => {
+      ro.disconnect();
+      if (macdChartRef.current) {
+        try { macdChartRef.current.remove(); } catch {}
+        macdChartRef.current = null;
+      }
+    };
+  }, [data, toggles.macd]);
+
+  // === Sub-pane: Stochastic ===
+  useEffect(() => {
+    if (!toggles.stoch || !data?.stochastic) {
+      if (stochChartRef.current) {
+        try { stochChartRef.current.remove(); } catch {}
+        stochChartRef.current = null;
+      }
+      return;
+    }
+    if (!stochContainerRef.current) return;
+    if (stochChartRef.current) {
+      try { stochChartRef.current.remove(); } catch {}
+      stochChartRef.current = null;
+    }
+
+    const chart = createChart(stochContainerRef.current, {
+      width: stochContainerRef.current.clientWidth || 800,
+      height: 140,
+      layout: { background: { color: "transparent" }, textColor: "#9ca3af" },
+      grid: { vertLines: { color: "#1f2937" }, horzLines: { color: "#1f2937" } },
+      crosshair: { mode: 1 },
+      rightPriceScale: { borderColor: "#374151" },
+      timeScale: { borderColor: "#374151", timeVisible: true },
+    });
+
+    const k = chart.addSeries(LineSeries, {
+      color: "#60a5fa", lineWidth: 1,
+      priceLineVisible: false, lastValueVisible: true,
+    });
+    k.setData(data.stochastic.k.map((p) => ({ ...p, time: p.time as Time })));
+
+    const d = chart.addSeries(LineSeries, {
+      color: "#f97316", lineWidth: 1,
+      priceLineVisible: false, lastValueVisible: true,
+    });
+    d.setData(data.stochastic.d.map((p) => ({ ...p, time: p.time as Time })));
+
+    k.createPriceLine({ price: 80, color: "rgba(239, 83, 80, 0.5)", lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: "80" });
+    k.createPriceLine({ price: 20, color: "rgba(38, 166, 154, 0.5)", lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: "20" });
+
+    stochChartRef.current = chart;
+    chart.timeScale().fitContent();
+
+    const ro = new ResizeObserver(() => {
+      if (stochContainerRef.current && stochChartRef.current) {
+        stochChartRef.current.applyOptions({ width: stochContainerRef.current.clientWidth });
+      }
+    });
+    ro.observe(stochContainerRef.current);
+    return () => {
+      ro.disconnect();
+      if (stochChartRef.current) {
+        try { stochChartRef.current.remove(); } catch {}
+        stochChartRef.current = null;
+      }
+    };
+  }, [data, toggles.stoch]);
+
   // Filtered stock list
   const filteredStocks = useMemo(() => {
     if (!search.trim()) return stocks.slice(0, 50);
@@ -697,6 +934,10 @@ export default function SMCChart() {
     { key: "ma20", label: "MA20", color: "text-yellow-400" },
     { key: "ma50", label: "MA50", color: "text-blue-400" },
     { key: "ma200", label: "MA200", color: "text-pink-400" },
+    { key: "bb", label: "Boll Bands", color: "text-violet-300" },
+    { key: "rsi", label: "RSI", color: "text-purple-300" },
+    { key: "macd", label: "MACD", color: "text-blue-300" },
+    { key: "stoch", label: "Stoch", color: "text-cyan-300" },
   ];
 
   return (
@@ -994,6 +1235,26 @@ export default function SMCChart() {
           </div>
         )}
       </div>
+
+      {/* Sub-pane indicators */}
+      {toggles.rsi && (
+        <div className="mt-2 bg-white dark:bg-gray-900/30 rounded-lg border border-gray-300 dark:border-gray-700/50 p-2">
+          <div className="text-[11px] uppercase tracking-wide text-purple-400 mb-1 px-1">RSI(14)</div>
+          <div ref={rsiContainerRef} className="w-full" style={{ minHeight: 140 }} />
+        </div>
+      )}
+      {toggles.macd && (
+        <div className="mt-2 bg-white dark:bg-gray-900/30 rounded-lg border border-gray-300 dark:border-gray-700/50 p-2">
+          <div className="text-[11px] uppercase tracking-wide text-blue-400 mb-1 px-1">MACD (12, 26, 9)</div>
+          <div ref={macdContainerRef} className="w-full" style={{ minHeight: 140 }} />
+        </div>
+      )}
+      {toggles.stoch && (
+        <div className="mt-2 bg-white dark:bg-gray-900/30 rounded-lg border border-gray-300 dark:border-gray-700/50 p-2">
+          <div className="text-[11px] uppercase tracking-wide text-cyan-400 mb-1 px-1">Stochastic %K %D</div>
+          <div ref={stochContainerRef} className="w-full" style={{ minHeight: 140 }} />
+        </div>
+      )}
 
       {data && (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
