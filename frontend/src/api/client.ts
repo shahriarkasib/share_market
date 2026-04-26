@@ -281,7 +281,18 @@ export interface SMCChartData {
     bias: "bullish" | "bearish";
     [k: string]: unknown;
   }>;
+  candle_patterns?: Array<{
+    time: string;
+    type: string;
+    bias: "bullish" | "bearish" | "neutral";
+    strength: number;
+    description: string;
+    price_high: number;
+    price_low: number;
+  }>;
 }
+
+export type SMCCandlePattern = NonNullable<SMCChartData["candle_patterns"]>[number];
 
 const smcCache = new Map<string, { data: SMCChartData; ts: number }>();
 // 15s — short enough to feel live, long enough to prevent burst requests when

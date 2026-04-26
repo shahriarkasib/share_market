@@ -54,6 +54,7 @@ interface Toggles {
   stoch: boolean;
   patterns: boolean;
   harmonics: boolean;
+  candles: boolean;
 }
 
 const DEFAULT_TOGGLES: Toggles = {
@@ -74,6 +75,7 @@ const DEFAULT_TOGGLES: Toggles = {
   stoch: false,
   patterns: true,
   harmonics: true,
+  candles: true,
 };
 
 const TOGGLES_STORAGE_KEY = "smc-chart-toggles-v1";
@@ -119,6 +121,7 @@ export default function SMCChart() {
   const fibCirclesPrimitiveRef = useRef<FibCirclesPrimitive | null>(null);
   const patternPrimitiveRef = useRef<PatternPrimitive | null>(null);
   const harmonicPrimitiveRef = useRef<HarmonicPrimitive | null>(null);
+  const candleMarkersRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
   const bosSeriesRef = useRef<ISeriesApi<"Line">[]>([]);
   const bosMarkersRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
   const levelsLinesRef = useRef<IPriceLine[]>([]);
@@ -305,6 +308,7 @@ export default function SMCChart() {
     fibCirclesPrimitiveRef.current = null;
     patternPrimitiveRef.current = null;
     harmonicPrimitiveRef.current = null;
+    candleMarkersRef.current = null;
     bosSeriesRef.current = [];
     bosMarkersRef.current = null;
     levelsLinesRef.current = [];
@@ -488,73 +492,109 @@ export default function SMCChart() {
     } catch { /* */ }
   }, [chartReady, data, toggles.harmonics]);
 
-  // === BOS / ChoCh ===
+  // === Markers (BOS/ChoCh + Candle Patterns combined) ===
+  // Note: createSeriesMarkers REPLACES all markers each call, so BOS and
+  // candles must be merged into one marker set.
   useEffect(() => {
     if (!chartReady || !data) return;
     const chart = chartRef.current;
     const candleSeries = candleSeriesRef.current;
     if (!chart || !candleSeries) return;
 
+    // Always clean up old line segments + markers
     bosSeriesRef.current.forEach((s) => {
-      try {
-        chart.removeSeries(s);
-      } catch {
-        /* */
-      }
+      try { chart.removeSeries(s); } catch {}
     });
     bosSeriesRef.current = [];
     if (bosMarkersRef.current) {
-      try {
-        bosMarkersRef.current.detach();
-      } catch {
-        /* */
-      }
+      try { bosMarkersRef.current.detach(); } catch {}
       bosMarkersRef.current = null;
     }
-    if (!toggles.bos) return;
 
-    const events = data.structure.slice(-MAX_BOS);
-    events.forEach((ev) => {
-      try {
-        const isBull = ev.type.startsWith("bullish");
-        const color = isBull
-          ? "rgba(38, 166, 154, 0.7)"
-          : "rgba(239, 83, 80, 0.7)";
-        const line = chart.addSeries(LineSeries, {
-          color,
-          lineWidth: 1,
-          lineStyle: 2,
-          priceLineVisible: false,
-          lastValueVisible: false,
-          crosshairMarkerVisible: false,
-        });
-        line.setData([
-          { time: ev.from_time as Time, value: ev.from_price },
-          { time: ev.time as Time, value: ev.from_price },
-        ]);
-        bosSeriesRef.current.push(line);
-      } catch {
-        /* */
-      }
-    });
+    type Marker = {
+      time: Time;
+      position: "aboveBar" | "belowBar" | "inBar";
+      color: string;
+      shape: "arrowUp" | "arrowDown" | "circle" | "square";
+      text?: string;
+    };
+    const allMarkers: Marker[] = [];
 
-    try {
-      const markers = events.map((ev) => {
+    // BOS / ChoCh segments + markers
+    if (toggles.bos) {
+      const events = data.structure.slice(-MAX_BOS);
+      events.forEach((ev) => {
+        try {
+          const isBull = ev.type.startsWith("bullish");
+          const color = isBull ? "rgba(38, 166, 154, 0.7)" : "rgba(239, 83, 80, 0.7)";
+          const line = chart.addSeries(LineSeries, {
+            color, lineWidth: 1, lineStyle: 2,
+            priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
+          });
+          line.setData([
+            { time: ev.from_time as Time, value: ev.from_price },
+            { time: ev.time as Time, value: ev.from_price },
+          ]);
+          bosSeriesRef.current.push(line);
+        } catch {}
+      });
+      events.forEach((ev) => {
         const isBull = ev.type.startsWith("bullish");
         const isBOS = ev.type.includes("BOS");
-        return {
+        allMarkers.push({
           time: ev.time as Time,
           position: isBull ? ("belowBar" as const) : ("aboveBar" as const),
           color: isBull ? "#26a69a" : "#ef5350",
           shape: isBull ? ("arrowUp" as const) : ("arrowDown" as const),
           text: isBOS ? "BOS" : "ChoCh",
-        };
+        });
       });
-      bosMarkersRef.current = createSeriesMarkers(candleSeries, markers);
-    } catch {
-      /* */
     }
-  }, [chartReady, data, toggles.bos]);
+
+    // Candle patterns
+    if (toggles.candles && data.candle_patterns) {
+      const seenAt: Record<string, number> = {};  // stack count for same-day patterns
+      data.candle_patterns.forEach((p) => {
+        const isBull = p.bias === "bullish";
+        const isBear = p.bias === "bearish";
+        const color = isBull ? "#22d3ee" : isBear ? "#f97316" : "#a78bfa";
+        // Stack labels above/below to avoid overlap with BOS markers
+        const stackIdx = (seenAt[p.time] = (seenAt[p.time] ?? 0) + 1);
+        const position = (isBull
+          ? "belowBar"
+          : isBear
+          ? "aboveBar"
+          : (stackIdx % 2 ? "aboveBar" : "belowBar")) as "aboveBar" | "belowBar";
+        // Compact label: take first letters of type, e.g. "Bullish Engulfing" → "BE"
+        const short = p.type
+          .replace(/[()]/g, "")
+          .split(" ")
+          .map((w) => w[0])
+          .join("")
+          .toUpperCase()
+          .slice(0, 4);
+        allMarkers.push({
+          time: p.time as Time,
+          position,
+          color,
+          shape: isBull
+            ? ("circle" as const)
+            : isBear
+            ? ("circle" as const)
+            : ("square" as const),
+          text: short,
+        });
+      });
+    }
+
+    if (allMarkers.length > 0) {
+      // Sort by time so lightweight-charts renders them correctly
+      allMarkers.sort((a, b) => String(a.time).localeCompare(String(b.time)));
+      try {
+        bosMarkersRef.current = createSeriesMarkers(candleSeries, allMarkers);
+      } catch {}
+    }
+  }, [chartReady, data, toggles.bos, toggles.candles]);
 
   // === Key Levels ===
   useEffect(() => {
@@ -983,6 +1023,7 @@ export default function SMCChart() {
     { key: "bb", label: "Boll Bands", color: "text-violet-300" },
     { key: "patterns", label: "Patterns", color: "text-cyan-400" },
     { key: "harmonics", label: "Harmonics", color: "text-rose-400" },
+    { key: "candles", label: "Candles", color: "text-cyan-300" },
     { key: "rsi", label: "RSI", color: "text-purple-300" },
     { key: "macd", label: "MACD", color: "text-blue-300" },
     { key: "stoch", label: "Stoch", color: "text-cyan-300" },
@@ -1378,6 +1419,54 @@ export default function SMCChart() {
                   );
                 })}
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Candle Patterns panel */}
+      {data?.candle_patterns && data.candle_patterns.length > 0 && (
+        <div className="mt-4 bg-white dark:bg-gray-800/30 rounded-lg p-4 border border-gray-300 dark:border-gray-700/50">
+          <div className="flex items-center justify-between mb-2">
+            <h3 className="text-sm font-bold text-cyan-600 dark:text-cyan-300">
+              Candlestick Patterns ({data.candle_patterns.length})
+            </h3>
+            <span className="text-[10px] text-gray-500">
+              Most recent first • Strength: ⭐ weak → ⭐⭐⭐ strong
+            </span>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-2 max-h-72 overflow-y-auto">
+            {data.candle_patterns
+              .slice()
+              .reverse()
+              .map((p, i) => (
+                <div
+                  key={i}
+                  className={clsx(
+                    "text-xs flex items-start gap-2 border rounded px-2 py-1.5",
+                    p.bias === "bullish" && "border-emerald-500/30 bg-emerald-500/5",
+                    p.bias === "bearish" && "border-red-500/30 bg-red-500/5",
+                    p.bias === "neutral" && "border-purple-500/30 bg-purple-500/5",
+                  )}
+                >
+                  <span
+                    className={clsx(
+                      "font-bold whitespace-nowrap",
+                      p.bias === "bullish" && "text-emerald-500",
+                      p.bias === "bearish" && "text-red-500",
+                      p.bias === "neutral" && "text-purple-500",
+                    )}
+                  >
+                    {p.bias === "bullish" ? "↑" : p.bias === "bearish" ? "↓" : "•"}{" "}
+                    {p.type}
+                  </span>
+                  <span className="flex-1 text-gray-500 dark:text-gray-400">
+                    {p.description}
+                  </span>
+                  <span className="font-mono text-gray-500 text-[11px] whitespace-nowrap">
+                    {"⭐".repeat(p.strength)} {p.time}
+                  </span>
+                </div>
+              ))}
           </div>
         </div>
       )}

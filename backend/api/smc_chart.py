@@ -298,6 +298,226 @@ def calc_stochastic(h, l, c, k_period=14, d_period=3):
     }
 
 
+def detect_candle_patterns(df, lookback=60):
+    """
+    Detect classical candlestick patterns on the most recent candles.
+    Returns a list of {idx, type, bias, strength, description}.
+
+    Strength: 1 (weak) — 3 (strong) based on body/wick ratios.
+    """
+    patterns = []
+    if len(df) < 5:
+        return patterns
+
+    o = df["open"].astype(float)
+    h = df["high"].astype(float)
+    l = df["low"].astype(float)
+    c = df["close"].astype(float)
+
+    # Helpers
+    def body(i): return abs(c.iloc[i] - o.iloc[i])
+    def rng(i):  return h.iloc[i] - l.iloc[i]
+    def upper_wick(i): return h.iloc[i] - max(o.iloc[i], c.iloc[i])
+    def lower_wick(i): return min(o.iloc[i], c.iloc[i]) - l.iloc[i]
+    def is_green(i): return c.iloc[i] > o.iloc[i]
+    def is_red(i): return c.iloc[i] < o.iloc[i]
+
+    start = max(2, len(df) - lookback)
+
+    for i in range(start, len(df)):
+        b = body(i)
+        r = rng(i)
+        if r <= 0:
+            continue
+        body_pct = b / r
+        upper_pct = upper_wick(i) / r
+        lower_pct = lower_wick(i) / r
+
+        # 1. DOJI (open ≈ close)
+        if body_pct < 0.1 and r > 0:
+            patterns.append({
+                "idx": i, "type": "Doji", "bias": "neutral", "strength": 1,
+                "description": "Open ≈ Close — indecision",
+            })
+
+        # 2. HAMMER (small body, long lower wick, after downtrend)
+        elif body_pct < 0.35 and lower_pct > 0.6 and upper_pct < 0.15:
+            # Confirm downtrend: prior 3 candles trending down
+            prior_down = i >= 3 and c.iloc[i-1] < c.iloc[i-3]
+            patterns.append({
+                "idx": i,
+                "type": "Hammer" if prior_down else "Hanging Man",
+                "bias": "bullish" if prior_down else "bearish",
+                "strength": 2 if prior_down else 1,
+                "description": (
+                    "Long lower wick after downtrend = potential reversal up"
+                    if prior_down
+                    else "Hanging man at top — caution"
+                ),
+            })
+
+        # 3. INVERTED HAMMER / SHOOTING STAR
+        elif body_pct < 0.35 and upper_pct > 0.6 and lower_pct < 0.15:
+            prior_up = i >= 3 and c.iloc[i-1] > c.iloc[i-3]
+            patterns.append({
+                "idx": i,
+                "type": "Shooting Star" if prior_up else "Inverted Hammer",
+                "bias": "bearish" if prior_up else "bullish",
+                "strength": 2,
+                "description": (
+                    "Long upper wick after uptrend = potential reversal down"
+                    if prior_up
+                    else "Inverted hammer at bottom = potential reversal up"
+                ),
+            })
+
+        # 4. MARUBOZU (almost no wicks, full body)
+        elif body_pct > 0.95:
+            patterns.append({
+                "idx": i,
+                "type": "Bullish Marubozu" if is_green(i) else "Bearish Marubozu",
+                "bias": "bullish" if is_green(i) else "bearish",
+                "strength": 3,
+                "description": "Strong directional candle, no rejection",
+            })
+
+        # 5. SPINNING TOP (small body, two wicks)
+        elif body_pct < 0.3 and upper_pct > 0.3 and lower_pct > 0.3:
+            patterns.append({
+                "idx": i, "type": "Spinning Top",
+                "bias": "neutral", "strength": 1,
+                "description": "Indecision — both sides fought, no winner",
+            })
+
+        # === Two-candle patterns (need i ≥ 1) ===
+        if i >= 1:
+            b_prev = body(i-1)
+            if b_prev > 0 and b > 0:
+                # 6. BULLISH ENGULFING
+                if (is_red(i-1) and is_green(i)
+                    and o.iloc[i] <= c.iloc[i-1] and c.iloc[i] >= o.iloc[i-1]
+                    and b > b_prev * 1.05):
+                    patterns.append({
+                        "idx": i, "type": "Bullish Engulfing",
+                        "bias": "bullish", "strength": 3,
+                        "description": "Today's green body engulfs yesterday's red — strong reversal up",
+                    })
+                # 7. BEARISH ENGULFING
+                elif (is_green(i-1) and is_red(i)
+                      and o.iloc[i] >= c.iloc[i-1] and c.iloc[i] <= o.iloc[i-1]
+                      and b > b_prev * 1.05):
+                    patterns.append({
+                        "idx": i, "type": "Bearish Engulfing",
+                        "bias": "bearish", "strength": 3,
+                        "description": "Today's red body engulfs yesterday's green — strong reversal down",
+                    })
+                # 8. PIERCING LINE
+                elif (is_red(i-1) and is_green(i)
+                      and o.iloc[i] < l.iloc[i-1]
+                      and c.iloc[i] > (o.iloc[i-1] + c.iloc[i-1]) / 2
+                      and c.iloc[i] < o.iloc[i-1]):
+                    patterns.append({
+                        "idx": i, "type": "Piercing Line",
+                        "bias": "bullish", "strength": 2,
+                        "description": "Gap down then close past midpoint of red candle = bull reversal",
+                    })
+                # 9. DARK CLOUD COVER
+                elif (is_green(i-1) and is_red(i)
+                      and o.iloc[i] > h.iloc[i-1]
+                      and c.iloc[i] < (o.iloc[i-1] + c.iloc[i-1]) / 2
+                      and c.iloc[i] > o.iloc[i-1]):
+                    patterns.append({
+                        "idx": i, "type": "Dark Cloud Cover",
+                        "bias": "bearish", "strength": 2,
+                        "description": "Gap up then close into green body = bear reversal",
+                    })
+                # 10. BULLISH HARAMI
+                elif (is_red(i-1) and is_green(i)
+                      and o.iloc[i] > c.iloc[i-1] and c.iloc[i] < o.iloc[i-1]
+                      and b < b_prev * 0.7):
+                    patterns.append({
+                        "idx": i, "type": "Bullish Harami",
+                        "bias": "bullish", "strength": 2,
+                        "description": "Small green inside large red = momentum slowing",
+                    })
+                # 11. BEARISH HARAMI
+                elif (is_green(i-1) and is_red(i)
+                      and o.iloc[i] < c.iloc[i-1] and c.iloc[i] > o.iloc[i-1]
+                      and b < b_prev * 0.7):
+                    patterns.append({
+                        "idx": i, "type": "Bearish Harami",
+                        "bias": "bearish", "strength": 2,
+                        "description": "Small red inside large green = momentum slowing",
+                    })
+                # 12. TWEEZER TOP
+                elif (abs(h.iloc[i] - h.iloc[i-1]) / max(h.iloc[i], h.iloc[i-1]) < 0.005
+                      and is_green(i-1) and is_red(i)):
+                    patterns.append({
+                        "idx": i, "type": "Tweezer Top",
+                        "bias": "bearish", "strength": 2,
+                        "description": "Two equal highs back-to-back = top forming",
+                    })
+                # 13. TWEEZER BOTTOM
+                elif (abs(l.iloc[i] - l.iloc[i-1]) / max(l.iloc[i], l.iloc[i-1]) < 0.005
+                      and is_red(i-1) and is_green(i)):
+                    patterns.append({
+                        "idx": i, "type": "Tweezer Bottom",
+                        "bias": "bullish", "strength": 2,
+                        "description": "Two equal lows back-to-back = bottom forming",
+                    })
+
+        # === Three-candle patterns (need i ≥ 2) ===
+        if i >= 2:
+            b1, b2 = body(i-2), body(i-1)
+            r1, r2 = rng(i-2), rng(i-1)
+            # 14. MORNING STAR (red, small body, green)
+            if (is_red(i-2) and r1 > 0 and r2 > 0 and r > 0
+                and b1 / r1 > 0.5         # first is solid red
+                and b2 / r2 < 0.4         # middle is small (star)
+                and is_green(i)
+                and b / r > 0.5
+                and c.iloc[i] > (o.iloc[i-2] + c.iloc[i-2]) / 2):
+                patterns.append({
+                    "idx": i, "type": "Morning Star",
+                    "bias": "bullish", "strength": 3,
+                    "description": "Three-bar reversal: red → indecision → green close above mid = strong bull",
+                })
+            # 15. EVENING STAR
+            elif (is_green(i-2) and r1 > 0 and r2 > 0 and r > 0
+                  and b1 / r1 > 0.5
+                  and b2 / r2 < 0.4
+                  and is_red(i)
+                  and b / r > 0.5
+                  and c.iloc[i] < (o.iloc[i-2] + c.iloc[i-2]) / 2):
+                patterns.append({
+                    "idx": i, "type": "Evening Star",
+                    "bias": "bearish", "strength": 3,
+                    "description": "Three-bar reversal: green → indecision → red close below mid = strong bear",
+                })
+            # 16. THREE WHITE SOLDIERS
+            elif (all(is_green(i-k) for k in (0, 1, 2))
+                  and c.iloc[i] > c.iloc[i-1] > c.iloc[i-2]
+                  and o.iloc[i] > o.iloc[i-1] > o.iloc[i-2]
+                  and all(body(i-k) / max(rng(i-k), 1e-9) > 0.6 for k in (0, 1, 2))):
+                patterns.append({
+                    "idx": i, "type": "Three White Soldiers",
+                    "bias": "bullish", "strength": 3,
+                    "description": "Three consecutive solid green closes = strong bullish trend",
+                })
+            # 17. THREE BLACK CROWS
+            elif (all(is_red(i-k) for k in (0, 1, 2))
+                  and c.iloc[i] < c.iloc[i-1] < c.iloc[i-2]
+                  and o.iloc[i] < o.iloc[i-1] < o.iloc[i-2]
+                  and all(body(i-k) / max(rng(i-k), 1e-9) > 0.6 for k in (0, 1, 2))):
+                patterns.append({
+                    "idx": i, "type": "Three Black Crows",
+                    "bias": "bearish", "strength": 3,
+                    "description": "Three consecutive solid red closes = strong bearish trend",
+                })
+
+    return patterns
+
+
 def detect_harmonic_patterns(swings, df, tolerance=0.05):
     """
     Detect XABCD harmonic patterns (Butterfly, Gartley, Bat, Crab, Shark).
@@ -1142,6 +1362,29 @@ def get_smc_chart(symbol: str, days: int = 180, interval: str = "daily"):
     except Exception:
         pass
 
+    # Phase 4 candlestick patterns
+    candle_patterns_raw = []
+    try:
+        candle_patterns_raw = detect_candle_patterns(df, lookback=60)
+    except Exception:
+        pass
+
+    candle_patterns = []
+    for p in candle_patterns_raw:
+        idx = p["idx"]
+        if 0 <= idx < len(df):
+            candle_patterns.append({
+                "time": df.iloc[idx]["date"].strftime("%Y-%m-%d"),
+                "type": p["type"],
+                "bias": p["bias"],
+                "strength": p["strength"],
+                "description": p["description"],
+                "price_high": round(float(df.iloc[idx]["high"]), 2),
+                "price_low": round(float(df.iloc[idx]["low"]), 2),
+            })
+    # Cap at the most recent 25 — that's plenty for a single chart
+    candle_patterns = candle_patterns[-25:]
+
     # Convert pattern indices to times
     def _idx_t(i):
         if 0 <= i < len(df):
@@ -1297,5 +1540,6 @@ def get_smc_chart(symbol: str, days: int = 180, interval: str = "daily"):
         "bollinger_bands": bb_series,
         "chart_patterns": chart_patterns,
         "harmonic_patterns": harmonic_patterns,
+        "candle_patterns": candle_patterns,
         "current_price": round(float(c.iloc[-1]), 2),
     }
