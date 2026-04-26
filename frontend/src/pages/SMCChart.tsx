@@ -55,6 +55,7 @@ interface Toggles {
   patterns: boolean;
   harmonics: boolean;
   candles: boolean;
+  sr: boolean;
 }
 
 const DEFAULT_TOGGLES: Toggles = {
@@ -76,6 +77,7 @@ const DEFAULT_TOGGLES: Toggles = {
   patterns: true,
   harmonics: true,
   candles: true,
+  sr: true,
 };
 
 const TOGGLES_STORAGE_KEY = "smc-chart-toggles-v1";
@@ -122,6 +124,7 @@ export default function SMCChart() {
   const patternPrimitiveRef = useRef<PatternPrimitive | null>(null);
   const harmonicPrimitiveRef = useRef<HarmonicPrimitive | null>(null);
   const candleMarkersRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
+  const srLinesRef = useRef<IPriceLine[]>([]);
   const bosSeriesRef = useRef<ISeriesApi<"Line">[]>([]);
   const bosMarkersRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
   const levelsLinesRef = useRef<IPriceLine[]>([]);
@@ -309,6 +312,7 @@ export default function SMCChart() {
     patternPrimitiveRef.current = null;
     harmonicPrimitiveRef.current = null;
     candleMarkersRef.current = null;
+    srLinesRef.current = [];
     bosSeriesRef.current = [];
     bosMarkersRef.current = null;
     levelsLinesRef.current = [];
@@ -629,6 +633,40 @@ export default function SMCChart() {
       }
     });
   }, [chartReady, data, toggles.levels]);
+
+  // === Multi-touch Support / Resistance ===
+  useEffect(() => {
+    if (!chartReady || !data) return;
+    const series = candleSeriesRef.current;
+    if (!series) return;
+    srLinesRef.current.forEach((ln) => {
+      try { series.removePriceLine(ln); } catch {}
+    });
+    srLinesRef.current = [];
+    if (!toggles.sr || !data.support_resistance) return;
+
+    data.support_resistance.forEach((lvl) => {
+      try {
+        const isSupport = lvl.role === "support";
+        // Stronger levels = thicker, more opaque
+        const lineWidth = lvl.strength >= 4 ? 2 : 1;
+        const baseAlpha = 0.4 + Math.min(0.5, lvl.strength * 0.12);
+        const color = isSupport
+          ? `rgba(38, 166, 154, ${baseAlpha.toFixed(2)})`
+          : `rgba(239, 83, 80, ${baseAlpha.toFixed(2)})`;
+        srLinesRef.current.push(
+          series.createPriceLine({
+            price: lvl.price,
+            color,
+            lineWidth,
+            lineStyle: 2, // dashed so they don't compete with key levels (solid)
+            axisLabelVisible: true,
+            title: `${isSupport ? "S" : "R"}·${lvl.touches}t·${"⭐".repeat(lvl.strength)}`,
+          }),
+        );
+      } catch {}
+    });
+  }, [chartReady, data, toggles.sr]);
 
   // === Fibonacci retracement ===
   useEffect(() => {
@@ -1013,6 +1051,7 @@ export default function SMCChart() {
     { key: "ob", label: "Order Blocks", color: "text-violet-500" },
     { key: "bos", label: "BOS/ChoCh", color: "text-yellow-500" },
     { key: "levels", label: "Key Levels", color: "text-amber-400" },
+    { key: "sr", label: "S/R Zones", color: "text-teal-400" },
     { key: "fib", label: "Fibonacci", color: "text-purple-500" },
     { key: "fibCircles", label: "Fib Circles", color: "text-pink-500" },
     { key: "gann", label: "Gann Fan", color: "text-amber-500" },
@@ -1419,6 +1458,64 @@ export default function SMCChart() {
                   );
                 })}
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Support/Resistance panel */}
+      {data?.support_resistance && data.support_resistance.length > 0 && (
+        <div className="mt-4 bg-white dark:bg-gray-800/30 rounded-lg p-4 border border-gray-300 dark:border-gray-700/50">
+          <div className="flex items-center justify-between mb-2">
+            <h3 className="text-sm font-bold text-teal-600 dark:text-teal-300">
+              Support / Resistance Levels ({data.support_resistance.length})
+            </h3>
+            <span className="text-[10px] text-gray-500">
+              Strength = recency × touches • More ⭐ = more reliable
+            </span>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-2 max-h-64 overflow-y-auto">
+            {data.support_resistance
+              .slice()
+              .sort((a, b) => b.price - a.price)
+              .map((lvl, i) => {
+                const isSupport = lvl.role === "support";
+                const distance = data.current_price > 0
+                  ? ((lvl.price - data.current_price) / data.current_price) * 100
+                  : 0;
+                return (
+                  <div
+                    key={i}
+                    className={clsx(
+                      "text-xs flex items-center justify-between gap-2 border rounded px-2 py-1.5",
+                      isSupport
+                        ? "border-emerald-500/30 bg-emerald-500/5"
+                        : "border-red-500/30 bg-red-500/5",
+                    )}
+                  >
+                    <div className="flex items-center gap-2">
+                      <span
+                        className={clsx(
+                          "font-bold",
+                          isSupport ? "text-emerald-500" : "text-red-500",
+                        )}
+                      >
+                        {isSupport ? "↓" : "↑"} {lvl.role.toUpperCase()}
+                      </span>
+                      <span className="font-mono">৳{lvl.price.toFixed(1)}</span>
+                    </div>
+                    <div className="flex items-center gap-2 text-gray-500 dark:text-gray-400">
+                      <span>{lvl.touches} touches</span>
+                      <span className="text-yellow-400">{"⭐".repeat(lvl.strength)}</span>
+                      <span className={clsx(
+                        "font-mono w-12 text-right",
+                        distance > 0 ? "text-red-400" : "text-emerald-400",
+                      )}>
+                        {distance > 0 ? "+" : ""}{distance.toFixed(1)}%
+                      </span>
+                    </div>
+                  </div>
+                );
+              })}
           </div>
         </div>
       )}

@@ -290,6 +290,13 @@ export interface SMCChartData {
     price_high: number;
     price_low: number;
   }>;
+  support_resistance?: Array<{
+    price: number;
+    touches: number;
+    role: "support" | "resistance";
+    strength: number;
+    last_touch_time: string | null;
+  }>;
 }
 
 export type SMCCandlePattern = NonNullable<SMCChartData["candle_patterns"]>[number];

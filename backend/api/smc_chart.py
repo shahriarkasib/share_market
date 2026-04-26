@@ -298,6 +298,63 @@ def calc_stochastic(h, l, c, k_period=14, d_period=3):
     }
 
 
+def detect_support_resistance(swings, df, current_price, max_levels=8, cluster_tol_pct=1.5):
+    """
+    Detect multi-touch Support and Resistance zones by clustering swing
+    highs/lows that fall within `cluster_tol_pct`% of each other.
+
+    Each level reports:
+      - level price (cluster average)
+      - touches (number of swings forming the cluster)
+      - last_touch_idx (most recent swing in the cluster)
+      - role: 'support' if level < current_price, else 'resistance'
+      - strength: 1 (2 touches) → 5 (5+ touches)
+
+    Returns at most max_levels strongest levels.
+    """
+    if not swings:
+        return []
+
+    # Cluster all swings by price proximity
+    sorted_swings = sorted(swings, key=lambda s: s["price"])
+    clusters: list[list[dict]] = []
+    for s in sorted_swings:
+        if not clusters:
+            clusters.append([s])
+            continue
+        cluster_avg = sum(x["price"] for x in clusters[-1]) / len(clusters[-1])
+        if abs(s["price"] - cluster_avg) / cluster_avg * 100 <= cluster_tol_pct:
+            clusters[-1].append(s)
+        else:
+            clusters.append([s])
+
+    levels = []
+    for cluster in clusters:
+        if len(cluster) < 2:
+            continue  # need at least 2 touches to be a real level
+        avg_price = sum(s["price"] for s in cluster) / len(cluster)
+        last_idx = max(s["idx"] for s in cluster)
+        # Skip if level is far from current action (>30% away)
+        if abs(avg_price - current_price) / current_price * 100 > 30:
+            continue
+        role = "resistance" if avg_price > current_price else "support"
+        # Strength: more touches AND more recent = stronger
+        recency_score = 1.0 if last_idx >= len(df) - 30 else 0.5 if last_idx >= len(df) - 90 else 0.25
+        strength_raw = len(cluster) * recency_score
+        strength = min(5, max(1, int(round(strength_raw))))
+        levels.append({
+            "price": round(avg_price, 2),
+            "touches": len(cluster),
+            "last_touch_idx": last_idx,
+            "role": role,
+            "strength": strength,
+        })
+
+    # Sort by closeness to current price first, then strength
+    levels.sort(key=lambda l: (abs(l["price"] - current_price), -l["strength"]))
+    return levels[:max_levels]
+
+
 def detect_candle_patterns(df, lookback=60):
     """
     Detect classical candlestick patterns on the most recent candles.
@@ -1362,6 +1419,27 @@ def get_smc_chart(symbol: str, days: int = 180, interval: str = "daily"):
     except Exception:
         pass
 
+    # Multi-touch Support/Resistance levels
+    sr_levels = []
+    try:
+        current_price = float(c.iloc[-1])
+        sr_raw = detect_support_resistance(period_swings, df, current_price)
+        for lvl in sr_raw:
+            ti = lvl["last_touch_idx"]
+            last_touch_time = (
+                df.iloc[ti]["date"].strftime("%Y-%m-%d")
+                if 0 <= ti < len(df) else None
+            )
+            sr_levels.append({
+                "price": lvl["price"],
+                "touches": lvl["touches"],
+                "role": lvl["role"],
+                "strength": lvl["strength"],
+                "last_touch_time": last_touch_time,
+            })
+    except Exception:
+        pass
+
     # Phase 4 candlestick patterns
     candle_patterns_raw = []
     try:
@@ -1541,5 +1619,6 @@ def get_smc_chart(symbol: str, days: int = 180, interval: str = "daily"):
         "chart_patterns": chart_patterns,
         "harmonic_patterns": harmonic_patterns,
         "candle_patterns": candle_patterns,
+        "support_resistance": sr_levels,
         "current_price": round(float(c.iloc[-1]), 2),
     }
