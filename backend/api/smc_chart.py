@@ -298,6 +298,117 @@ def calc_stochastic(h, l, c, k_period=14, d_period=3):
     }
 
 
+def detect_accumulation_distribution(df, lookback=40):
+    """
+    Wyckoff accumulation / distribution detection.
+
+    Accumulation: price ranges sideways with elevated volume after a downtrend.
+        → Smart money is buying without pushing price up.
+        → Breakout target = top of range + (top - bottom).
+
+    Distribution: price ranges sideways with elevated volume after an uptrend.
+        → Smart money is selling without crashing the price.
+        → Breakdown target = bottom of range - (top - bottom).
+
+    Returns dict with phase, range, target, confidence, reasoning.
+    """
+    if len(df) < lookback + 10:
+        return None
+
+    recent = df.tail(lookback).reset_index(drop=True)
+    h = recent["high"]; l = recent["low"]; c = recent["close"]; v = recent["volume"]
+
+    range_high = float(h.max())
+    range_low = float(l.min())
+    range_size = range_high - range_low
+    if range_size <= 0 or range_low <= 0:
+        return None
+
+    range_pct = range_size / range_low * 100
+
+    # Range filter — clean accumulation/distribution should be tight
+    # >15% range typically means trending, not ranging
+    if range_pct > 18:
+        return None  # too wide, not a clear range
+
+    # Volume filter — recent average should be ≥ 80% of older average
+    full = df.tail(lookback * 2)
+    older_vol = float(full["volume"].iloc[:lookback].mean()) if len(full) >= lookback * 2 else float(v.mean())
+    recent_vol = float(v.mean())
+    if older_vol <= 0:
+        return None
+    vol_ratio = recent_vol / older_vol
+
+    # Trend BEFORE the range to determine if it's accumulation or distribution
+    pre_range = df.iloc[-(lookback * 2):-lookback] if len(df) >= lookback * 2 else df.iloc[:-lookback]
+    if len(pre_range) < 5:
+        return None
+    pre_start = float(pre_range["close"].iloc[0])
+    pre_end = float(pre_range["close"].iloc[-1])
+    pre_change = (pre_end - pre_start) / pre_start * 100
+
+    # Range tightness — count how many bars stay in inner 70% of range
+    inner_low = range_low + range_size * 0.15
+    inner_high = range_high - range_size * 0.15
+    bars_inside = sum(1 for i in range(len(recent))
+                      if inner_low <= float(c.iloc[i]) <= inner_high)
+    inside_pct = bars_inside / len(recent) * 100
+
+    # Test counts — multiple tests of support/resistance = stronger range
+    tol = range_size * 0.02
+    support_tests = sum(1 for i in range(len(recent)) if float(l.iloc[i]) <= range_low + tol)
+    resistance_tests = sum(1 for i in range(len(recent)) if float(h.iloc[i]) >= range_high - tol)
+
+    # Confidence score
+    confidence = "LOW"
+    score = 0
+    if vol_ratio >= 0.8: score += 1
+    if vol_ratio >= 1.2: score += 1
+    if inside_pct >= 60: score += 1
+    if support_tests >= 3 and resistance_tests >= 3: score += 1
+    if abs(pre_change) >= 10: score += 1
+    if score >= 4: confidence = "HIGH"
+    elif score >= 2: confidence = "MEDIUM"
+
+    # Phase determination
+    if pre_change < -10:
+        phase = "ACCUMULATION"
+        target_up = round(range_high + range_size, 2)
+        target_down = None
+        bias = "bullish"
+        summary = f"Sideways range after a {abs(round(pre_change, 1))}% drop with elevated volume = institutional buying"
+    elif pre_change > 10:
+        phase = "DISTRIBUTION"
+        target_up = None
+        target_down = round(range_low - range_size, 2)
+        bias = "bearish"
+        summary = f"Sideways range after a {round(pre_change, 1)}% rally with elevated volume = institutional selling"
+    else:
+        phase = "CONSOLIDATION"
+        target_up = round(range_high + range_size, 2)
+        target_down = round(range_low - range_size, 2)
+        bias = "neutral"
+        summary = f"Tight consolidation, no clear trend before = could break either way"
+
+    return {
+        "phase": phase,
+        "bias": bias,
+        "confidence": confidence,
+        "range_high": round(range_high, 2),
+        "range_low": round(range_low, 2),
+        "range_pct": round(range_pct, 2),
+        "target_up": target_up,
+        "target_down": target_down,
+        "volume_ratio": round(vol_ratio, 2),
+        "support_tests": support_tests,
+        "resistance_tests": resistance_tests,
+        "bars_inside": bars_inside,
+        "lookback": lookback,
+        "pre_trend_pct": round(pre_change, 1),
+        "summary": summary,
+    }
+
+
 def detect_support_resistance(swings, df, current_price, max_levels=8, cluster_tol_pct=1.5):
     """
     Detect multi-touch Support and Resistance zones by clustering swing
@@ -1336,9 +1447,19 @@ def get_smc_chart(symbol: str, days: int = 180, interval: str = "daily"):
     fvg_zones = []
     for f in recent_fvgs:
         start_time = idx_to_time(f["start_idx"])
-        # Forward extent: 12 bars (matches TradingView look). Mitigated zones
-        # are still drawn so the user can see where price filled the gap.
-        end_idx = min(f["idx"] + 12, len(df) - 1)
+        # Match TradingView SMC indicator: extend FVG to the candle that
+        # mitigated it (filled the gap) — or to current bar if still active.
+        # This makes active zones reach forward to the right edge as resistance/support.
+        if f["mitigated"]:
+            mit_idx = None
+            for j in range(f["idx"] + 1, len(df)):
+                if f["type"] == "bullish" and float(l.iloc[j]) < f["bottom"]:
+                    mit_idx = j; break
+                if f["type"] == "bearish" and float(h.iloc[j]) > f["top"]:
+                    mit_idx = j; break
+            end_idx = mit_idx if mit_idx is not None else len(df) - 1
+        else:
+            end_idx = len(df) - 1  # active zones extend to current bar
         end_time = idx_to_time(end_idx)
         if start_time and end_time:
             fvg_zones.append({
@@ -1416,6 +1537,21 @@ def get_smc_chart(symbol: str, days: int = 180, interval: str = "daily"):
     harmonic_patterns = []
     try:
         harmonic_patterns = detect_harmonic_patterns(period_swings, df)
+    except Exception:
+        pass
+
+    # Wyckoff accumulation / distribution detection — try multiple windows
+    # and pick the cleanest one (smallest range_pct that still passes filter).
+    accumulation = None
+    try:
+        candidates = []
+        for lb in (20, 30, 40, 60):
+            r = detect_accumulation_distribution(df, lookback=lb)
+            if r is not None:
+                candidates.append(r)
+        if candidates:
+            # Prefer the window with the lowest range_pct (tightest range)
+            accumulation = min(candidates, key=lambda x: x["range_pct"])
     except Exception:
         pass
 
@@ -1620,5 +1756,6 @@ def get_smc_chart(symbol: str, days: int = 180, interval: str = "daily"):
         "harmonic_patterns": harmonic_patterns,
         "candle_patterns": candle_patterns,
         "support_resistance": sr_levels,
+        "accumulation": accumulation,
         "current_price": round(float(c.iloc[-1]), 2),
     }

@@ -1326,6 +1326,92 @@ export default function SMCChart() {
         </div>
       )}
 
+      {/* Accumulation / Distribution card */}
+      {data?.accumulation && (
+        <div
+          className="mb-4 rounded-lg border-2 overflow-hidden"
+          style={{
+            borderColor:
+              data.accumulation.bias === "bullish" ? "#14b8a6" :
+              data.accumulation.bias === "bearish" ? "#ef4444" :
+              "#a78bfa",
+          }}
+        >
+          <div
+            className="px-4 py-2 flex items-center gap-3 flex-wrap"
+            style={{
+              background:
+                data.accumulation.bias === "bullish" ? "rgba(20,184,166,0.1)" :
+                data.accumulation.bias === "bearish" ? "rgba(239,68,68,0.1)" :
+                "rgba(167,139,250,0.1)",
+            }}
+          >
+            <span
+              className={clsx(
+                "px-2 py-0.5 rounded-full text-xs font-bold tracking-wide",
+                data.accumulation.phase === "ACCUMULATION" && "bg-teal-500/25 text-teal-300",
+                data.accumulation.phase === "DISTRIBUTION" && "bg-red-500/25 text-red-300",
+                data.accumulation.phase === "CONSOLIDATION" && "bg-violet-500/25 text-violet-300",
+              )}
+            >
+              📊 {data.accumulation.phase}
+            </span>
+            <span className="text-xs text-gray-500">
+              Confidence: <strong>{data.accumulation.confidence}</strong>
+            </span>
+            {data.accumulation.target_up !== null && (
+              <span className="text-sm font-mono text-teal-500">
+                Breakout target: ৳{data.accumulation.target_up}
+              </span>
+            )}
+            {data.accumulation.target_down !== null && (
+              <span className="text-sm font-mono text-red-500">
+                Breakdown target: ৳{data.accumulation.target_down}
+              </span>
+            )}
+          </div>
+          <div className="px-4 py-2 bg-white/80 dark:bg-gray-900/40 text-xs">
+            <p className="mb-2">{data.accumulation.summary}</p>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[11px]">
+              <div>
+                <span className="text-gray-500">Range:</span>{" "}
+                <span className="font-mono">
+                  ৳{data.accumulation.range_low}–{data.accumulation.range_high}
+                </span>{" "}
+                <span className="text-gray-500">({data.accumulation.range_pct}%)</span>
+              </div>
+              <div>
+                <span className="text-gray-500">Volume:</span>{" "}
+                <span className={clsx(
+                  "font-mono",
+                  data.accumulation.volume_ratio >= 1.2 ? "text-emerald-400" :
+                  data.accumulation.volume_ratio >= 0.8 ? "text-yellow-400" :
+                  "text-gray-500",
+                )}>
+                  {data.accumulation.volume_ratio}x
+                </span>{" "}
+                <span className="text-gray-500">vs prior</span>
+              </div>
+              <div>
+                <span className="text-gray-500">Tests:</span>{" "}
+                <span className="font-mono">
+                  {data.accumulation.support_tests}↓ / {data.accumulation.resistance_tests}↑
+                </span>
+              </div>
+              <div>
+                <span className="text-gray-500">Pre-trend:</span>{" "}
+                <span className={clsx(
+                  "font-mono",
+                  data.accumulation.pre_trend_pct < 0 ? "text-red-400" : "text-emerald-400",
+                )}>
+                  {data.accumulation.pre_trend_pct > 0 ? "+" : ""}{data.accumulation.pre_trend_pct}%
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="bg-white dark:bg-gray-900/30 rounded-lg border border-gray-300 dark:border-gray-700/50 p-2 relative">
         <div
           ref={containerRef}

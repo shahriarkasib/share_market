@@ -297,6 +297,23 @@ export interface SMCChartData {
     strength: number;
     last_touch_time: string | null;
   }>;
+  accumulation?: {
+    phase: "ACCUMULATION" | "DISTRIBUTION" | "CONSOLIDATION";
+    bias: "bullish" | "bearish" | "neutral";
+    confidence: "LOW" | "MEDIUM" | "HIGH";
+    range_high: number;
+    range_low: number;
+    range_pct: number;
+    target_up: number | null;
+    target_down: number | null;
+    volume_ratio: number;
+    support_tests: number;
+    resistance_tests: number;
+    bars_inside: number;
+    lookback: number;
+    pre_trend_pct: number;
+    summary: string;
+  } | null;
 }
 
 export type SMCCandlePattern = NonNullable<SMCChartData["candle_patterns"]>[number];
