@@ -56,6 +56,8 @@ interface Toggles {
   harmonics: boolean;
   candles: boolean;
   sr: boolean;
+  premiumDiscount: boolean;
+  bosZones: boolean;
 }
 
 const DEFAULT_TOGGLES: Toggles = {
@@ -78,9 +80,11 @@ const DEFAULT_TOGGLES: Toggles = {
   harmonics: false,
   candles: false,
   sr: false,
+  premiumDiscount: true,
+  bosZones: true,
 };
 
-const TOGGLES_STORAGE_KEY = "smc-chart-toggles-v2";
+const TOGGLES_STORAGE_KEY = "smc-chart-toggles-v3";
 const MAX_BOS = 2;
 const MAX_FVG = 6;
 const CHART_HEIGHT = 600;
@@ -128,6 +132,8 @@ export default function SMCChart() {
   const bosSeriesRef = useRef<ISeriesApi<"Line">[]>([]);
   const bosMarkersRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
   const levelsLinesRef = useRef<IPriceLine[]>([]);
+  const pdLinesRef = useRef<IPriceLine[]>([]);
+  const bosZoneLinesRef = useRef<IPriceLine[]>([]);
   const fibLinesRef = useRef<IPriceLine[]>([]);
   const pivotLinesRef = useRef<IPriceLine[]>([]);
   const maSeriesRef = useRef<Record<string, ISeriesApi<"Line">>>({});
@@ -318,6 +324,8 @@ export default function SMCChart() {
     levelsLinesRef.current = [];
     fibLinesRef.current = [];
     pivotLinesRef.current = [];
+    pdLinesRef.current = [];
+    bosZoneLinesRef.current = [];
     maSeriesRef.current = {};
 
     setChartReady(true);
@@ -683,6 +691,81 @@ export default function SMCChart() {
       } catch {}
     });
   }, [chartReady, data, toggles.sr]);
+
+  // === Premium / Discount zones ===
+  useEffect(() => {
+    if (!chartReady || !data) return;
+    const series = candleSeriesRef.current;
+    if (!series) return;
+    pdLinesRef.current.forEach((ln) => {
+      try { series.removePriceLine(ln); } catch {}
+    });
+    pdLinesRef.current = [];
+    if (!toggles.premiumDiscount || !data.premium_discount) return;
+    const pd = data.premium_discount;
+    const lines: Array<{ price: number; color: string; title: string; w?: number }> = [
+      { price: pd.range_high, color: "rgba(239,83,80,0.9)", title: "Range High (100%)", w: 2 },
+      { price: pd.extreme_premium, color: "rgba(239,83,80,0.6)", title: "Premium 79%" },
+      { price: pd.equilibrium, color: "rgba(168,85,247,0.85)", title: "Equilibrium (50%)", w: 2 },
+      { price: pd.extreme_discount, color: "rgba(38,166,154,0.6)", title: "Discount 21%" },
+      { price: pd.range_low, color: "rgba(38,166,154,0.9)", title: "Range Low (0%)", w: 2 },
+    ];
+    lines.forEach((ln) => {
+      try {
+        pdLinesRef.current.push(
+          series.createPriceLine({
+            price: ln.price,
+            color: ln.color,
+            lineWidth: (ln.w ?? 1) as 1 | 2,
+            lineStyle: 2,
+            axisLabelVisible: true,
+            title: ln.title,
+          }),
+        );
+      } catch {}
+    });
+  }, [chartReady, data, toggles.premiumDiscount]);
+
+  // === BOS Trigger Zones (the levels that produce next BOS on close above/below) ===
+  useEffect(() => {
+    if (!chartReady || !data) return;
+    const series = candleSeriesRef.current;
+    if (!series) return;
+    bosZoneLinesRef.current.forEach((ln) => {
+      try { series.removePriceLine(ln); } catch {}
+    });
+    bosZoneLinesRef.current = [];
+    if (!toggles.bosZones || !data.bos_zones) return;
+    const z = data.bos_zones;
+    if (z.bullish_trigger) {
+      try {
+        bosZoneLinesRef.current.push(
+          series.createPriceLine({
+            price: z.bullish_trigger.price,
+            color: "rgba(34,197,94,0.95)",
+            lineWidth: 2,
+            lineStyle: 0,
+            axisLabelVisible: true,
+            title: z.bullish_trigger.label,
+          }),
+        );
+      } catch {}
+    }
+    if (z.bearish_trigger) {
+      try {
+        bosZoneLinesRef.current.push(
+          series.createPriceLine({
+            price: z.bearish_trigger.price,
+            color: "rgba(239,68,68,0.95)",
+            lineWidth: 2,
+            lineStyle: 0,
+            axisLabelVisible: true,
+            title: z.bearish_trigger.label,
+          }),
+        );
+      } catch {}
+    }
+  }, [chartReady, data, toggles.bosZones]);
 
   // === Fibonacci retracement ===
   useEffect(() => {
@@ -1066,6 +1149,8 @@ export default function SMCChart() {
     { key: "fvg", label: "FVG", color: "text-emerald-500" },
     { key: "ob", label: "Order Blocks", color: "text-violet-500" },
     { key: "bos", label: "BOS/ChoCh", color: "text-yellow-500" },
+    { key: "premiumDiscount", label: "Premium/Discount", color: "text-fuchsia-400" },
+    { key: "bosZones", label: "BOS Triggers", color: "text-lime-400" },
     { key: "levels", label: "Key Levels", color: "text-amber-400" },
     { key: "sr", label: "S/R Zones", color: "text-teal-400" },
     { key: "fib", label: "Fibonacci", color: "text-purple-500" },
@@ -1354,6 +1439,49 @@ export default function SMCChart() {
               </div>
             )}
           </div>
+        </div>
+      )}
+
+      {/* Premium / Discount badge — quick read of where price sits in the recent range */}
+      {data?.premium_discount && (
+        <div
+          className="mb-3 rounded border px-3 py-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm"
+          style={{
+            borderColor:
+              data.premium_discount.current_zone.includes("premium")
+                ? "rgba(239,68,68,0.5)"
+                : data.premium_discount.current_zone.includes("discount")
+                ? "rgba(38,166,154,0.5)"
+                : "rgba(168,85,247,0.5)",
+            background:
+              data.premium_discount.current_zone.includes("premium")
+                ? "rgba(239,68,68,0.06)"
+                : data.premium_discount.current_zone.includes("discount")
+                ? "rgba(38,166,154,0.06)"
+                : "rgba(168,85,247,0.06)",
+          }}
+        >
+          <span className="font-semibold uppercase text-xs tracking-wide">
+            {data.premium_discount.current_zone.replace("_", " ")}
+            <span className="ml-1 font-mono opacity-70">
+              ({data.premium_discount.current_pct}%)
+            </span>
+          </span>
+          <span className="text-xs opacity-80">
+            Range ৳{data.premium_discount.range_low}–{data.premium_discount.range_high}
+            {" · "}EQ ৳{data.premium_discount.equilibrium}
+          </span>
+          <span className="text-xs italic opacity-90">{data.premium_discount.bias_action}</span>
+          {data.bos_zones?.bullish_trigger && (
+            <span className="text-xs">
+              <span className="text-green-500">↑BOS @ ৳{data.bos_zones.bullish_trigger.price}</span>
+            </span>
+          )}
+          {data.bos_zones?.bearish_trigger && (
+            <span className="text-xs">
+              <span className="text-red-500">↓BOS @ ৳{data.bos_zones.bearish_trigger.price}</span>
+            </span>
+          )}
         </div>
       )}
 

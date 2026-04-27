@@ -314,6 +314,25 @@ export interface SMCChartData {
     pre_trend_pct: number;
     summary: string;
   } | null;
+  premium_discount?: {
+    range_high: number;
+    range_low: number;
+    equilibrium: number;
+    extreme_premium: number;
+    extreme_discount: number;
+    current_zone:
+      | "premium"
+      | "discount"
+      | "equilibrium"
+      | "extreme_premium"
+      | "extreme_discount";
+    current_pct: number;
+    bias_action: string;
+  } | null;
+  bos_zones?: {
+    bullish_trigger?: { price: number; from_idx: number; label: string };
+    bearish_trigger?: { price: number; from_idx: number; label: string };
+  } | null;
 }
 
 export type SMCCandlePattern = NonNullable<SMCChartData["candle_patterns"]>[number];

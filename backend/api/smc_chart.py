@@ -103,6 +103,109 @@ def detect_structure(swings):
     return events
 
 
+def detect_premium_discount(swings, df, lookback=60):
+    """
+    SMC Premium / Discount zones — based on the most recent dealing range.
+
+    The dealing range is the latest meaningful swing-high to swing-low (or vice
+    versa) within the lookback window. Smart money sells in PREMIUM (top half)
+    and buys in DISCOUNT (bottom half). The 50% line is EQUILIBRIUM.
+
+    Returns:
+        {
+          "range_high": float, "range_low": float, "equilibrium": float,
+          "premium_top": float, "premium_bottom": float,         # 50%-100%
+          "discount_top": float, "discount_bottom": float,       # 0%-50%
+          "extreme_premium": float,  # 79% (OTE upper boundary)
+          "extreme_discount": float, # 21% (OTE lower boundary)
+          "current_zone": "premium"|"discount"|"equilibrium"|"extreme_premium"|"extreme_discount",
+          "current_pct": float,      # where price sits in the range, 0..100
+          "bias_action": str         # "look for shorts" / "look for longs" / "neutral"
+        }
+    """
+    if not swings or len(df) < 10:
+        return None
+
+    cutoff = max(0, len(df) - lookback)
+    recent = [s for s in swings if s["idx"] >= cutoff]
+    if len(recent) < 2:
+        return None
+
+    range_high = max((s["price"] for s in recent if s["type"] == "high"), default=None)
+    range_low = min((s["price"] for s in recent if s["type"] == "low"), default=None)
+    if range_high is None or range_low is None or range_high <= range_low:
+        return None
+
+    rng = range_high - range_low
+    eq = range_low + rng * 0.50
+    extreme_premium = range_low + rng * 0.79
+    extreme_discount = range_low + rng * 0.21
+
+    cp = float(df["close"].iloc[-1])
+    pct = (cp - range_low) / rng * 100
+
+    if pct >= 79:
+        zone, action = "extreme_premium", "Strong sell zone — avoid longs, look for shorts"
+    elif pct >= 55:
+        zone, action = "premium", "Premium — favor shorts, no fresh longs"
+    elif pct >= 45:
+        zone, action = "equilibrium", "At equilibrium — wait for premium/discount before acting"
+    elif pct >= 21:
+        zone, action = "discount", "Discount — favor longs"
+    else:
+        zone, action = "extreme_discount", "Strong buy zone — institutional buy area"
+
+    return {
+        "range_high": round(range_high, 2),
+        "range_low": round(range_low, 2),
+        "equilibrium": round(eq, 2),
+        "extreme_premium": round(extreme_premium, 2),
+        "extreme_discount": round(extreme_discount, 2),
+        "current_zone": zone,
+        "current_pct": round(pct, 1),
+        "bias_action": action,
+    }
+
+
+def detect_bos_zones(swings, structure_events, df):
+    """
+    BOS trigger zones — the price levels that, if broken on a daily close,
+    will print the next BOS event.
+
+    Bullish trigger: most recent unbroken swing high (above current price).
+    Bearish trigger: most recent unbroken swing low (below current price).
+
+    Returns:
+        {
+          "bullish_trigger": {"price": float, "from_idx": int, "label": "BOS up"},
+          "bearish_trigger": {"price": float, "from_idx": int, "label": "BOS down"},
+        }
+    """
+    if not swings or len(df) < 5:
+        return None
+
+    cp = float(df["close"].iloc[-1])
+    highs = sorted([s for s in swings if s["type"] == "high" and s["price"] > cp],
+                   key=lambda x: x["idx"], reverse=True)
+    lows = sorted([s for s in swings if s["type"] == "low" and s["price"] < cp],
+                  key=lambda x: x["idx"], reverse=True)
+
+    out = {}
+    if highs:
+        out["bullish_trigger"] = {
+            "price": round(highs[0]["price"], 2),
+            "from_idx": highs[0]["idx"],
+            "label": "BOS↑ trigger",
+        }
+    if lows:
+        out["bearish_trigger"] = {
+            "price": round(lows[0]["price"], 2),
+            "from_idx": lows[0]["idx"],
+            "label": "BOS↓ trigger",
+        }
+    return out or None
+
+
 def detect_order_blocks(o, h, l, c, structure_events, df):
     """
     Order Block = last opposing candle before a BOS/ChoCh.
@@ -1799,6 +1902,9 @@ def get_smc_chart(symbol: str, days: int = 180, interval: str = "daily"):
         df,
     )
 
+    premium_discount = detect_premium_discount(swings, df, lookback=60)
+    bos_zones = detect_bos_zones(swings, structure_events, df)
+
     return {
         "symbol": symbol.upper(),
         "candles": candles,
@@ -1822,5 +1928,7 @@ def get_smc_chart(symbol: str, days: int = 180, interval: str = "daily"):
         "candle_patterns": candle_patterns,
         "support_resistance": sr_levels,
         "accumulation": accumulation,
+        "premium_discount": premium_discount,
+        "bos_zones": bos_zones,
         "current_price": round(float(c.iloc[-1]), 2),
     }
