@@ -99,9 +99,13 @@ class DSEDataFetcher:
             df.loc[mask, "change_pct"] = ((df.loc[mask, "ltp"] - df.loc[mask, "close_prev"]) / df.loc[mask, "close_prev"] * 100).round(2)
             df.loc[~mask, "change_pct"] = 0.0
 
-        # bdshare doesn't return 'open' — use close_prev (YCP) as proxy
-        if "open" not in df.columns or df["open"].isna().all() or (df["open"] == 0).all():
-            df["open"] = df.get("close_prev", 0)
+        # If bdshare doesn't return a real open, leave it as 0 — DO NOT fake it
+        # with close_prev (yesterday's close). That fake produced bogus candle
+        # directions in storage. The upsert layer will fill open from the first
+        # observed LTP of the day instead.
+        if "open" not in df.columns:
+            df["open"] = 0
+        df["open"] = df["open"].fillna(0)
 
         return df
 
@@ -142,7 +146,7 @@ class DSEDataFetcher:
                             "ltp": ltp,
                             "high": high,
                             "low": low,
-                            "open": high,  # DSE doesn't always show open
+                            "open": 0,  # DSE doesn't expose open; let upsert pin first-LTP-of-day
                             "close_prev": close_prev,
                             "change": change,
                             "change_pct": round(change_pct, 2),

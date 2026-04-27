@@ -188,21 +188,79 @@ def detect_order_blocks(o, h, l, c, structure_events, df):
     return obs
 
 
-def detect_fvgs(h, l):
+def detect_fvgs(o, h, l, c, v=None):
+    """
+    Detect Fair Value Gaps with SMC-grade validity scoring.
+
+    A 3-candle FVG is "valid" only if it represents real institutional displacement:
+      1. Direction-aligned middle candle: bullish FVG needs middle candle close>open
+      2. Body dominates range: |close-open| / (high-low) >= 0.40 (no doji/pin)
+      3. Meaningful gap size: >= 0.3% of price (filters DSE tick-noise micro-gaps)
+      4. Volume confirmation: middle-candle volume >= 0.9x of 20-bar median (when available)
+
+    Each FVG returned with a `quality` score 0..4 (count of passed filters) and
+    `valid` boolean (True if quality >= 3, i.e. at least direction + body + size).
+    Callers can filter on `valid` or render quality as opacity.
+    """
     fvgs = []
-    for i in range(2, len(h)):
+    n = len(h)
+    if n < 3:
+        return fvgs
+
+    has_vol = v is not None and len(v) == n
+    for i in range(2, n):
+        # Bullish FVG: candle[i-2].high < candle[i].low (gap up between them)
         if float(h.iloc[i-2]) < float(l.iloc[i]):
+            mid_o, mid_c = float(o.iloc[i-1]), float(c.iloc[i-1])
+            mid_h, mid_l = float(h.iloc[i-1]), float(l.iloc[i-1])
+            top, bottom = float(l.iloc[i]), float(h.iloc[i-2])
+            size_pct = (top - bottom) / bottom * 100
+
+            # Filter 1: middle candle must be bullish
+            f1_direction = mid_c > mid_o
+            # Filter 2: body dominates range
+            mid_range = max(mid_h - mid_l, 1e-9)
+            f2_body = (mid_c - mid_o) / mid_range >= 0.40 if f1_direction else False
+            # Filter 3: minimum gap size
+            f3_size = size_pct >= 0.30
+            # Filter 4: volume confirmation
+            f4_vol = True
+            if has_vol:
+                lo = max(0, i - 21); hi = i - 1
+                if hi > lo:
+                    vol_med = float(v.iloc[lo:hi].median() or 0)
+                    f4_vol = float(v.iloc[i-1]) >= vol_med * 0.9 if vol_med > 0 else True
+            quality = sum([f1_direction, f2_body, f3_size, f4_vol])
             fvgs.append({
                 "idx": i - 1, "start_idx": i - 2, "type": "bullish",
-                "top": float(l.iloc[i]), "bottom": float(h.iloc[i-2]),
-                "size_pct": (float(l.iloc[i]) - float(h.iloc[i-2])) / float(h.iloc[i-2]) * 100,
+                "top": top, "bottom": bottom, "size_pct": size_pct,
+                "quality": quality, "valid": quality >= 3,
             })
+
+        # Bearish FVG: candle[i-2].low > candle[i].high (gap down)
         if float(l.iloc[i-2]) > float(h.iloc[i]):
+            mid_o, mid_c = float(o.iloc[i-1]), float(c.iloc[i-1])
+            mid_h, mid_l = float(h.iloc[i-1]), float(l.iloc[i-1])
+            top, bottom = float(l.iloc[i-2]), float(h.iloc[i])
+            size_pct = (top - bottom) / bottom * 100
+
+            f1_direction = mid_c < mid_o
+            mid_range = max(mid_h - mid_l, 1e-9)
+            f2_body = (mid_o - mid_c) / mid_range >= 0.40 if f1_direction else False
+            f3_size = size_pct >= 0.30
+            f4_vol = True
+            if has_vol:
+                lo = max(0, i - 21); hi = i - 1
+                if hi > lo:
+                    vol_med = float(v.iloc[lo:hi].median() or 0)
+                    f4_vol = float(v.iloc[i-1]) >= vol_med * 0.9 if vol_med > 0 else True
+            quality = sum([f1_direction, f2_body, f3_size, f4_vol])
             fvgs.append({
                 "idx": i - 1, "start_idx": i - 2, "type": "bearish",
-                "top": float(l.iloc[i-2]), "bottom": float(h.iloc[i]),
-                "size_pct": (float(l.iloc[i-2]) - float(h.iloc[i])) / float(h.iloc[i]) * 100,
+                "top": top, "bottom": bottom, "size_pct": size_pct,
+                "quality": quality, "valid": quality >= 3,
             })
+
     return fvgs
 
 
@@ -1417,12 +1475,12 @@ def get_smc_chart(symbol: str, days: int = 180, interval: str = "daily"):
 
     swings = find_swings(h, l, n=3)
     events = detect_structure(swings)
-    fvgs = detect_fvgs(h, l)
+    fvgs = detect_fvgs(o, h, l, c, v)
     raw_obs = detect_order_blocks(o, h, l, c, events, df)
 
-    # Recent + meaningful: last 60 bars, size > 0.5% (filter tiny noise)
+    # Recent + valid only: last 60 bars + passed SMC quality filters
     cutoff_idx = max(0, len(df) - 60)
-    recent_fvgs = [f for f in fvgs if f["size_pct"] > 0.5 and f["idx"] >= cutoff_idx]
+    recent_fvgs = [f for f in fvgs if f["valid"] and f["idx"] >= cutoff_idx]
     recent_events = [e for e in events if e["idx"] >= cutoff_idx]
 
     # Tag each FVG with mitigation state but return them all so the user can see
@@ -1473,6 +1531,9 @@ def get_smc_chart(symbol: str, days: int = 180, interval: str = "daily"):
                 "start_time": start_time,
                 "end_time": end_time,
                 "mitigated": f["mitigated"],
+                "quality": f.get("quality", 0),
+                "valid": f.get("valid", True),
+                "size_pct": round(f.get("size_pct", 0), 2),
             })
 
     # Order Block output — keep only those visible in the recent window

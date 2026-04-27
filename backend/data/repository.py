@@ -75,17 +75,34 @@ def bulk_insert_daily_prices(df: pd.DataFrame) -> int:
 
 
 def upsert_today_prices(df: pd.DataFrame, today_str: str):
-    """INSERT OR REPLACE today's rows from live prices into daily_prices."""
+    """
+    Upsert today's live rows into daily_prices.
+
+    Open-pinning rule: the first non-zero open we ever store for (symbol, today)
+    sticks. If the live source returned 0/NaN for open, fall back to the current
+    LTP — that's the first observed traded price of the day, which is the truest
+    proxy for the real session open. Do NOT use close_prev as a fallback.
+    """
     if df.empty:
         return
     conn = get_connection()
     for _, row in df.iterrows():
         try:
+            ltp = _safe_float(row.get("ltp", row.get("close", 0)))
+            raw_open = _safe_float(row.get("open"))
+            # If feed didn't give us a real open, use current LTP (= first
+            # traded price of the day on the very first scrape after market open).
+            seed_open = raw_open if raw_open and raw_open > 0 else ltp
             conn.execute(
                 """INSERT INTO daily_prices
                    (symbol, date, open, high, low, close, volume, value, trade_count)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT (symbol, date) DO UPDATE SET
+                     open = CASE
+                              WHEN daily_prices.open IS NULL OR daily_prices.open <= 0
+                                THEN EXCLUDED.open
+                              ELSE daily_prices.open
+                            END,
                      high = GREATEST(daily_prices.high, EXCLUDED.high),
                      low = LEAST(CASE WHEN daily_prices.low > 0 THEN daily_prices.low ELSE EXCLUDED.low END, EXCLUDED.low),
                      close = EXCLUDED.close, volume = EXCLUDED.volume, value = EXCLUDED.value,
@@ -93,10 +110,10 @@ def upsert_today_prices(df: pd.DataFrame, today_str: str):
                 (
                     row.get("symbol", ""),
                     today_str,
-                    _safe_float(row.get("open")),
+                    seed_open,
                     _safe_float(row.get("high")),
                     _safe_float(row.get("low")),
-                    _safe_float(row.get("ltp", row.get("close", 0))),
+                    ltp,
                     int(row.get("volume", 0) or 0),
                     _safe_float(row.get("value")),
                     int(row.get("trade_count", 0) or 0),
