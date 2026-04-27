@@ -1,6 +1,6 @@
 import { NavLink } from "react-router-dom";
 import { useState, useEffect } from "react";
-import { Activity, BarChart3, Grid3X3, Table2, Menu, X, LineChart, TrendingUp, Newspaper, Calendar, Percent, ShieldAlert, Zap, Layers } from "lucide-react";
+import { Activity, BarChart3, Grid3X3, Table2, Menu, X, LineChart, TrendingUp, Newspaper, Calendar, Percent, ShieldAlert, Zap, Layers, Target, Globe } from "lucide-react";
 import { clsx } from "clsx";
 import { useMarketStore } from "../../store/marketStore.ts";
 import SymbolSearch from "../search/SymbolSearch.tsx";
@@ -12,6 +12,8 @@ const links = [
   { to: "/news", label: "News", icon: Newspaper },
   { to: "/chart", label: "Chart", icon: LineChart },
   { to: "/smc-chart/GP", label: "SMC", icon: Layers },
+  { to: "/signals", label: "Signals", icon: Target },
+  { to: "/nasdaq/signals", label: "NASDAQ", icon: Globe },
   { to: "/live", label: "Live", icon: Zap },
   { to: "/radar", label: "Analysis", icon: TrendingUp },
   { to: "/dividends", label: "Dividends", icon: Percent },

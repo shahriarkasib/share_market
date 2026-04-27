@@ -1288,15 +1288,23 @@ def generate_analysis(structure_events, fvgs, order_blocks, key_levels, current_
         round(swing_low * 0.98, 2),
     )
 
+    # Trade-grade FVGs only: tier in {core, discount, premium} skip "outside"
+    # zones. Among matching, prefer 'core' (near equilibrium) over deep zones.
+    def _grade_score(f):
+        tier = f.get("tier", "secondary")
+        return {"core": 0, "discount": 1, "premium": 1, "secondary": 2, "outside": 3}.get(tier, 9)
+
     fresh_bull_fvgs_below = sorted(
         [f for f in fvgs if f.get("type") == "bullish" and not f.get("mitigated")
-         and f["top"] < current_price],
-        key=lambda x: -x["top"],
+         and f["top"] < current_price
+         and f.get("tier") in ("core", "discount", "secondary")],
+        key=lambda x: (_grade_score(x), -x["top"]),
     )
     fresh_bear_fvgs_above = sorted(
         [f for f in fvgs if f.get("type") == "bearish" and not f.get("mitigated")
-         and f["bottom"] > current_price],
-        key=lambda x: x["bottom"],
+         and f["bottom"] > current_price
+         and f.get("tier") in ("core", "premium", "secondary")],
+        key=lambda x: (_grade_score(x), x["bottom"]),
     )
     fresh_bull_obs = [o for o in order_blocks if o["type"] == "bullish"
                       and o["status"] == "fresh" and o["top"] < current_price]
@@ -1711,6 +1719,31 @@ def get_smc_chart(symbol: str, days: int = 180, interval: str = "daily"):
             end_idx = len(df) - 1  # active zones extend to current bar
         end_time = idx_to_time(end_idx)
         if start_time and end_time:
+            # SMC zone-tier: classify FVG by where its midpoint sits in the
+            # recent 60-bar dealing range. The "first" FVG nearest to price is
+            # often manipulation/induced liquidity — the *real* institutional
+            # FVG tends to sit near the equilibrium of the swing range.
+            mid = (f["top"] + f["bottom"]) / 2
+            recent_window = min(60, len(df))
+            rh = float(df["high"].iloc[-recent_window:].max())
+            rl = float(df["low"].iloc[-recent_window:].min())
+            range_pos = None
+            tier = "secondary"
+            if rh > rl:
+                range_pos = (mid - rl) / (rh - rl) * 100
+                # Core = near equilibrium (35–65% of range) = highest-edge zone
+                if 35 <= range_pos <= 65:
+                    tier = "core"
+                # Deep discount = bullish FVG far below 50% (great BUY zone)
+                elif range_pos < 30 and f["type"] == "bullish":
+                    tier = "discount"
+                # Deep premium = bearish FVG far above 50% (great SHORT zone)
+                elif range_pos > 70 and f["type"] == "bearish":
+                    tier = "premium"
+                # Anything else (e.g. bullish FVG in extreme premium) = often fake
+                else:
+                    tier = "outside"
+
             fvg_zones.append({
                 "type": f["type"],
                 "top": round(f["top"], 2),
@@ -1721,6 +1754,8 @@ def get_smc_chart(symbol: str, days: int = 180, interval: str = "daily"):
                 "quality": f.get("quality", 0),
                 "valid": f.get("valid", True),
                 "size_pct": round(f.get("size_pct", 0), 2),
+                "tier": tier,
+                "range_pos": round(range_pos, 1) if range_pos is not None else None,
             })
 
     # Order Block output — keep only those visible in the recent window

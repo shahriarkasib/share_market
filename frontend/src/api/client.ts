@@ -27,6 +27,91 @@ const api = axios.create({
   headers: { "Content-Type": "application/json" },
 });
 
+// Separate axios instance for NASDAQ backend (lives on a different host).
+// Caddy reverse-proxies port 8001 over HTTPS at the nip.io subdomain so the
+// browser can reach it without mixed-content blocks.
+const NASDAQ_API_BASE = "https://nasdaq.34.126.141.16.nip.io";
+const nasdaqApi = axios.create({
+  baseURL: NASDAQ_API_BASE,
+  timeout: 30_000,
+  headers: { "Content-Type": "application/json" },
+});
+
+export interface NasdaqChartData {
+  symbol: string;
+  current_price: number;
+  candles: { time: string; open: number; high: number; low: number; close: number }[];
+  volumes?: { time: string; value: number; color: string }[];
+  fvgs?: Array<{
+    type: "bullish" | "bearish";
+    top: number;
+    bottom: number;
+    start_time: string;
+    end_time: string;
+    mitigated: boolean;
+    quality?: number;
+    valid?: boolean;
+    tier?: string;
+  }>;
+  structure?: Array<{
+    type: string;
+    price: number;
+    from_price: number;
+    time: string;
+    from_time: string;
+  }>;
+  analysis?: {
+    bias: string;
+    confidence: string;
+    action: string;
+    action_color: string;
+    summary: string;
+    reasons: string[];
+    entry: number | null;
+    entry_label: string | null;
+    stop_loss: number | null;
+    target1: number | null;
+    target2: number | null;
+    risk_reward: number | null;
+    triggers: { icon: string; text: string }[];
+  };
+  premium_discount?: unknown;
+  bos_zones?: unknown;
+  accumulation?: unknown;
+}
+
+export async function fetchNasdaqChart(
+  symbol: string,
+  period: string = "1y",
+): Promise<NasdaqChartData> {
+  const { data } = await nasdaqApi.get<NasdaqChartData>(
+    `/api/v1/nasdaq/smc-chart/${symbol.toUpperCase()}`,
+    { params: { period } },
+  );
+  return data;
+}
+
+export interface NasdaqScreenerCandidate {
+  symbol: string;
+  price: number;
+  bias: string;
+  confidence: string;
+  action: string;
+  summary: string;
+  entry: number | null;
+  stop_loss: number | null;
+  target1: number | null;
+  target2: number | null;
+  risk_reward: number | null;
+}
+
+export async function fetchNasdaqScreener(): Promise<NasdaqScreenerCandidate[]> {
+  const { data } = await nasdaqApi.get<NasdaqScreenerCandidate[]>(
+    `/api/v1/nasdaq/smc-screener`,
+  );
+  return data;
+}
+
 // GCP VM never sleeps — no keep-alive needed
 
 api.interceptors.response.use(
