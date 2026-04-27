@@ -29,9 +29,14 @@ import {
 import {
   fetchSMCChart,
   fetchAllPrices,
+  fetchNasdaqChart,
   type SMCChartData,
 } from "../api/client";
 import type { StockPrice } from "../types/index";
+
+interface SMCChartProps {
+  market?: "dse" | "nasdaq";
+}
 
 type Period = "1m" | "3m" | "6m" | "1y" | "2y";
 type Timeframe = "daily" | "weekly";
@@ -110,9 +115,30 @@ function saveToggles(t: Toggles) {
   }
 }
 
-export default function SMCChart() {
-  const { symbol = "GP" } = useParams();
+export default function SMCChart({ market = "dse" }: SMCChartProps = {}) {
+  const isNasdaq = market === "nasdaq";
+  const cur = isNasdaq ? "$" : "৳";
+  const defaultSymbol = isNasdaq ? "NVDA" : "GP";
+  const { symbol = defaultSymbol } = useParams();
   const nav = useNavigate();
+
+  // DSE uses "1m","3m","6m","1y","2y"; yfinance uses "1mo","3mo","6mo","1y","2y"
+  const periodForApi = (p: string): string => {
+    if (!isNasdaq) return p;
+    const map: Record<string, string> = {
+      "1m": "1mo", "3m": "3mo", "6m": "6mo", "1y": "1y", "2y": "2y",
+    };
+    return map[p] ?? "1y";
+  };
+  const fetchChart = (
+    sym: string,
+    period: string,
+    tf: "daily" | "weekly",
+    opts: { force?: boolean; signal?: AbortSignal } = {},
+  ) =>
+    isNasdaq
+      ? fetchNasdaqChart(sym, periodForApi(period)) as unknown as Promise<SMCChartData>
+      : fetchSMCChart(sym, period as "1m" | "3m" | "6m" | "1y" | "2y", tf, opts);
 
   // Refs — chart skeleton
   const containerRef = useRef<HTMLDivElement>(null);
@@ -167,8 +193,34 @@ export default function SMCChart() {
     });
   }, []);
 
-  // Load stocks list once
+  // Load stocks list once. DSE pulls from the live prices endpoint; for
+  // NASDAQ we hard-code the halal universe (no equivalent live-prices API).
   useEffect(() => {
+    if (isNasdaq) {
+      const tickers = [
+        "NVDA", "MSFT", "AAPL", "GOOGL", "AMZN", "TSLA", "META", "AMD",
+        "AVGO", "ORCL", "ADBE", "CRM", "QCOM", "INTC", "NFLX", "AMPL",
+        "PLTR", "SHOP", "UBER", "ABNB", "PYPL", "SQ", "SNOW", "ROKU",
+        "PINS", "SNAP", "DDOG", "CRWD", "NET", "ZS", "OKTA", "MDB",
+      ];
+      setStocks(
+        tickers.map((t) => ({
+          symbol: t,
+          ltp: 0,
+          high: 0,
+          low: 0,
+          open: 0,
+          close: 0,
+          close_prev: 0,
+          change: 0,
+          change_pct: 0,
+          volume: 0,
+          value: 0,
+          trade_count: 0,
+        })) as unknown as StockPrice[],
+      );
+      return;
+    }
     const ac = new AbortController();
     fetchAllPrices()
       .then((s) => {
@@ -178,7 +230,7 @@ export default function SMCChart() {
         if (!ac.signal.aborted) setStocks([]);
       });
     return () => ac.abort();
-  }, []);
+  }, [isNasdaq]);
 
   // Fetch chart data — abortable, with proper error display
   const loadData = useCallback(
@@ -187,7 +239,7 @@ export default function SMCChart() {
       setLoading(true);
       setError(null);
       try {
-        const d = await fetchSMCChart(symbol, period, timeframe, {
+        const d = await fetchChart(symbol, period, timeframe, {
           force,
           signal: ac.signal,
         });
@@ -214,7 +266,7 @@ export default function SMCChart() {
     const ac = new AbortController();
     setLoading(true);
     setError(null);
-    fetchSMCChart(symbol, period, timeframe, { signal: ac.signal })
+    fetchChart(symbol, period, timeframe, { signal: ac.signal })
       .then((d) => {
         if (!cancelled) setData(d);
       })
@@ -256,7 +308,7 @@ export default function SMCChart() {
     const tick = window.setInterval(() => {
       if (!isMarketOpen()) return;
       const ac = new AbortController();
-      fetchSMCChart(symbol, period, timeframe, { force: true, signal: ac.signal })
+      fetchChart(symbol, period, timeframe, { force: true, signal: ac.signal })
         .then((d) => setData(d))
         .catch(() => { /* silent during background refresh */ });
     }, 30_000); // 30s
@@ -1189,7 +1241,7 @@ export default function SMCChart() {
             </h1>
             {data && (
               <span className="text-emerald-500 text-lg font-mono">
-                {data.current_price.toFixed(1)} ৳
+                {data.current_price.toFixed(1)} {cur}
               </span>
             )}
           </div>
@@ -1391,25 +1443,25 @@ export default function SMCChart() {
                 <div className="bg-emerald-500/10 border border-emerald-500/30 rounded px-2 py-1.5">
                   <div className="text-gray-500 text-[10px]">Entry</div>
                   <div className="font-mono font-bold text-emerald-600 dark:text-emerald-400">
-                    ৳{data.analysis.entry}
+                    {cur}{data.analysis.entry}
                   </div>
                 </div>
                 <div className="bg-red-500/10 border border-red-500/30 rounded px-2 py-1.5">
                   <div className="text-gray-500 text-[10px]">Stop Loss</div>
                   <div className="font-mono font-bold text-red-600 dark:text-red-400">
-                    ৳{data.analysis.stop_loss}
+                    {cur}{data.analysis.stop_loss}
                   </div>
                 </div>
                 <div className="bg-blue-500/10 border border-blue-500/30 rounded px-2 py-1.5">
                   <div className="text-gray-500 text-[10px]">Target 1</div>
                   <div className="font-mono font-bold text-blue-600 dark:text-blue-400">
-                    ৳{data.analysis.target1}
+                    {cur}{data.analysis.target1}
                   </div>
                 </div>
                 <div className="bg-purple-500/10 border border-purple-500/30 rounded px-2 py-1.5">
                   <div className="text-gray-500 text-[10px]">Target 2</div>
                   <div className="font-mono font-bold text-purple-600 dark:text-purple-400">
-                    ৳{data.analysis.target2}
+                    {cur}{data.analysis.target2}
                   </div>
                 </div>
                 <div className="bg-gray-500/10 border border-gray-500/30 rounded px-2 py-1.5">
@@ -1468,18 +1520,18 @@ export default function SMCChart() {
             </span>
           </span>
           <span className="text-xs opacity-80">
-            Range ৳{data.premium_discount.range_low}–{data.premium_discount.range_high}
-            {" · "}EQ ৳{data.premium_discount.equilibrium}
+            Range {cur}{data.premium_discount.range_low}–{data.premium_discount.range_high}
+            {" · "}EQ {cur}{data.premium_discount.equilibrium}
           </span>
           <span className="text-xs italic opacity-90">{data.premium_discount.bias_action}</span>
           {data.bos_zones?.bullish_trigger && (
             <span className="text-xs">
-              <span className="text-green-500">↑BOS @ ৳{data.bos_zones.bullish_trigger.price}</span>
+              <span className="text-green-500">↑BOS @ {cur}{data.bos_zones.bullish_trigger.price}</span>
             </span>
           )}
           {data.bos_zones?.bearish_trigger && (
             <span className="text-xs">
-              <span className="text-red-500">↓BOS @ ৳{data.bos_zones.bearish_trigger.price}</span>
+              <span className="text-red-500">↓BOS @ {cur}{data.bos_zones.bearish_trigger.price}</span>
             </span>
           )}
         </div>
@@ -1520,12 +1572,12 @@ export default function SMCChart() {
             </span>
             {data.accumulation.target_up !== null && (
               <span className="text-sm font-mono text-teal-500">
-                Breakout target: ৳{data.accumulation.target_up}
+                Breakout target: {cur}{data.accumulation.target_up}
               </span>
             )}
             {data.accumulation.target_down !== null && (
               <span className="text-sm font-mono text-red-500">
-                Breakdown target: ৳{data.accumulation.target_down}
+                Breakdown target: {cur}{data.accumulation.target_down}
               </span>
             )}
           </div>
@@ -1535,7 +1587,7 @@ export default function SMCChart() {
               <div>
                 <span className="text-gray-500">Range:</span>{" "}
                 <span className="font-mono">
-                  ৳{data.accumulation.range_low}–{data.accumulation.range_high}
+                  {cur}{data.accumulation.range_low}–{data.accumulation.range_high}
                 </span>{" "}
                 <span className="text-gray-500">({data.accumulation.range_pct}%)</span>
               </div>
@@ -1659,7 +1711,7 @@ export default function SMCChart() {
                       {f.mitigated && " ·mit"}
                     </span>
                     <span className="font-mono text-gray-500 dark:text-gray-400">
-                      {f.bottom.toFixed(1)} – {f.top.toFixed(1)} ৳
+                      {f.bottom.toFixed(1)} – {f.top.toFixed(1)} {cur}
                     </span>
                     <span className="text-gray-500">{f.start_time}</span>
                   </div>
@@ -1696,7 +1748,7 @@ export default function SMCChart() {
                         {isBull ? "↑" : "↓"} {isBOS ? "BOS" : "ChoCh"}
                       </span>
                       <span className="font-mono text-gray-500 dark:text-gray-400">
-                        {s.price.toFixed(1)} ৳
+                        {s.price.toFixed(1)} {cur}
                       </span>
                       <span className="text-gray-500">{s.time}</span>
                     </div>
@@ -1746,7 +1798,7 @@ export default function SMCChart() {
                       >
                         {isSupport ? "↓" : "↑"} {lvl.role.toUpperCase()}
                       </span>
-                      <span className="font-mono">৳{lvl.price.toFixed(1)}</span>
+                      <span className="font-mono">{cur}{lvl.price.toFixed(1)}</span>
                     </div>
                     <div className="flex items-center gap-2 text-gray-500 dark:text-gray-400">
                       <span>{lvl.touches} touches</span>

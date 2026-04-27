@@ -14,7 +14,6 @@ import Seasonality from "./pages/Seasonality.tsx";
 import Dividends from "./pages/Dividends.tsx";
 import FloorDetection from "./pages/FloorDetection.tsx";
 import Signals from "./pages/Signals.tsx";
-import NasdaqChart from "./pages/NasdaqChart.tsx";
 import NasdaqSignals from "./pages/NasdaqSignals.tsx";
 
 export default function App() {
@@ -36,7 +35,7 @@ export default function App() {
         <Route path="/floor" element={<FloorDetection />} />
         <Route path="/signals" element={<Signals />} />
         <Route path="/nasdaq/signals" element={<NasdaqSignals />} />
-        <Route path="/nasdaq/smc-chart/:symbol?" element={<NasdaqChart />} />
+        <Route path="/nasdaq/smc-chart/:symbol?" element={<SMCChart market="nasdaq" />} />
       </Route>
     </Routes>
   );
