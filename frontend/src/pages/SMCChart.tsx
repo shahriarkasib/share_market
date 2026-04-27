@@ -30,6 +30,7 @@ import {
   fetchSMCChart,
   fetchAllPrices,
   fetchNasdaqChart,
+  fetchNasdaqTickers,
   type SMCChartData,
 } from "../api/client";
 import type { StockPrice } from "../types/index";
@@ -193,42 +194,45 @@ export default function SMCChart({ market = "dse" }: SMCChartProps = {}) {
     });
   }, []);
 
-  // Load stocks list once. DSE pulls from the live prices endpoint; for
-  // NASDAQ we hard-code the halal universe (no equivalent live-prices API).
+  // Load stocks list once. DSE → live prices endpoint. NASDAQ → full halal
+  // universe (~1.8k tickers) from the dedicated tickers endpoint.
   useEffect(() => {
-    if (isNasdaq) {
-      const tickers = [
-        "NVDA", "MSFT", "AAPL", "GOOGL", "AMZN", "TSLA", "META", "AMD",
-        "AVGO", "ORCL", "ADBE", "CRM", "QCOM", "INTC", "NFLX", "AMPL",
-        "PLTR", "SHOP", "UBER", "ABNB", "PYPL", "SQ", "SNOW", "ROKU",
-        "PINS", "SNAP", "DDOG", "CRWD", "NET", "ZS", "OKTA", "MDB",
-      ];
-      setStocks(
-        tickers.map((t) => ({
-          symbol: t,
-          ltp: 0,
-          high: 0,
-          low: 0,
-          open: 0,
-          close: 0,
-          close_prev: 0,
-          change: 0,
-          change_pct: 0,
-          volume: 0,
-          value: 0,
-          trade_count: 0,
-        })) as unknown as StockPrice[],
-      );
-      return;
-    }
     const ac = new AbortController();
-    fetchAllPrices()
-      .then((s) => {
-        if (!ac.signal.aborted) setStocks(s);
-      })
-      .catch(() => {
-        if (!ac.signal.aborted) setStocks([]);
-      });
+    if (isNasdaq) {
+      fetchNasdaqTickers()
+        .then((tickers) => {
+          if (ac.signal.aborted) return;
+          setStocks(
+            tickers.map((t) => ({
+              symbol: t.symbol,
+              company_name: t.name ?? undefined,
+              sector: t.sector ?? undefined,
+              ltp: 0,
+              high: 0,
+              low: 0,
+              open: 0,
+              close: 0,
+              close_prev: 0,
+              change: 0,
+              change_pct: 0,
+              volume: 0,
+              value: 0,
+              trade_count: 0,
+            })) as unknown as StockPrice[],
+          );
+        })
+        .catch(() => {
+          if (!ac.signal.aborted) setStocks([]);
+        });
+    } else {
+      fetchAllPrices()
+        .then((s) => {
+          if (!ac.signal.aborted) setStocks(s);
+        })
+        .catch(() => {
+          if (!ac.signal.aborted) setStocks([]);
+        });
+    }
     return () => ac.abort();
   }, [isNasdaq]);
 

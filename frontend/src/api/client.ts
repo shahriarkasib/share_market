@@ -112,6 +112,19 @@ export async function fetchNasdaqScreener(): Promise<NasdaqScreenerCandidate[]> 
   return data;
 }
 
+export interface NasdaqTicker {
+  symbol: string;
+  name: string | null;
+  sector: string | null;
+}
+
+export async function fetchNasdaqTickers(): Promise<NasdaqTicker[]> {
+  const { data } = await nasdaqApi.get<NasdaqTicker[]>(
+    `/api/v1/nasdaq/tickers`,
+  );
+  return data;
+}
+
 // GCP VM never sleeps — no keep-alive needed
 
 api.interceptors.response.use(
