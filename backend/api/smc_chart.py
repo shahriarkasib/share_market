@@ -34,10 +34,14 @@ def _append_live_bar_if_missing(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
 
         live = dict(row)
         # Construct today's bar from live data — close = LTP (last traded price)
+        # Open: prefer real session open; if missing, use LTP (first observed
+        # traded price). DO NOT fall back to close_prev — that fakes the candle
+        # direction to be "gap direction" instead of "session direction".
+        open_px = float(live["open"]) if live.get("open") and float(live["open"]) > 0 else float(live["ltp"])
         live_bar = pd.DataFrame([{
             "date": pd.to_datetime(today_str),
             "symbol": symbol.upper(),
-            "open": float(live["open"] or live["close_prev"] or live["ltp"]),
+            "open": open_px,
             "high": float(live["high"] or live["ltp"]),
             "low": float(live["low"] or live["ltp"]),
             "close": float(live["ltp"]),
@@ -1321,12 +1325,41 @@ def generate_analysis(structure_events, fvgs, order_blocks, key_levels, current_
 
     # Parabolic check: too extended from SMA50
     parabolic = False
+    extension = 0.0
     if len(df) >= 50:
         sma50 = float(df["close"].iloc[-50:].mean())
         if sma50 > 0:
             extension = (current_price - sma50) / sma50 * 100
             if extension > 30:
                 parabolic = True
+
+    # === SMC contextual penalties (caught the ECABLES top-of-range trap) ===
+    # 1. Premium-zone check — price in top portion of recent 60-bar range
+    range_pct = None
+    in_extreme_premium = False
+    in_premium = False
+    if len(df) >= 20:
+        recent_window = min(60, len(df))
+        rh = float(df["high"].iloc[-recent_window:].max())
+        rl = float(df["low"].iloc[-recent_window:].min())
+        if rh > rl:
+            range_pct = (current_price - rl) / (rh - rl) * 100
+            in_extreme_premium = range_pct >= 79
+            in_premium = range_pct >= 65
+
+    # 2. Overhead bearish FVG within 3% of price (institutional supply near)
+    overhead_bear_fvg = None
+    if fresh_bear_fvgs_above:
+        nearest_bear = fresh_bear_fvgs_above[0]
+        if (nearest_bear["bottom"] - current_price) / current_price <= 0.03:
+            overhead_bear_fvg = nearest_bear
+
+    # 3. Demand-absorption — multiple bullish FVGs mitigated in the last
+    # 10 bars means buyers are getting eaten through
+    recent_mitigated_bull = sum(
+        1 for f in fvgs
+        if f.get("type") == "bullish" and f.get("mitigated")
+    )
 
     # === Confidence ===
     confidence = "LOW"
@@ -1354,15 +1387,47 @@ def generate_analysis(structure_events, fvgs, order_blocks, key_levels, current_
     elif bias == "WHIPSAW":
         confidence = "LOW"
 
+    # Apply SMC contextual confidence caps (BULLISH only — these warn against
+    # buying into supply, premium, or absorbed demand)
+    if bias == "BULLISH":
+        # Overhead bearish FVG within 3% = institutional supply right above
+        if overhead_bear_fvg is not None and confidence == "HIGH":
+            confidence = "LOW"
+        elif overhead_bear_fvg is not None and confidence == "MEDIUM":
+            confidence = "LOW"
+        # In extreme premium = smart-money sell zone
+        if in_extreme_premium and confidence in ("HIGH", "MEDIUM"):
+            confidence = "LOW"
+        # Demand absorption: 2+ bullish FVGs already mitigated in window
+        if recent_mitigated_bull >= 2 and confidence == "HIGH":
+            confidence = "MEDIUM"
+
     # === Action ===
     action = "WAIT"
     action_color = "gray"
     summary = ""
 
-    if parabolic and bias == "BULLISH":
+    # Premium-zone action override: even with bullish bias, fresh longs in
+    # extreme premium are low-edge. Wait for pullback to discount.
+    if bias == "BULLISH" and in_extreme_premium:
+        action = "TAKE PROFIT / WAIT FOR PULLBACK"
+        action_color = "orange"
+        summary = (
+            f"Bullish trend but price at {round(range_pct or 0)}% of range "
+            f"(extreme premium). Smart money sells here — wait for pullback to discount."
+        )
+    elif parabolic and bias == "BULLISH":
         action = "TAKE PROFIT / DO NOT BUY"
         action_color = "orange"
         summary = "Stock is parabolic — too extended from average. Don't chase, wait for pullback."
+    elif bias == "BULLISH" and overhead_bear_fvg is not None:
+        action = "WAIT — SUPPLY OVERHEAD"
+        action_color = "orange"
+        summary = (
+            f"Bullish bias but fresh bearish FVG ৳{overhead_bear_fvg['bottom']}-"
+            f"{overhead_bear_fvg['top']} sits right above price. "
+            "Wait for that zone to mitigate or for deeper pullback."
+        )
     elif bias == "WHIPSAW":
         action = "AVOID"
         action_color = "red"
@@ -1420,6 +1485,25 @@ def generate_analysis(structure_events, fvgs, order_blocks, key_levels, current_
         reasons.append("⚠ Whipsaw pattern detected — multiple alternating reversals")
     if parabolic:
         reasons.append(f"⚠ Price is +{round(extension)}% above SMA50 — parabolic risk")
+    if in_extreme_premium and bias == "BULLISH":
+        reasons.append(
+            f"⚠ Price at {round(range_pct or 0)}% of range = extreme premium "
+            "(smart money sells here)"
+        )
+    elif in_premium and bias == "BULLISH":
+        reasons.append(
+            f"⚠ Price in premium zone ({round(range_pct or 0)}% of range) — "
+            "low-edge for fresh longs"
+        )
+    if overhead_bear_fvg is not None:
+        reasons.append(
+            f"⚠ Fresh bearish FVG ৳{overhead_bear_fvg['bottom']}-{overhead_bear_fvg['top']} "
+            "overhead = institutional supply"
+        )
+    if recent_mitigated_bull >= 2 and bias == "BULLISH":
+        reasons.append(
+            f"⚠ {recent_mitigated_bull} bullish FVG(s) already mitigated = demand absorbed"
+        )
 
     # === Trade levels ===
     entry = None
