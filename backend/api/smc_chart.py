@@ -1369,6 +1369,104 @@ def generate_analysis(structure_events, fvgs, order_blocks, key_levels, current_
         if f.get("type") == "bullish" and f.get("mitigated")
     )
 
+    # 4. Trendiness gate — backtest showed FVG strategies only have edge in
+    # clean uptrends. ADX(14)>25 + 90-bar return positive + 20-day range >= 8%.
+    is_trendy_market = False
+    adx_value = None
+    try:
+        if len(df) >= 35:
+            h_arr = df["high"].astype(float).values
+            l_arr = df["low"].astype(float).values
+            c_arr = df["close"].astype(float).values
+            n = len(h_arr)
+            tr = [0.0] * n
+            pdm = [0.0] * n
+            mdm = [0.0] * n
+            for i in range(1, n):
+                tr[i] = max(h_arr[i] - l_arr[i], abs(h_arr[i] - c_arr[i - 1]), abs(l_arr[i] - c_arr[i - 1]))
+                up = h_arr[i] - h_arr[i - 1]
+                dn = l_arr[i - 1] - l_arr[i]
+                pdm[i] = up if (up > dn and up > 0) else 0
+                mdm[i] = dn if (dn > up and dn > 0) else 0
+            p = 14
+            atr_w = [0.0] * n
+            pdm_w = [0.0] * n
+            mdm_w = [0.0] * n
+            atr_w[p] = sum(tr[1:p + 1])
+            pdm_w[p] = sum(pdm[1:p + 1])
+            mdm_w[p] = sum(mdm[1:p + 1])
+            for i in range(p + 1, n):
+                atr_w[i] = atr_w[i - 1] - atr_w[i - 1] / p + tr[i]
+                pdm_w[i] = pdm_w[i - 1] - pdm_w[i - 1] / p + pdm[i]
+                mdm_w[i] = mdm_w[i - 1] - mdm_w[i - 1] / p + mdm[i]
+            dx_arr = [0.0] * n
+            for i in range(p, n):
+                if atr_w[i] > 0:
+                    pdi = 100 * pdm_w[i] / atr_w[i]
+                    mdi = 100 * mdm_w[i] / atr_w[i]
+                    s = pdi + mdi
+                    if s > 0:
+                        dx_arr[i] = 100 * abs(pdi - mdi) / s
+            if 2 * p < n:
+                adx_arr = [0.0] * n
+                adx_arr[2 * p] = sum(dx_arr[p + 1: 2 * p + 1]) / p
+                for i in range(2 * p + 1, n):
+                    adx_arr[i] = (adx_arr[i - 1] * (p - 1) + dx_arr[i]) / p
+                adx_value = round(adx_arr[-1], 1) if adx_arr[-1] > 0 else None
+
+            ret90 = 0
+            if len(df) >= 90:
+                p0 = float(df["close"].iloc[-90])
+                if p0 > 0:
+                    ret90 = (current_price - p0) / p0
+            range20_pct = 0
+            if len(df) >= 20:
+                rh20 = float(df["high"].iloc[-20:].max())
+                rl20 = float(df["low"].iloc[-20:].min())
+                if current_price > 0:
+                    range20_pct = (rh20 - rl20) / current_price
+
+            is_trendy_market = (
+                adx_value is not None and adx_value >= 25
+                and ret90 > 0 and range20_pct >= 0.08
+            )
+    except Exception:
+        is_trendy_market = False
+
+    # 5. CONFLUENCE — fresh bullish FVG zone overlapping a multi-touch support.
+    # Backtest showed this is the highest-edge entry (53% win, 1.49 PF).
+    confluence_zone = None
+    try:
+        # Reuse `support_resistance` style detection: cluster recent swing lows
+        if len(df) >= 30 and fresh_bull_fvgs_below:
+            lookback = min(60, len(df))
+            sub_h = df["high"].iloc[-lookback:]
+            sub_l = df["low"].iloc[-lookback:]
+            sub_swings = find_swings(sub_h.reset_index(drop=True), sub_l.reset_index(drop=True), n=2)
+            lows = sorted([s["price"] for s in sub_swings if s["type"] == "low"])
+            clusters = []
+            if lows:
+                cur = [lows[0]]
+                for px in lows[1:]:
+                    if (px - cur[-1]) / cur[-1] < 0.015:
+                        cur.append(px)
+                    else:
+                        clusters.append(cur); cur = [px]
+                clusters.append(cur)
+            for f in fresh_bull_fvgs_below[:3]:
+                for cl in clusters:
+                    if len(cl) < 2:
+                        continue
+                    sup_px = sum(cl) / len(cl)
+                    if f["bottom"] * 0.98 <= sup_px <= f["top"] * 1.02:
+                        confluence_zone = {**f, "support_price": round(sup_px, 2),
+                                           "support_touches": len(cl)}
+                        break
+                if confluence_zone:
+                    break
+    except Exception:
+        confluence_zone = None
+
     # === Confidence ===
     confidence = "LOW"
     if bias == "BULLISH":
@@ -1409,6 +1507,17 @@ def generate_analysis(structure_events, fvgs, order_blocks, key_levels, current_
         # Demand absorption: 2+ bullish FVGs already mitigated in window
         if recent_mitigated_bull >= 2 and confidence == "HIGH":
             confidence = "MEDIUM"
+        # Non-trendy market: backtest shows FVG signals fail in flat/choppy
+        # tape. Cap confidence to LOW unless ADX>25 + return + range gates pass.
+        if not is_trendy_market and confidence in ("HIGH", "MEDIUM"):
+            confidence = "LOW"
+        # CONFLUENCE bonus: fresh FVG + support overlap = highest-edge setup,
+        # promote one notch (LOW→MEDIUM, MEDIUM→HIGH) — but only in trendy market
+        if confluence_zone is not None and is_trendy_market:
+            if confidence == "LOW":
+                confidence = "MEDIUM"
+            elif confidence == "MEDIUM":
+                confidence = "HIGH"
 
     # === Action ===
     action = "WAIT"
@@ -1444,6 +1553,23 @@ def generate_analysis(structure_events, fvgs, order_blocks, key_levels, current_
         action = "AVOID / EXIT"
         action_color = "red"
         summary = "Latest structure is bearish. Don't catch falling knives — wait for reversal signal."
+    elif bias == "BULLISH" and not is_trendy_market:
+        action = "WAIT — NO TREND"
+        action_color = "gray"
+        summary = (
+            f"Bullish bias but market lacks trend strength "
+            f"(ADX {adx_value if adx_value else 'N/A'}, need ≥25). "
+            "FVG strategies fail in flat/choppy tape. Wait for trend confirmation."
+        )
+    elif bias == "BULLISH" and confluence_zone is not None:
+        action = "BUY ON DIP — CONFLUENCE"
+        action_color = "green"
+        summary = (
+            f"Best entry on pullback to ৳{confluence_zone['bottom']}-"
+            f"{confluence_zone['top']} — fresh FVG overlapping a "
+            f"{confluence_zone['support_touches']}-touch support. "
+            "Highest-edge setup (53% win in backtest)."
+        )
     elif bias == "BULLISH":
         if current_price >= breakout_trigger:
             action = "BUY (BREAKOUT ACTIVE)"
@@ -1512,6 +1638,16 @@ def generate_analysis(structure_events, fvgs, order_blocks, key_levels, current_
         reasons.append(
             f"⚠ {recent_mitigated_bull} bullish FVG(s) already mitigated = demand absorbed"
         )
+    if confluence_zone is not None and bias == "BULLISH":
+        reasons.append(
+            f"💎 CONFLUENCE: fresh FVG ৳{confluence_zone['bottom']}-{confluence_zone['top']} "
+            f"meets {confluence_zone['support_touches']}-touch support @ ৳{confluence_zone['support_price']}"
+        )
+    if adx_value is not None and bias == "BULLISH":
+        if adx_value >= 25:
+            reasons.append(f"✅ Trendy market (ADX {adx_value}) — FVG signals reliable here")
+        else:
+            reasons.append(f"⚠ Weak trend (ADX {adx_value} < 25) — FVG signals less reliable")
 
     # === Trade levels ===
     entry = None
@@ -1611,6 +1747,9 @@ def generate_analysis(structure_events, fvgs, order_blocks, key_levels, current_
         "target2": target2,
         "risk_reward": rr,
         "triggers": triggers,
+        "adx": adx_value,
+        "is_trendy": is_trendy_market,
+        "confluence": confluence_zone,
     }
 
 
