@@ -1570,6 +1570,79 @@ export default function SMCChart({ market = "dse" }: SMCChartProps = {}) {
               </div>
             )}
 
+            {/* Cross-Signal Alignment — how every metric agrees/disagrees */}
+            {(data.analysis as { alignment?: string[] }).alignment && (data.analysis as { alignment?: string[] }).alignment!.length > 0 && (
+              <div className="mb-3 rounded border border-purple-500/30 bg-purple-500/5 px-3 py-2">
+                <div className="text-[10px] uppercase tracking-wider text-purple-400 font-semibold mb-1">
+                  🎯 Cross-Signal Alignment
+                </div>
+                <ul className="text-xs space-y-1 text-[var(--text)]">
+                  {(data.analysis as { alignment?: string[] }).alignment!.map((line, i) => (
+                    <li key={i} dangerouslySetInnerHTML={{
+                      __html: line
+                        .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+                    }} />
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            {/* Fibonacci Dealing Range — the strategy in the Bengali post */}
+            {data.fib_dealing_range && data.fib_dealing_range.valid && (
+              <div className="mb-3 rounded border border-amber-500/30 bg-amber-500/5 px-3 py-2">
+                <div className="flex items-center justify-between mb-1">
+                  <div className="text-[10px] uppercase tracking-wider text-amber-500 font-semibold">
+                    📐 Fibonacci Dealing Range
+                  </div>
+                  <span className={`text-[11px] font-bold px-2 py-0.5 rounded ${
+                    data.fib_dealing_range.action_text.includes("BUY") ? "bg-emerald-500/20 text-emerald-500" :
+                    data.fib_dealing_range.action_text.includes("SELL") ? "bg-red-500/20 text-red-500" :
+                    "bg-gray-500/20 text-gray-500"
+                  }`}>
+                    {data.fib_dealing_range.action_text}
+                  </span>
+                </div>
+                <p className="text-xs text-[var(--text)] mb-2">{data.fib_dealing_range.narrative}</p>
+                <div className="text-[10px] grid grid-cols-2 sm:grid-cols-4 gap-1">
+                  {data.fib_dealing_range.levels.map((lvl) => {
+                    const isCurrent = Math.abs(data.current_price - lvl.price) / lvl.price < 0.01;
+                    return (
+                      <div key={lvl.ratio} className={`rounded px-2 py-1 ${
+                        lvl.zone.includes("discount") ? "bg-emerald-500/10 border border-emerald-500/30" :
+                        lvl.zone.includes("premium") ? "bg-red-500/10 border border-red-500/30" :
+                        "bg-gray-500/10 border border-gray-500/30"
+                      } ${isCurrent ? "ring-2 ring-amber-500" : ""}`}>
+                        <div className="font-mono">{(lvl.ratio * 100).toFixed(1)}%</div>
+                        <div className="font-mono font-bold">{cur}{lvl.price}</div>
+                        <div className="opacity-70">{lvl.action.split(" — ")[0]}</div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* Elliott Wave Triangle (A-B-C-D-E) */}
+            {data.elliott_triangle && (
+              <div className="mb-3 rounded border border-fuchsia-500/30 bg-fuchsia-500/5 px-3 py-2">
+                <div className="text-[10px] uppercase tracking-wider text-fuchsia-400 font-semibold mb-1">
+                  🔺 Elliott Wave Triangle ({data.elliott_triangle.kind} contracting)
+                </div>
+                <p className="text-xs mb-2">{data.elliott_triangle.narrative}</p>
+                <div className="flex flex-wrap gap-2 text-[11px] font-mono mb-1">
+                  {data.elliott_triangle.points.map((p) => (
+                    <span key={p.label} className="px-2 py-0.5 rounded bg-fuchsia-500/10 border border-fuchsia-500/20">
+                      <strong>{p.label}</strong>: {cur}{p.price}
+                    </span>
+                  ))}
+                </div>
+                <div className="text-[11px]">
+                  Targets — ↑ <strong className="text-emerald-500">{cur}{data.elliott_triangle.breakout_up_target}</strong>
+                  · ↓ <strong className="text-red-500">{cur}{data.elliott_triangle.breakdown_target}</strong>
+                </div>
+              </div>
+            )}
+
             {data.analysis.reasons.length > 0 && (
               <ul className="text-xs text-gray-600 dark:text-gray-400 space-y-1 mb-3">
                 {data.analysis.reasons.map((r, i) => (

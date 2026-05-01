@@ -1,30 +1,63 @@
 """SMC chart data — OHLCV + FVG zones + BOS/ChoCh events for DSE stocks."""
 
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta
 from data.repository import read_historical_for_symbol
 from database import get_connection
+
+
+def _is_dse_market_day_now() -> bool:
+    """DSE trades Sun-Thu, 10:00-14:30 BST (UTC+6). Don't fake a today bar
+    on weekends or holidays.
+
+    Returns True only when:
+      - Current Bangladesh weekday is Sun(6), Mon(0), Tue(1), Wed(2), Thu(3)
+      - It's between 10:00 and ~16:00 BST (allow 90 min after close
+        for late settlement to land — beyond that, treat as next-day close)
+    """
+    now_utc = datetime.utcnow()
+    # BST = UTC+6
+    bst = now_utc + timedelta(hours=6)
+    weekday = bst.weekday()  # Mon=0, Sun=6
+    # DSE trading days: Sun(6), Mon(0), Tue(1), Wed(2), Thu(3)
+    if weekday not in (6, 0, 1, 2, 3):
+        return False
+    minute_of_day = bst.hour * 60 + bst.minute
+    # 10:00 to 16:00 BST window (allow ~90 min post-close)
+    return 600 <= minute_of_day <= 960
 
 
 def _append_live_bar_if_missing(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
     """If today's bar isn't in daily_prices yet, append it from live_prices.
 
-    This makes intraday SMC analysis reflect today's actual OHLC instead of
-    yesterday's EOD numbers. Without this, charts show stale data until EOD
-    daily bar lands in the DB.
+    Three guard rails to avoid phantom bars on closed days:
+      1. Only append on actual DSE market days (Sun-Thu, 10:00-16:00 BST)
+      2. Only append if live_prices.updated_at is from today (BST)
+      3. Don't append if last bar in df is already today
     """
     if df.empty:
         return df
-    today_str = datetime.now().strftime("%Y-%m-%d")
     df["date"] = pd.to_datetime(df["date"])
+
+    # BST today
+    bst_today = (datetime.utcnow() + timedelta(hours=6)).date()
+    today_str = bst_today.strftime("%Y-%m-%d")
+
     last_date_str = df["date"].max().strftime("%Y-%m-%d")
     if last_date_str == today_str:
         return df  # already have today's bar
 
+    # Guard 1: must be a market day, in-session window
+    if not _is_dse_market_day_now():
+        return df
+
     try:
         conn = get_connection()
+        # Guard 2: live_prices entry must be FROM TODAY. If updated_at is
+        # missing or stale (yesterday or older), the live_prices row is
+        # stale data left over from previous session — do NOT append.
         row = conn.execute(
-            "SELECT symbol, ltp, open, high, low, close_prev, volume "
+            "SELECT symbol, ltp, open, high, low, close_prev, volume, updated_at "
             "FROM live_prices WHERE symbol = ? AND ltp > 0",
             (symbol.upper(),),
         ).fetchone()
@@ -33,10 +66,25 @@ def _append_live_bar_if_missing(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
             return df
 
         live = dict(row)
+        upd = live.get("updated_at")
+        if upd is None:
+            return df  # no timestamp = can't verify freshness, skip
+        # Convert to BST date for comparison
+        if isinstance(upd, str):
+            try:
+                upd = datetime.fromisoformat(upd.replace("Z", "+00:00"))
+            except Exception:
+                return df
+        # Strip tzinfo to compare on UTC then add 6h for BST
+        if upd.tzinfo is not None:
+            upd_utc = upd.astimezone(tz=None).replace(tzinfo=None) if hasattr(upd, "astimezone") else upd.replace(tzinfo=None)
+        else:
+            upd_utc = upd
+        upd_bst_date = (upd_utc + timedelta(hours=6)).date()
+        if upd_bst_date != bst_today:
+            return df  # stale live_prices row — do not fabricate today's bar
+
         # Construct today's bar from live data — close = LTP (last traded price)
-        # Open: prefer real session open; if missing, use LTP (first observed
-        # traded price). DO NOT fall back to close_prev — that fakes the candle
-        # direction to be "gap direction" instead of "session direction".
         open_px = float(live["open"]) if live.get("open") and float(live["open"]) > 0 else float(live["ltp"])
         live_bar = pd.DataFrame([{
             "date": pd.to_datetime(today_str),
@@ -105,6 +153,252 @@ def detect_structure(swings):
                     trend = "up"
             last_sl = sw
     return events
+
+
+def detect_elliott_triangle(swings, df, lookback=80):
+    """5-point Elliott Wave triangle (A-B-C-D-E).
+
+    The pattern: 5 alternating swings forming a converging triangle, where each
+    successive swing is SMALLER than the previous (contracting). After E, price
+    typically breaks out in the prior trend direction. This is what the Bengali
+    analyst is watching.
+
+    Pattern requirements:
+      - 5 alternating swings (H-L-H-L-H or L-H-L-H-L)
+      - Each leg shorter than the prior (contracting)
+      - Trendline from B-D points should converge with trendline from A-C-E
+      - Last point E hasn't broken yet (still inside the triangle)
+    """
+    if not swings or len(df) < 30:
+        return None
+
+    cutoff = max(0, len(df) - lookback)
+    recent = sorted([s for s in swings if s["idx"] >= cutoff], key=lambda s: s["idx"])
+    if len(recent) < 5:
+        return None
+
+    # Look at last 5-7 alternating swings
+    # Find the latest 5-point alternating sequence
+    for start in range(max(0, len(recent) - 7), len(recent) - 4):
+        seq = recent[start:start + 5]
+        if len(seq) < 5:
+            continue
+        types = [s["type"] for s in seq]
+        # Must alternate
+        if not (types == ["high","low","high","low","high"] or
+                types == ["low","high","low","high","low"]):
+            continue
+
+        prices = [s["price"] for s in seq]
+        # Each leg shorter than the previous (contracting)
+        legs = [abs(prices[i+1] - prices[i]) for i in range(4)]
+        if not all(legs[i] >= legs[i+1] * 0.85 for i in range(3)):
+            continue
+        contracting = all(legs[i] > legs[i+1] for i in range(3))
+        if not contracting:
+            continue
+
+        a, b, c, d, e = seq
+        # Triangle direction
+        is_descending_high = a["type"] == "high" and prices[0] > prices[2] > prices[4]
+        is_ascending_low = a["type"] == "low" and prices[0] < prices[2] < prices[4]
+        # Project breakout: after E, the prior trend resumes
+        # Estimate the height of the triangle as A-B distance
+        height = abs(prices[0] - prices[1])
+        breakout_target_up = round(prices[4] + height, 2)
+        breakout_target_dn = round(prices[4] - height, 2)
+        cp = float(df["close"].iloc[-1])
+        bias = "bullish" if cp > prices[4] else "bearish" if cp < min(prices[1], prices[3]) else "pending"
+
+        return {
+            "type": "ELLIOTT_TRIANGLE",
+            "points": [
+                {"label": "A", "price": round(prices[0], 2),
+                 "time": df.iloc[a["idx"]]["date"].strftime("%Y-%m-%d") if "date" in df.columns else None},
+                {"label": "B", "price": round(prices[1], 2),
+                 "time": df.iloc[b["idx"]]["date"].strftime("%Y-%m-%d") if "date" in df.columns else None},
+                {"label": "C", "price": round(prices[2], 2),
+                 "time": df.iloc[c["idx"]]["date"].strftime("%Y-%m-%d") if "date" in df.columns else None},
+                {"label": "D", "price": round(prices[3], 2),
+                 "time": df.iloc[d["idx"]]["date"].strftime("%Y-%m-%d") if "date" in df.columns else None},
+                {"label": "E", "price": round(prices[4], 2),
+                 "time": df.iloc[e["idx"]]["date"].strftime("%Y-%m-%d") if "date" in df.columns else None},
+            ],
+            "contracting": True,
+            "kind": "descending" if is_descending_high else ("ascending" if is_ascending_low else "symmetrical"),
+            "current_price": round(cp, 2),
+            "bias": bias,
+            "breakout_up_target": breakout_target_up,
+            "breakdown_target": breakout_target_dn,
+            "narrative": (
+                f"Elliott 5-point contracting triangle (A→E). After E, price typically breaks out "
+                f"in the prior trend direction. Targets: ↑ ৳{breakout_target_up} (height projection up) "
+                f"or ↓ ৳{breakout_target_dn}. Wait for break + close beyond the triangle line before entering."
+            ),
+        }
+    return None
+
+
+def detect_fib_dealing_range(swings, df, lookback=60):
+    """ICT/SMC dealing-range Fibonacci — the strategy in the Bengali post.
+
+    Find the most recent IMPULSE LEG (largest swing low → swing high in
+    last lookback bars), then label every key Fib level with a textual
+    interpretation. This is the "buy below 50% / sell above premium" play.
+
+    Returns:
+      {
+        "swing_low": float, "swing_low_time": str,
+        "swing_high": float, "swing_high_time": str,
+        "leg_size_pct": float,           # how big the impulse was
+        "levels": [
+          {"ratio": 0.0,   "price": ..., "label": "100% (Range Low)",
+           "zone": "extreme_discount", "action": "Strong BUY zone"},
+          {"ratio": 0.236, "price": ..., "label": "23.6% retracement",
+           "zone": "extreme_discount", "action": "Buy zone — first re-entry"},
+          ...
+        ],
+        "current_pct": float,             # where price is in 0-100% of leg
+        "current_zone": str,              # human label
+        "action_text": str,               # "BUY", "SELL", "WAIT"
+        "narrative": str,                 # plain-English trade plan
+        "valid": bool,                    # is this a usable setup?
+      }
+    """
+    if not swings or len(df) < 20:
+        return None
+
+    cutoff = max(0, len(df) - lookback)
+    recent = [s for s in swings if s["idx"] >= cutoff]
+    if len(recent) < 2:
+        return None
+
+    # Find the largest impulse leg: the most recent significant swing low
+    # paired with the highest swing high after it.
+    swing_lows = [s for s in recent if s["type"] == "low"]
+    swing_highs = [s for s in recent if s["type"] == "high"]
+    if not swing_lows or not swing_highs:
+        return None
+
+    # Most recent meaningful leg: pair the deepest low with the highest high
+    # AFTER it. If high comes before all lows, swap (downtrend setup).
+    sl = min(swing_lows, key=lambda s: s["price"])
+    later_highs = [s for s in swing_highs if s["idx"] > sl["idx"]]
+    if later_highs:
+        sh = max(later_highs, key=lambda s: s["price"])
+        is_uptrend_leg = True
+    else:
+        sh = max(swing_highs, key=lambda s: s["price"])
+        # Pair with deepest low AFTER sh
+        later_lows = [s for s in swing_lows if s["idx"] > sh["idx"]]
+        if later_lows:
+            sl = min(later_lows, key=lambda s: s["price"])
+        is_uptrend_leg = False
+
+    leg_size_pct = (sh["price"] - sl["price"]) / sl["price"] * 100
+    if leg_size_pct < 5:
+        return None  # leg too small to trade
+
+    # Current price position on the leg
+    cp = float(df["close"].iloc[-1])
+    rng = sh["price"] - sl["price"]
+    if is_uptrend_leg:
+        # Pullback measured from high downward: 0% = high, 100% = low
+        retracement_pct = (sh["price"] - cp) / rng * 100
+    else:
+        retracement_pct = (cp - sl["price"]) / rng * 100
+
+    # Build the level table with textual explanations
+    fib_ratios = [
+        (0.000, "0% (Swing High — Premium top)", "premium_extreme",
+         "Take-profit / sell zone — exhaustion"),
+        (0.236, "23.6% retracement", "premium",
+         "Shallow pullback — premium zone, weak buy"),
+        (0.382, "38.2% retracement", "premium",
+         "Premium zone — selling pressure dominant"),
+        (0.500, "50% Equilibrium", "equilibrium",
+         "Decision line — wait for direction"),
+        (0.618, "61.8% Golden Pocket", "discount",
+         "Discount zone — first BUY trigger"),
+        (0.786, "78.6% Deep Discount", "discount_extreme",
+         "Strong BUY — institutional re-entry zone"),
+        (1.000, "100% (Swing Low — Discount floor)", "discount_extreme",
+         "Strongest BUY — leg invalidation if breaks"),
+    ]
+    levels = []
+    for ratio, label, zone, action in fib_ratios:
+        price = round(sh["price"] - rng * ratio, 2) if is_uptrend_leg \
+                else round(sl["price"] + rng * ratio, 2)
+        levels.append({
+            "ratio": ratio, "price": price, "label": label,
+            "zone": zone, "action": action,
+        })
+
+    # Determine where price sits → action
+    pct = round(retracement_pct, 1)
+    if pct < 23.6:
+        zone, action_text = "premium_extreme", "SELL — take profit"
+    elif pct < 38.2:
+        zone, action_text = "premium", "PARTIAL SELL — premium zone"
+    elif pct < 50:
+        zone, action_text = "premium_lower", "WAIT — between EQ and premium"
+    elif pct < 61.8:
+        zone, action_text = "equilibrium_lower", "WATCH — just below 50%, early discount"
+    elif pct < 78.6:
+        zone, action_text = "discount_golden", "BUY — Golden Pocket discount"
+    elif pct < 100:
+        zone, action_text = "discount_extreme", "STRONG BUY — deep discount"
+    else:
+        zone, action_text = "below_leg", "INVALIDATED — broke swing low"
+
+    if pct < 0:
+        zone, action_text = "above_leg", "EXTENDED — past swing high"
+
+    # Plain-language narrative
+    if "BUY" in action_text:
+        narrative = (
+            f"Price retraced {pct:.0f}% of the last impulse leg "
+            f"(৳{sl['price']:.1f} → ৳{sh['price']:.1f}, +{leg_size_pct:.0f}%). "
+            f"This is a {zone.replace('_', ' ')} entry — institutions typically "
+            f"reload longs in the Golden Pocket (61.8-78.6%) where smart-money "
+            f"orders sit. Target: 1st sell at 23.6% retracement (premium), "
+            f"2nd sell at 0% (range high)."
+        )
+    elif "SELL" in action_text:
+        narrative = (
+            f"Price at {pct:.0f}% retracement = inside premium zone. "
+            f"This is where institutions distribute. Take partial profits at "
+            f"23.6% (1st sell) and full exit at 0% (range high). "
+            f"Don't initiate fresh longs from here."
+        )
+    elif "WAIT" in action_text or "WATCH" in action_text:
+        narrative = (
+            f"Price near 50% equilibrium ({pct:.0f}%). No edge either side. "
+            f"Wait for either: deeper retrace into Golden Pocket (61.8%) for "
+            f"BUY, or rejection from premium zone for SELL."
+        )
+    else:
+        narrative = (
+            f"Price {pct:.0f}% of leg — outside actionable range. "
+            f"Wait for a new impulse leg to form before applying Fib strategy."
+        )
+
+    valid = 23.6 <= pct <= 100  # actionable retracement zone
+
+    return {
+        "swing_low": round(sl["price"], 2),
+        "swing_low_time": df.iloc[sl["idx"]]["date"].strftime("%Y-%m-%d") if "date" in df.columns else None,
+        "swing_high": round(sh["price"], 2),
+        "swing_high_time": df.iloc[sh["idx"]]["date"].strftime("%Y-%m-%d") if "date" in df.columns else None,
+        "leg_size_pct": round(leg_size_pct, 1),
+        "is_uptrend_leg": is_uptrend_leg,
+        "current_pct": pct,
+        "current_zone": zone,
+        "action_text": action_text,
+        "narrative": narrative,
+        "levels": levels,
+        "valid": valid,
+    }
 
 
 def detect_premium_discount(swings, df, lookback=60):
@@ -1795,6 +2089,76 @@ def generate_analysis(structure_events, fvgs, order_blocks, key_levels, current_
             "text": "Watch for first ChoCh / BOS event to develop bias",
         })
 
+    # ─── Cross-Signal Alignment narrative — how each metric agrees/disagrees ───
+    alignment_lines = []
+
+    def _add_align(label: str, vote: str, detail: str):
+        emoji = "🟢" if vote == "BUY" else "🔴" if vote == "SELL" else "⚪"
+        alignment_lines.append(f"{emoji} **{label}** — {vote}: {detail}")
+
+    # SMC structure
+    if bias == "BULLISH":
+        if confluence_zone:
+            _add_align("SMC Structure", "BUY",
+                       f"Bullish trend + CONFLUENCE zone ৳{confluence_zone['bottom']}-{confluence_zone['top']} "
+                       f"(FVG meets {confluence_zone['support_touches']}-touch support)")
+        elif fresh_bull_fvgs_below:
+            top_f = fresh_bull_fvgs_below[0]
+            _add_align("SMC Structure", "BUY",
+                       f"Bullish bias intact, fresh FVG ৳{top_f['bottom']}-{top_f['top']} below")
+        else:
+            _add_align("SMC Structure", "WAIT",
+                       "Bullish bias but no clear demand zone below")
+    elif bias == "BEARISH":
+        _add_align("SMC Structure", "AVOID", "Trend flipped bearish — falling-knife risk")
+    elif bias == "WHIPSAW":
+        _add_align("SMC Structure", "WAIT", "Multiple alternating reversals = no edge")
+    else:
+        _add_align("SMC Structure", "WAIT", "No clear bias yet")
+
+    # Premium / Discount
+    if premium_discount:
+        zone = premium_discount.get("current_zone", "")
+        pct = premium_discount.get("current_pct", 0)
+        if "discount" in zone:
+            _add_align("Premium/Discount", "BUY",
+                       f"Price at {pct}% of range — DISCOUNT zone, smart money buys here")
+        elif "premium" in zone:
+            _add_align("Premium/Discount", "AVOID/SELL",
+                       f"Price at {pct}% — PREMIUM zone, smart money sells here")
+        else:
+            _add_align("Premium/Discount", "WAIT",
+                       f"At equilibrium ({pct}%) — wait for premium or discount")
+
+    # Fibonacci dealing range
+    if fib_dealing_range and fib_dealing_range.get("valid"):
+        ft = fib_dealing_range["action_text"]
+        zone = fib_dealing_range["current_zone"]
+        pct = fib_dealing_range["current_pct"]
+        vote = "BUY" if "BUY" in ft else "SELL" if "SELL" in ft else "WAIT"
+        _add_align("Fibonacci",vote,
+                   f"{pct:.0f}% retracement of last impulse leg "
+                   f"(৳{fib_dealing_range['swing_low']} → ৳{fib_dealing_range['swing_high']}) "
+                   f"= {zone.replace('_', ' ')}")
+
+    # Trendiness
+    if adx_value is not None:
+        if adx_value >= 25:
+            _add_align("Trend Strength", "BUY",
+                       f"ADX {adx_value:.0f} = trend confirmed (FVG signals reliable)")
+        else:
+            _add_align("Trend Strength", "WAIT",
+                       f"ADX {adx_value:.0f} < 25 = no trend (FVG signals unreliable)")
+
+    # Order flow absorption (if available in this scope — checked via volume_delta)
+    if recent_mitigated_bull >= 2:
+        _add_align("Demand", "AVOID",
+                   f"{recent_mitigated_bull} bullish FVGs already mitigated = demand absorbed")
+
+    if overhead_bear_fvg:
+        _add_align("Supply", "AVOID",
+                   f"Fresh bearish FVG ৳{overhead_bear_fvg['bottom']}-{overhead_bear_fvg['top']} overhead")
+
     # ─── Plain-language Trade Thesis (per-stock specific) ───
     thesis_lines = []
     # Section 1: What's happening NOW
@@ -1895,6 +2259,7 @@ def generate_analysis(structure_events, fvgs, order_blocks, key_levels, current_
         "risk_reward": rr,
         "triggers": triggers,
         "thesis": thesis_lines,
+        "alignment": alignment_lines,
         "adx": float(adx_value) if adx_value is not None else None,
         "is_trendy": bool(is_trendy_market),
         "confluence": confluence_zone,
@@ -2310,6 +2675,8 @@ def get_smc_chart(symbol: str, days: int = 180, interval: str = "daily"):
 
     premium_discount = detect_premium_discount(swings, df, lookback=60)
     bos_zones = detect_bos_zones(swings, structure_events, df)
+    fib_dealing_range = detect_fib_dealing_range(swings, df, lookback=60)
+    elliott_triangle = detect_elliott_triangle(swings, df, lookback=80)
 
     # Advanced indicators — VSA, OBV, MFI, Ichimoku, Wyckoff Spring/SOS
     try:
@@ -2366,6 +2733,8 @@ def get_smc_chart(symbol: str, days: int = 180, interval: str = "daily"):
         "accumulation": accumulation,
         "premium_discount": premium_discount,
         "bos_zones": bos_zones,
+        "fib_dealing_range": fib_dealing_range,
+        "elliott_triangle": elliott_triangle,
         "order_flow": order_flow,
         "vsa_events": advanced.get("vsa_events", []),
         "obv": advanced.get("obv"),

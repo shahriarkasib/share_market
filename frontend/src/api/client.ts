@@ -454,10 +454,24 @@ export interface SMCChartData {
   order_blocks?: SMCOrderBlock[];
   analysis?: SMCAnalysis & {
     thesis?: string[];
+    alignment?: string[];
     adx?: number | null;
     is_trendy?: boolean;
     confluence?: { bottom: number; top: number; support_touches: number } | null;
   };
+  fib_dealing_range?: {
+    swing_low: number; swing_high: number; leg_size_pct: number;
+    is_uptrend_leg: boolean; current_pct: number;
+    current_zone: string; action_text: string; narrative: string; valid: boolean;
+    levels: Array<{ ratio: number; price: number; label: string;
+                    zone: string; action: string }>;
+  } | null;
+  elliott_triangle?: {
+    type: string; kind: string; bias: string;
+    points: Array<{ label: string; price: number; time: string }>;
+    breakout_up_target: number; breakdown_target: number;
+    narrative: string;
+  } | null;
   rsi?: { time: string; value: number }[];
   macd?: {
     macd: { time: string; value: number }[];
