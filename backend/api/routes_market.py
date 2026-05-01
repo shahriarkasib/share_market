@@ -525,6 +525,64 @@ async def get_heatmap_data(size_by: str = "turnover"):
     return result
 
 
+@router.get("/live-signals")
+async def get_live_signals(status: str = "active", min_score: int = 0):
+    """
+    Return live composite signals from the live_signals table.
+
+    Combines all 9 trading methodologies (SMC + Order Flow + MTF + Liquidity
+    Sweep + Volume Profile + BB Squeeze + Sector RS + Fib Confluence + Wyckoff)
+    into a 0-100 composite score per stock.
+
+    Query params:
+        status: 'active' | 'all' | 'closed' | 'hit_t1' | 'completed' | 'stopped_out'
+        min_score: filter by composite_score >= N
+    """
+    import json as _json
+    from database import get_connection
+    conn = get_connection()
+    if status == "all":
+        rows = conn.execute(
+            "SELECT * FROM live_signals WHERE composite_score >= %s "
+            "ORDER BY composite_score DESC, last_seen DESC LIMIT 200",
+            (min_score,),
+        ).fetchall()
+    elif status == "closed":
+        rows = conn.execute(
+            "SELECT * FROM live_signals WHERE status NOT IN ('active','hit_t1') "
+            "AND composite_score >= %s ORDER BY closed_at DESC LIMIT 100",
+            (min_score,),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM live_signals WHERE status = %s AND composite_score >= %s "
+            "ORDER BY composite_score DESC, last_seen DESC LIMIT 100",
+            (status, min_score),
+        ).fetchall()
+    conn.close()
+    out = []
+    for r in rows:
+        d = dict(r)
+        for k in ("active_signals", "reasons"):
+            v = d.get(k)
+            if isinstance(v, str):
+                try:
+                    d[k] = _json.loads(v)
+                except Exception:
+                    d[k] = []
+        # Convert datetimes/numerics for JSON
+        for k, v in d.items():
+            if hasattr(v, "isoformat"):
+                d[k] = v.isoformat()
+            elif hasattr(v, "__float__") and k != "id":
+                try:
+                    d[k] = float(v)
+                except Exception:
+                    pass
+        out.append(d)
+    return out
+
+
 @router.get("/smc-screener")
 async def get_smc_screener(min_confidence: str = "MEDIUM"):
     """

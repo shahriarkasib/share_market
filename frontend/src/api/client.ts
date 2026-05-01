@@ -276,6 +276,40 @@ export async function fetchSMCScreener(
   return data;
 }
 
+export interface LiveCompositeSignal {
+  id: number;
+  symbol: string;
+  first_triggered: string;
+  last_seen: string;
+  status: "active" | "hit_t1" | "completed" | "stopped_out" | "invalidated" | "expired";
+  composite_score: number;
+  signal_level: "STRONG_BUY" | "BUY" | "WATCH" | "NONE";
+  risk_score: number;
+  entry: number | null;
+  stop_loss: number | null;
+  target1: number | null;
+  target2: number | null;
+  bias: string | null;
+  active_signals: string[];
+  reasons: string[];
+  current_price: number | null;
+  triggered_high: number | null;
+  triggered_low: number | null;
+  closed_at: string | null;
+  close_price: number | null;
+  pl_pct: number | null;
+}
+
+export async function fetchLiveCompositeSignals(
+  status: string = "active",
+  minScore: number = 0,
+): Promise<LiveCompositeSignal[]> {
+  const { data } = await api.get<LiveCompositeSignal[]>("/market/live-signals", {
+    params: { status, min_score: minScore },
+  });
+  return data;
+}
+
 export interface SMCStructureEvent {
   type: "bullish_BOS" | "bearish_BOS" | "bullish_ChoCh" | "bearish_ChoCh";
   price: number;

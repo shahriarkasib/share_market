@@ -722,6 +722,16 @@ async def run_live_scanner():
         logger.error(f"Live scanner failed: {e}")
 
 
+async def run_composite_signal_tracker():
+    """Update live composite signals + lifecycle (every 5 min during market hours)."""
+    try:
+        from api.live_signals_tracker import run_cycle
+        thread = threading.Thread(target=run_cycle, daemon=True)
+        thread.start()
+    except Exception as e:
+        logger.error(f"Composite signal tracker failed: {e}")
+
+
 async def verify_scan_decisions():
     """Verify past scan decisions against actual outcomes."""
     try:
@@ -964,6 +974,19 @@ def setup_scheduler() -> AsyncIOScheduler:
         ),
         id="live_scanner",
         name="Live intraday scanner",
+        replace_existing=True,
+    )
+
+    # Composite signal tracker (every 5 min during market hours)
+    scheduler.add_job(
+        run_composite_signal_tracker,
+        trigger=CronTrigger(
+            day_of_week="sun,mon,tue,wed,thu",
+            hour="10-15", minute="*/5",
+            timezone="Asia/Dhaka",
+        ),
+        id="composite_signals",
+        name="Composite multi-strategy signal tracker",
         replace_existing=True,
     )
 

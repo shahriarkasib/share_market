@@ -15,6 +15,7 @@ import Dividends from "./pages/Dividends.tsx";
 import FloorDetection from "./pages/FloorDetection.tsx";
 import Signals from "./pages/Signals.tsx";
 import NasdaqSignals from "./pages/NasdaqSignals.tsx";
+import LiveCompositeSignals from "./pages/LiveCompositeSignals.tsx";
 
 export default function App() {
   return (
@@ -34,6 +35,7 @@ export default function App() {
         <Route path="/dividends" element={<Dividends />} />
         <Route path="/floor" element={<FloorDetection />} />
         <Route path="/signals" element={<Signals />} />
+        <Route path="/live-signals" element={<LiveCompositeSignals />} />
         <Route path="/nasdaq/signals" element={<NasdaqSignals />} />
         <Route path="/nasdaq/smc-chart/:symbol?" element={<SMCChart market="nasdaq" />} />
       </Route>

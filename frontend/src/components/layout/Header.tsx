@@ -12,6 +12,7 @@ const links = [
   { to: "/news", label: "News", icon: Newspaper },
   { to: "/chart", label: "Chart", icon: LineChart },
   { to: "/smc-chart/GP", label: "SMC", icon: Layers },
+  { to: "/live-signals", label: "Live Signals", icon: Target },
   { to: "/signals", label: "Signals", icon: Target },
   { to: "/nasdaq/signals", label: "NASDAQ", icon: Globe },
   { to: "/live", label: "Live", icon: Zap },
