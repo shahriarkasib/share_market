@@ -241,29 +241,35 @@ def compute_sector_rs(symbol: str, df: pd.DataFrame, conn) -> dict:
 # vsa + wyckoff_events are NEW — high-edge triggers, especially in chop.
 REGIME_WEIGHTS = {
     "TRENDING_UP": {
-        "smc": 22, "mtf": 17, "order_flow": 13, "wyckoff": 8,
-        "wyckoff_events": 10, "vsa": 8,
-        "sector_rs": 8, "fib_confluence": 5, "liquidity_sweep": 5,
-        "volume_profile": 3, "bb_squeeze": 1,
+        "smc": 18, "mtf": 14, "order_flow": 10, "wyckoff": 5,
+        "wyckoff_events": 8, "vsa": 6,
+        "fib_dealing_range": 8, "elliott_triangle": 4, "ichimoku": 6,
+        "obv": 4, "mfi": 2,
+        "sector_rs": 6, "fib_confluence": 3, "liquidity_sweep": 3,
+        "volume_profile": 2, "bb_squeeze": 1,
     },
     "TRENDING_DOWN": {
-        "smc": 25, "mtf": 20, "order_flow": 13, "wyckoff": 5,
-        "wyckoff_events": 8, "vsa": 8,
-        "sector_rs": 8, "fib_confluence": 5, "liquidity_sweep": 5,
+        "smc": 20, "mtf": 16, "order_flow": 10, "wyckoff": 4,
+        "wyckoff_events": 6, "vsa": 6,
+        "fib_dealing_range": 6, "elliott_triangle": 3, "ichimoku": 6,
+        "obv": 4, "mfi": 2,
+        "sector_rs": 6, "fib_confluence": 3, "liquidity_sweep": 3,
         "volume_profile": 2, "bb_squeeze": 1,
     },
     "SIDEWAYS": {
-        # VSA + Wyckoff events shine here — institutional footprints in chop
-        "volume_profile": 18, "order_flow": 15, "liquidity_sweep": 13,
-        "vsa": 12, "bb_squeeze": 10, "wyckoff_events": 8,
-        "fib_confluence": 8, "sector_rs": 8, "smc": 5,
-        "wyckoff": 2, "mtf": 1,
+        # Mean reversion + institutional footprints lead in chop
+        "volume_profile": 14, "fib_dealing_range": 13, "vsa": 12,
+        "order_flow": 11, "liquidity_sweep": 10, "bb_squeeze": 8,
+        "wyckoff_events": 6, "ichimoku": 5, "mfi": 5,
+        "obv": 4, "fib_confluence": 4, "elliott_triangle": 3,
+        "sector_rs": 3, "smc": 1, "wyckoff": 0, "mtf": 1,
     },
     "VOLATILE_EXPANSION": {
-        "bb_squeeze": 18, "order_flow": 17, "liquidity_sweep": 13,
-        "vsa": 10, "wyckoff_events": 10, "smc": 10,
-        "mtf": 8, "sector_rs": 8, "volume_profile": 4,
-        "wyckoff": 1, "fib_confluence": 1,
+        "bb_squeeze": 14, "order_flow": 13, "liquidity_sweep": 10,
+        "vsa": 9, "wyckoff_events": 8, "elliott_triangle": 7,
+        "smc": 7, "fib_dealing_range": 6, "ichimoku": 5,
+        "obv": 4, "mtf": 5, "sector_rs": 5, "mfi": 3,
+        "volume_profile": 3, "wyckoff": 0, "fib_confluence": 1,
     },
 }
 
@@ -297,6 +303,98 @@ def score_vsa_events(vsa_events: list, n_bars: int) -> tuple[int, str]:
         elif t == "STOPPING_VOLUME" and bias == "bullish":
             score += 15; notes.append(t)
     return max(0, min(100, score)), ", ".join(notes[:2])
+
+
+def score_fib_dealing_range(fdr: Optional[dict]) -> tuple[int, str]:
+    """Score from Fibonacci dealing range. Golden Pocket buy = high score."""
+    if not fdr or not fdr.get("valid"):
+        return 50, ""
+    pct = fdr.get("current_pct", 50)
+    zone = fdr.get("current_zone", "")
+    if zone == "discount_extreme":
+        return 90, f"Deep discount ({pct:.0f}%)"
+    if zone == "discount_golden":
+        return 85, f"Golden Pocket ({pct:.0f}%)"
+    if zone == "equilibrium_lower":
+        return 65, f"early discount ({pct:.0f}%)"
+    if zone == "premium_lower":
+        return 40, f"between EQ-premium ({pct:.0f}%)"
+    if zone == "premium":
+        return 25, f"premium ({pct:.0f}%)"
+    if zone == "premium_extreme":
+        return 10, f"extreme premium ({pct:.0f}%) — sell"
+    if zone == "below_leg":
+        return 30, "broke leg low"
+    if zone == "above_leg":
+        return 20, "extended past high"
+    return 50, ""
+
+
+def score_elliott_triangle(et: Optional[dict]) -> tuple[int, str]:
+    """Score from Elliott Wave triangle. Pre-breakout = wait. Bullish breakout = high."""
+    if not et:
+        return 50, ""
+    bias = et.get("bias")
+    if bias == "bullish":
+        return 80, "EW triangle broken UP"
+    if bias == "bearish":
+        return 20, "EW triangle broken DOWN"
+    return 60, "EW triangle pending"
+
+
+def score_ichimoku(ichimoku: Optional[dict]) -> tuple[int, str]:
+    """Score from Ichimoku cloud + TK cross."""
+    if not ichimoku:
+        return 50, ""
+    sig = ichimoku.get("signal", "")
+    tk = ichimoku.get("tk_cross")
+    base = 50
+    if sig == "above_cloud_bullish":
+        base = 75
+    elif sig == "below_cloud_bearish":
+        base = 25
+    elif sig == "inside_cloud_neutral":
+        base = 50
+    if tk == "bullish":
+        base = min(95, base + 15)
+    elif tk == "bearish":
+        base = max(5, base - 15)
+    notes = []
+    if sig != "inside_cloud_neutral":
+        notes.append(sig.replace("_", " "))
+    if tk:
+        notes.append(f"TK {tk}")
+    return base, ", ".join(notes)
+
+
+def score_obv(obv: Optional[dict]) -> tuple[int, str]:
+    """OBV trend + divergence."""
+    if not obv:
+        return 50, ""
+    div = obv.get("divergence")
+    trend = obv.get("trend")
+    if div == "bullish":
+        return 85, "bullish divergence"
+    if div == "bearish":
+        return 15, "bearish divergence"
+    if trend == "rising":
+        return 65, "rising"
+    if trend == "falling":
+        return 40, "falling"
+    return 50, ""
+
+
+def score_mfi(mfi: Optional[dict]) -> tuple[int, str]:
+    """MFI overbought/oversold."""
+    if not mfi:
+        return 50, ""
+    sig = mfi.get("signal")
+    val = mfi.get("current", 50)
+    if sig == "oversold":
+        return 80, f"oversold ({val})"
+    if sig == "overbought":
+        return 20, f"overbought ({val})"
+    return 50, f"neutral ({val})"
 
 
 def score_wyckoff_events(wyckoff_events: list, n_bars: int) -> tuple[int, str]:
@@ -674,6 +772,49 @@ def compute_composite_signal(chart_data: dict, conn=None) -> dict:
         reasons.append(f"💎 Wyckoff: {we_note} — strongest entry trigger")
     elif we_note and we_score <= 20:
         reasons.append(f"⚠ Wyckoff: {we_note} (bearish)")
+
+    # 12. Fibonacci Dealing Range — Golden Pocket strategy
+    fdr = chart_data.get("fib_dealing_range")
+    fdr_score, fdr_note = score_fib_dealing_range(fdr)
+    scores["fib_dealing_range"] = fdr_score
+    if fdr_note and fdr_score >= 80:
+        active.append(f"Fib {fdr_note}")
+        reasons.append(f"📐 Fib Dealing Range: {fdr_note} — institutional buy zone")
+    elif fdr_note and fdr_score <= 20:
+        reasons.append(f"⚠ Fib: {fdr_note}")
+
+    # 13. Elliott Wave Triangle — pre-breakout / breakout
+    et = chart_data.get("elliott_triangle")
+    et_score, et_note = score_elliott_triangle(et)
+    scores["elliott_triangle"] = et_score
+    if et_note and et_score >= 75:
+        active.append(f"EW {et_note}")
+        reasons.append(f"🔺 Elliott: {et_note}")
+
+    # 14. Ichimoku Cloud — comprehensive trend confirmation
+    ich = chart_data.get("ichimoku")
+    ich_score, ich_note = score_ichimoku(ich)
+    scores["ichimoku"] = ich_score
+    if ich_note and ich_score >= 75:
+        active.append(f"Ichimoku {ich_note}")
+
+    # 15. OBV — divergence is the alpha here
+    obv = chart_data.get("obv")
+    obv_score, obv_note = score_obv(obv)
+    scores["obv"] = obv_score
+    if obv_note and obv_score >= 80:
+        active.append(f"OBV {obv_note}")
+        reasons.append(f"⚡ OBV {obv_note}")
+    elif obv_note and obv_score <= 20:
+        reasons.append(f"⚠ OBV {obv_note}")
+
+    # 16. MFI — overbought/oversold (volume-weighted RSI)
+    mfi_data = chart_data.get("mfi")
+    mfi_score, mfi_note = score_mfi(mfi_data)
+    scores["mfi"] = mfi_score
+    if mfi_score >= 75:
+        active.append(f"MFI {mfi_note}")
+        reasons.append(f"💧 MFI {mfi_note}")
 
     # ─── Detect market regime + apply regime-specific weights ───
     regime = detect_market_regime(df_proxy, analysis.get("adx"))
