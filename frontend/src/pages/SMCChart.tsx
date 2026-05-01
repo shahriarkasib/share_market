@@ -1622,6 +1622,92 @@ export default function SMCChart({ market = "dse" }: SMCChartProps = {}) {
               </div>
             )}
 
+            {/* Demand & Supply Zones (Sam Seiden) + Volatility Imbalance */}
+            {(((data.demand_zones?.length ?? 0) > 0) ||
+              ((data.supply_zones?.length ?? 0) > 0) ||
+              ((data.volatility_imbalances?.filter((v) => !v.mitigated).length ?? 0) > 0)) && (
+              <div className="mb-3 rounded border border-cyan-500/30 bg-cyan-500/5 px-3 py-2">
+                <div className="text-[10px] uppercase tracking-wider text-cyan-400 font-semibold mb-1">
+                  🎯 Demand / Supply / Volatility Zones
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-2 text-xs">
+                  {data.demand_zones && data.demand_zones.length > 0 && (
+                    <div>
+                      <div className="text-[10px] text-emerald-500 font-bold mb-1">DEMAND (BUY zones)</div>
+                      {data.demand_zones.slice(0, 3).map((z, i) => (
+                        <div key={i} className="font-mono text-[11px] mb-0.5">
+                          <span className="text-emerald-500">{z.subtype}</span> {cur}{z.bottom}-{z.top}
+                          <span className="text-[var(--text-muted)] ml-1">→ +{z.impulse_pct}%</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {data.supply_zones && data.supply_zones.length > 0 && (
+                    <div>
+                      <div className="text-[10px] text-red-500 font-bold mb-1">SUPPLY (SELL zones)</div>
+                      {data.supply_zones.slice(0, 3).map((z, i) => (
+                        <div key={i} className="font-mono text-[11px] mb-0.5">
+                          <span className="text-red-500">{z.subtype}</span> {cur}{z.bottom}-{z.top}
+                          <span className="text-[var(--text-muted)] ml-1">→ -{z.impulse_pct}%</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {data.volatility_imbalances && data.volatility_imbalances.length > 0 && (
+                    <div>
+                      <div className="text-[10px] text-amber-400 font-bold mb-1">VOLATILITY IMBALANCE</div>
+                      {data.volatility_imbalances.filter((v) => !v.mitigated).slice(0, 3).map((v, i) => (
+                        <div key={i} className="font-mono text-[11px] mb-0.5">
+                          <span className={v.type === "VI_BULLISH" ? "text-emerald-500" : "text-red-500"}>
+                            {v.type === "VI_BULLISH" ? "↑VI" : "↓VI"}
+                          </span> {cur}{v.bottom}-{v.top}
+                          <span className="text-[var(--text-muted)] ml-1">{v.time}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <div className="text-[10px] text-[var(--text-muted)] mt-2">
+                  RBR=Rally-Base-Rally · DBR=Drop-Base-Rally · DBD=Drop-Base-Drop · RBD=Rally-Base-Drop · VI=single-bar gap (news/spike)
+                </div>
+              </div>
+            )}
+
+            {/* Hedge-fund 3-pillar verdict cards */}
+            {data.analysis && (
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-2 mb-3">
+                {[
+                  ["🏗️ STRUCTURE (where)", "structure_narrative", "structure_verdict"],
+                  ["🌊 ORDER FLOW (who)", "order_flow_narrative", "order_flow_verdict"],
+                  ["💪 VOLUME (strength)", "volume_narrative", "volume_verdict"],
+                ].map(([title, narrKey, verdictKey]) => {
+                  const a = data.analysis as unknown as Record<string, unknown>;
+                  const narr = (a[narrKey] as string) || "";
+                  const verdict = (a[verdictKey] as string) || "";
+                  if (!narr) return null;
+                  const color =
+                    verdict === "BUY" ? "border-emerald-500/40 bg-emerald-500/5 text-emerald-500" :
+                    verdict === "AVOID" ? "border-red-500/40 bg-red-500/5 text-red-500" :
+                    verdict === "MIXED" ? "border-amber-500/30 bg-amber-500/5 text-amber-500" :
+                    "border-[var(--border)]";
+                  return (
+                    <div key={title as string} className={`rounded border px-3 py-2 ${color}`}>
+                      <div className="text-[10px] uppercase tracking-wider font-semibold mb-1 flex items-center justify-between">
+                        <span>{title as string}</span>
+                        <span className="font-bold">{verdict}</span>
+                      </div>
+                      <p className="text-xs text-[var(--text)]">{narr}</p>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+            {data.analysis && (data.analysis as unknown as Record<string, unknown>).hedge_fund_verdict ? (
+              <div className="mb-3 rounded border border-purple-500/40 bg-purple-500/10 px-3 py-2 text-sm font-semibold text-center">
+                {(data.analysis as unknown as Record<string, unknown>).hedge_fund_verdict as string}
+              </div>
+            ) : null}
+
             {/* Elliott Wave Triangle (A-B-C-D-E) */}
             {data.elliott_triangle && (
               <div className="mb-3 rounded border border-fuchsia-500/30 bg-fuchsia-500/5 px-3 py-2">

@@ -155,6 +155,154 @@ def detect_structure(swings):
     return events
 
 
+def detect_demand_supply_zones(df, lookback=60):
+    """Demand & Supply zones (Sam Seiden-style supply/demand methodology).
+
+    A DEMAND zone is a "base" (1-3 narrow candles) followed by a strong
+    bullish impulse — Rally-Base-Rally (RBR) or Drop-Base-Rally (DBR).
+    A SUPPLY zone is a base followed by a strong bearish impulse —
+    Drop-Base-Drop (DBD) or Rally-Base-Drop (RBD).
+
+    Each zone is the high+low of the BASE candle(s). Fresh = unmitigated.
+    """
+    if len(df) < 20:
+        return {"demand": [], "supply": []}
+
+    o = df["open"].astype(float).values
+    h = df["high"].astype(float).values
+    l = df["low"].astype(float).values
+    c = df["close"].astype(float).values
+    n = len(df)
+    rng = h - l
+    avg_rng = pd.Series(rng).rolling(20).mean().fillna(0).values
+    body = np.abs(c - o)
+
+    demand = []
+    supply = []
+    cp = float(c[-1])
+
+    start = max(20, n - lookback)
+    for i in range(start, n - 2):
+        # Base candle: narrow range AND small body (consolidation)
+        if avg_rng[i] <= 0:
+            continue
+        is_base = rng[i] <= avg_rng[i] * 0.7 and body[i] < rng[i] * 0.5
+        if not is_base:
+            continue
+
+        # Look at next 1-3 bars for strong impulse
+        impulse_idx = i + 1
+        if impulse_idx >= n:
+            continue
+        next_rng = rng[impulse_idx]
+        next_body = body[impulse_idx]
+        is_strong_impulse = next_rng >= avg_rng[impulse_idx] * 1.5 and next_body >= next_rng * 0.6
+
+        if not is_strong_impulse:
+            continue
+
+        zone_top = float(h[i])
+        zone_bot = float(l[i])
+        time_str = df.iloc[i]["date"].strftime("%Y-%m-%d") if "date" in df.columns else None
+
+        # Bullish impulse (close > open by a wide margin)
+        if c[impulse_idx] > o[impulse_idx] and (c[impulse_idx] - o[impulse_idx]) / o[impulse_idx] > 0.015:
+            # Demand zone — was it tested afterward?
+            mitigated = False
+            for j in range(impulse_idx + 1, n):
+                if l[j] < zone_bot:
+                    mitigated = True
+                    break
+            if zone_top < cp:  # only show below current price
+                demand.append({
+                    "type": "DEMAND",
+                    "subtype": "RBR" if c[i - 1] > o[i - 1] else "DBR",
+                    "top": round(zone_top, 2), "bottom": round(zone_bot, 2),
+                    "base_time": time_str,
+                    "impulse_pct": round((c[impulse_idx] - o[impulse_idx]) / o[impulse_idx] * 100, 1),
+                    "mitigated": bool(mitigated),
+                })
+        # Bearish impulse
+        elif c[impulse_idx] < o[impulse_idx] and (o[impulse_idx] - c[impulse_idx]) / o[impulse_idx] > 0.015:
+            mitigated = False
+            for j in range(impulse_idx + 1, n):
+                if h[j] > zone_top:
+                    mitigated = True
+                    break
+            if zone_bot > cp:  # only show above current price
+                supply.append({
+                    "type": "SUPPLY",
+                    "subtype": "DBD" if c[i - 1] < o[i - 1] else "RBD",
+                    "top": round(zone_top, 2), "bottom": round(zone_bot, 2),
+                    "base_time": time_str,
+                    "impulse_pct": round((o[impulse_idx] - c[impulse_idx]) / o[impulse_idx] * 100, 1),
+                    "mitigated": bool(mitigated),
+                })
+
+    # Keep only fresh (unmitigated), nearest to price
+    fresh_demand = sorted([d for d in demand if not d["mitigated"]],
+                           key=lambda x: -x["top"])[:3]
+    fresh_supply = sorted([s for s in supply if not s["mitigated"]],
+                           key=lambda x: x["bottom"])[:3]
+    return {"demand": fresh_demand, "supply": fresh_supply,
+            "demand_all": demand[-10:], "supply_all": supply[-10:]}
+
+
+def detect_volatility_imbalance(df, lookback=40):
+    """Volatility Imbalance (VI) — single-candle gap caused by news/spike.
+
+    Different from FVG which is a 3-candle pattern. VI is when a single
+    candle's BODY is fully above (or below) the previous candle's body,
+    leaving an inefficient transition. Common around earnings, news.
+
+    Bullish VI: today's open >= yesterday's high (gap up) AND green close
+    Bearish VI: today's open <= yesterday's low (gap down) AND red close
+    """
+    if len(df) < 5:
+        return []
+    o = df["open"].astype(float).values
+    h = df["high"].astype(float).values
+    l = df["low"].astype(float).values
+    c = df["close"].astype(float).values
+    n = len(df)
+    cp = float(c[-1])
+
+    out = []
+    start = max(1, n - lookback)
+    for i in range(start, n):
+        # Bullish VI: gap-up + green
+        if o[i] >= h[i - 1] * 1.001 and c[i] > o[i]:
+            top = float(o[i])
+            bot = float(h[i - 1])
+            mitigated = False
+            for j in range(i + 1, n):
+                if l[j] < bot:
+                    mitigated = True
+                    break
+            time_str = df.iloc[i]["date"].strftime("%Y-%m-%d") if "date" in df.columns else None
+            out.append({
+                "type": "VI_BULLISH", "top": round(top, 2), "bottom": round(bot, 2),
+                "time": time_str, "mitigated": bool(mitigated),
+                "is_below_price": bot < cp,
+            })
+        # Bearish VI: gap-down + red
+        elif o[i] <= l[i - 1] * 0.999 and c[i] < o[i]:
+            top = float(l[i - 1])
+            bot = float(o[i])
+            mitigated = False
+            for j in range(i + 1, n):
+                if h[j] > top:
+                    mitigated = True
+                    break
+            time_str = df.iloc[i]["date"].strftime("%Y-%m-%d") if "date" in df.columns else None
+            out.append({
+                "type": "VI_BEARISH", "top": round(top, 2), "bottom": round(bot, 2),
+                "time": time_str, "mitigated": bool(mitigated),
+                "is_above_price": top > cp,
+            })
+    return out[-10:]
+
+
 def detect_elliott_triangle(swings, df, lookback=80):
     """5-point Elliott Wave triangle (A-B-C-D-E).
 
@@ -2089,6 +2237,78 @@ def generate_analysis(structure_events, fvgs, order_blocks, key_levels, current_
             "text": "Watch for first ChoCh / BOS event to develop bias",
         })
 
+    # ─── Hedge-fund triangulation narratives ───
+    # Plain-English paragraphs synthesising what THIS stock is showing in each
+    # of the three pillars: STRUCTURE (where) + ORDER FLOW (who) + VOLUME (strength)
+
+    def _safe(v, default=0):
+        try: return float(v) if v is not None else default
+        except: return default
+
+    # ── STRUCTURE narrative ──
+    structure_lines = []
+    if confluence_zone:
+        structure_lines.append(
+            f"Fresh CONFLUENCE setup: FVG ৳{confluence_zone['bottom']}-{confluence_zone['top']} "
+            f"sits at a {confluence_zone['support_touches']}-touch support "
+            f"@ ৳{confluence_zone.get('support_price', confluence_zone['bottom'])}."
+        )
+    elif fresh_bull_fvgs_below and bias == "BULLISH":
+        f = fresh_bull_fvgs_below[0]
+        structure_lines.append(
+            f"Fresh bullish FVG ৳{f['bottom']}-{f['top']} below price ({((current_price - f['top']) / current_price * 100):.1f}% away)."
+        )
+    if structure_events:
+        latest = structure_events[-1]
+        structure_lines.append(
+            f"Latest structure: {latest['type'].replace('_', ' ').replace('bullish', '↑').replace('bearish', '↓')} "
+            f"@ ৳{latest['price']}."
+        )
+    if premium_discount:
+        zone = premium_discount.get("current_zone", "")
+        pct = premium_discount.get("current_pct", 0)
+        structure_lines.append(
+            f"Price at {pct}% of recent range = {zone.replace('_', ' ')} zone."
+        )
+    if bos_zones and bos_zones.get("bullish_trigger"):
+        bt = bos_zones["bullish_trigger"]
+        up_dist = (bt["price"] - current_price) / current_price * 100
+        structure_lines.append(
+            f"BOS↑ trigger at ৳{bt['price']} (+{up_dist:.1f}%) — break confirms continuation."
+        )
+    if bos_zones and bos_zones.get("bearish_trigger"):
+        br = bos_zones["bearish_trigger"]
+        dn_dist = (current_price - br["price"]) / current_price * 100
+        structure_lines.append(
+            f"BOS↓ trigger at ৳{br['price']} (-{dn_dist:.1f}%) — break invalidates bull case."
+        )
+    if bias == "WHIPSAW":
+        structure_lines.append("⚠ Whipsaw — multiple alternating reversals, no clean institutional setup.")
+
+    structure_narrative = " ".join(structure_lines) if structure_lines else \
+        "No clear institutional structure yet. Wait for first BOS or ChoCh."
+
+    # Verdict
+    if confluence_zone and bias == "BULLISH":
+        structure_verdict = "BUY"
+    elif bias == "BULLISH" and fresh_bull_fvgs_below and not in_extreme_premium:
+        structure_verdict = "BUY"
+    elif bias in ("BEARISH", "WHIPSAW"):
+        structure_verdict = "AVOID"
+    elif in_extreme_premium:
+        structure_verdict = "WAIT (extended)"
+    else:
+        structure_verdict = "WAIT"
+
+    # ORDER FLOW + VOLUME narratives are computed AFTER analysis returns,
+    # in the smc_chart wrapper where order_flow and advanced indicators
+    # are in scope. Placeholders here.
+    order_flow_narrative = ""
+    of_verdict = "PENDING"
+    volume_narrative = ""
+    volume_verdict = "PENDING"
+    hf_verdict = ""
+
     # ─── Cross-Signal Alignment narrative — how each metric agrees/disagrees ───
     alignment_lines = []
 
@@ -2260,6 +2480,13 @@ def generate_analysis(structure_events, fvgs, order_blocks, key_levels, current_
         "triggers": triggers,
         "thesis": thesis_lines,
         "alignment": alignment_lines,
+        "structure_narrative": structure_narrative,
+        "structure_verdict": structure_verdict,
+        "order_flow_narrative": order_flow_narrative,
+        "order_flow_verdict": of_verdict,
+        "volume_narrative": volume_narrative,
+        "volume_verdict": volume_verdict,
+        "hedge_fund_verdict": hf_verdict,
         "adx": float(adx_value) if adx_value is not None else None,
         "is_trendy": bool(is_trendy_market),
         "confluence": confluence_zone,
@@ -2677,6 +2904,8 @@ def get_smc_chart(symbol: str, days: int = 180, interval: str = "daily"):
     bos_zones = detect_bos_zones(swings, structure_events, df)
     fib_dealing_range = detect_fib_dealing_range(swings, df, lookback=60)
     elliott_triangle = detect_elliott_triangle(swings, df, lookback=80)
+    demand_supply = detect_demand_supply_zones(df, lookback=60)
+    volatility_imbalances = detect_volatility_imbalance(df, lookback=40)
 
     # Advanced indicators — VSA, OBV, MFI, Ichimoku, Wyckoff Spring/SOS
     try:
@@ -2708,6 +2937,156 @@ def get_smc_chart(symbol: str, days: int = 180, interval: str = "daily"):
     except Exception:
         order_flow = None
 
+    # ── Volume narrative (now that VSA / OBV / MFI / Ichimoku are computed) ──
+    vol_lines = []
+    vsa_events_list = advanced.get("vsa_events", []) if advanced else []
+    if vsa_events_list:
+        recent_vsa = vsa_events_list[-3:]
+        for ev in reversed(recent_vsa):
+            vol_lines.append(
+                f"VSA {ev['type'].replace('_', ' ').lower()} on {ev['time']} ({ev['bias']})."
+            )
+    obv_data = advanced.get("obv") if advanced else None
+    if obv_data:
+        if obv_data.get("divergence") == "bullish":
+            vol_lines.append("⚡ OBV bullish divergence — exhaustion ending, reversal coming.")
+        elif obv_data.get("divergence") == "bearish":
+            vol_lines.append("⚠ OBV bearish divergence — momentum dying, top forming.")
+        elif obv_data.get("trend") == "rising":
+            vol_lines.append("OBV trend rising — net buying confirmed.")
+        elif obv_data.get("trend") == "falling":
+            vol_lines.append("OBV trend falling — net selling.")
+    mfi_data = advanced.get("mfi") if advanced else None
+    if mfi_data:
+        if mfi_data.get("signal") == "oversold":
+            vol_lines.append(f"MFI {mfi_data['current']} oversold — high-edge bounce zone.")
+        elif mfi_data.get("signal") == "overbought":
+            vol_lines.append(f"MFI {mfi_data['current']} overbought — pullback risk.")
+        else:
+            vol_lines.append(f"MFI {mfi_data['current']} neutral.")
+    ich_data = advanced.get("ichimoku") if advanced else None
+    if ich_data:
+        sig = ich_data.get("signal", "").replace("_", " ")
+        if "above_cloud_bullish" in (ich_data.get("signal") or ""):
+            vol_lines.append(f"Ichimoku above cloud — full trend system bullish.")
+        elif "below_cloud_bearish" in (ich_data.get("signal") or ""):
+            vol_lines.append(f"Ichimoku below cloud — full trend system bearish.")
+        else:
+            vol_lines.append(f"Ichimoku {sig}.")
+        if ich_data.get("tk_cross") == "bullish":
+            vol_lines.append("TK cross bullish (Tenkan above Kijun) — fresh momentum signal.")
+        elif ich_data.get("tk_cross") == "bearish":
+            vol_lines.append("TK cross bearish — momentum flip down.")
+    volume_narrative = " ".join(vol_lines) if vol_lines else "Volume data still building (need 60+ bars)."
+
+    bull_count = sum(1 for ev in vsa_events_list[-5:] if ev.get("bias") == "bullish")
+    bear_count = sum(1 for ev in vsa_events_list[-5:] if ev.get("bias") == "bearish")
+    obv_bull = obv_data and (obv_data.get("trend") == "rising" or obv_data.get("divergence") == "bullish")
+    ich_bull = ich_data and "above_cloud_bullish" in (ich_data.get("signal") or "")
+    bull_signals = sum([bull_count > bear_count, bool(obv_bull), bool(ich_bull),
+                        bool(mfi_data and mfi_data.get("signal") == "oversold")])
+    bear_signals = sum([bear_count > bull_count,
+                        bool(obv_data and obv_data.get("trend") == "falling"),
+                        bool(ich_data and "below_cloud_bearish" in (ich_data.get("signal") or "")),
+                        bool(mfi_data and mfi_data.get("signal") == "overbought")])
+    if bull_signals >= 3:
+        volume_verdict = "BUY"
+    elif bear_signals >= 3:
+        volume_verdict = "AVOID"
+    elif bull_signals > bear_signals:
+        volume_verdict = "LEANS BUY"
+    elif bear_signals > bull_signals:
+        volume_verdict = "LEANS AVOID"
+    else:
+        volume_verdict = "MIXED"
+
+    # ── ORDER FLOW narrative + verdict (data only available HERE) ──
+    of_lines = []
+    of = order_flow or {}
+    abs_data = of.get("absorption")
+    if abs_data and abs_data.get("absorbed"):
+        of_lines.append(
+            f"🟢 Absorption fired today (vol {abs_data['vol_ratio']}× avg, lower wick "
+            f"{abs_data['lower_wick_ratio']}, close strength {abs_data['close_strength']}) "
+            f"— institutions stepped in."
+        )
+    elif abs_data:
+        of_lines.append(f"No absorption today (strength {int(abs_data.get('strength', 0) * 100)}%).")
+    obi = of.get("orderbook_imbalance")
+    if obi and obi.get("imbalance_pct") is not None:
+        sign = "+" if obi["imbalance_pct"] > 0 else ""
+        of_lines.append(
+            f"Bid/Ask Imbalance {sign}{obi['imbalance_pct']}% — {obi.get('verdict', '').lower()}."
+        )
+    vd = of.get("volume_delta")
+    if vd and vd.get("delta_5d") is not None:
+        d5 = vd["delta_5d"]
+        of_lines.append(
+            f"5-day Δ {'+' if d5 > 0 else ''}{d5:,} = net {'buying' if d5 > 0 else 'selling'}."
+        )
+    vw = of.get("vwap")
+    cp_now = round(float(c.iloc[-1]), 2)
+    if vw and vw.get("value"):
+        if cp_now > vw.get("upper_2sd", 0):
+            of_lines.append(f"Price +2σ above VWAP ৳{vw['value']} = overextended.")
+        elif cp_now > vw.get("upper_1sd", 0):
+            of_lines.append(f"Price above +1σ VWAP ৳{vw['value']} = strong intraday bias.")
+        elif cp_now < vw.get("lower_2sd", 0):
+            of_lines.append(f"Price -2σ below VWAP ৳{vw['value']} = oversold fade-long.")
+        elif cp_now < vw.get("lower_1sd", 0):
+            of_lines.append(f"Price below -1σ VWAP ৳{vw['value']} = weak intraday.")
+        else:
+            of_lines.append(f"Price near VWAP ৳{vw['value']} = at fair value.")
+    vp = of.get("volume_profile")
+    if vp and vp.get("poc"):
+        if cp_now > vp["poc"]:
+            of_lines.append(f"Price above POC ৳{vp['poc']} (fair value) — bulls in control.")
+        else:
+            of_lines.append(f"Price below POC ৳{vp['poc']} (fair value) — bears in control.")
+    order_flow_narrative_real = " ".join(of_lines) if of_lines else "Order flow data unavailable."
+
+    of_buy = sum([
+        bool(abs_data and abs_data.get("absorbed")),
+        bool(obi and obi.get("imbalance_pct", 0) > 5),
+        bool(vd and vd.get("delta_5d", 0) > 0),
+        bool(vp and vp.get("poc") and cp_now > vp["poc"]),
+    ])
+    of_sell = sum([
+        bool(obi and obi.get("imbalance_pct", 0) < -5),
+        bool(vd and vd.get("delta_5d", 0) < 0),
+        bool(vp and vp.get("poc") and cp_now < vp["poc"]),
+        bool(vw and cp_now > vw.get("upper_2sd", 1e9)),
+    ])
+    of_verdict_real = "BUY" if of_buy >= 3 else "AVOID" if of_sell >= 3 else "MIXED"
+
+    # Refresh analysis dict with real narratives + verdicts
+    if isinstance(analysis, dict):
+        analysis["order_flow_narrative"] = order_flow_narrative_real
+        analysis["order_flow_verdict"] = of_verdict_real
+        analysis["volume_narrative"] = volume_narrative
+        analysis["volume_verdict"] = volume_verdict
+        s_v = analysis.get("structure_verdict")
+        f_v = of_verdict_real
+        v_v = volume_verdict
+        buy_pillars = sum(1 for v in (s_v, f_v, v_v) if v == "BUY")
+        if buy_pillars >= 2 and s_v != "AVOID":
+            analysis["hedge_fund_verdict"] = "🟢 INSTITUTIONAL BUY — multiple pillars aligned"
+        elif s_v == "AVOID" or f_v == "AVOID" or v_v == "AVOID":
+            analysis["hedge_fund_verdict"] = "🔴 SKIP — at least one pillar rejecting"
+        elif s_v == "BUY" and f_v == "MIXED":
+            analysis["hedge_fund_verdict"] = "🟡 STRUCTURE OK — wait for FLOW confirmation"
+        else:
+            analysis["hedge_fund_verdict"] = "⚪ NO EDGE — wait for cleaner setup"
+
+    # ── BISI / SIBI labels on FVGs (ICT terminology) ──
+    # BISI = Buy-Side Imbalance Sell-Side Inefficiency = bullish FVG
+    # SIBI = Sell-Side Imbalance Buy-Side Inefficiency = bearish FVG
+    for f in fvg_zones:
+        if f.get("type") == "bullish":
+            f["ict_label"] = "BISI"
+        elif f.get("type") == "bearish":
+            f["ict_label"] = "SIBI"
+
     return {
         "symbol": symbol.upper(),
         "candles": candles,
@@ -2735,6 +3114,9 @@ def get_smc_chart(symbol: str, days: int = 180, interval: str = "daily"):
         "bos_zones": bos_zones,
         "fib_dealing_range": fib_dealing_range,
         "elliott_triangle": elliott_triangle,
+        "demand_zones": demand_supply.get("demand", []),
+        "supply_zones": demand_supply.get("supply", []),
+        "volatility_imbalances": volatility_imbalances,
         "order_flow": order_flow,
         "vsa_events": advanced.get("vsa_events", []),
         "obv": advanced.get("obv"),

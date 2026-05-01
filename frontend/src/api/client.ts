@@ -472,6 +472,21 @@ export interface SMCChartData {
     breakout_up_target: number; breakdown_target: number;
     narrative: string;
   } | null;
+  demand_zones?: Array<{
+    type: "DEMAND"; subtype: "RBR" | "DBR";
+    top: number; bottom: number; base_time: string;
+    impulse_pct: number; mitigated: boolean;
+  }>;
+  supply_zones?: Array<{
+    type: "SUPPLY"; subtype: "DBD" | "RBD";
+    top: number; bottom: number; base_time: string;
+    impulse_pct: number; mitigated: boolean;
+  }>;
+  volatility_imbalances?: Array<{
+    type: "VI_BULLISH" | "VI_BEARISH";
+    top: number; bottom: number; time: string;
+    mitigated: boolean; is_below_price?: boolean; is_above_price?: boolean;
+  }>;
   rsi?: { time: string; value: number }[];
   macd?: {
     macd: { time: string; value: number }[];
