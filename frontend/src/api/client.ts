@@ -532,6 +532,26 @@ export interface SMCChartData {
     bullish_trigger?: { price: number; from_idx: number; label: string };
     bearish_trigger?: { price: number; from_idx: number; label: string };
   } | null;
+  vsa_events?: Array<{
+    idx: number; time: string; type: string; bias: "bullish" | "bearish" | "neutral";
+    strength: number; description: string; high?: number; low?: number;
+  }>;
+  obv?: { current: number; trend: "rising" | "falling"; divergence: "bullish" | "bearish" | null;
+          series: { time: string; value: number }[] } | null;
+  mfi?: { current: number; signal: "overbought" | "oversold" | "neutral";
+          overbought_threshold: number; oversold_threshold: number;
+          series: { time: string; value: number }[] } | null;
+  ichimoku?: {
+    tenkan: number | null; kijun: number | null;
+    senkou_a: number | null; senkou_b: number | null;
+    signal: string; tk_cross: string | null;
+    series: Array<{ time: string; tenkan: number | null; kijun: number | null;
+                    senkou_a: number | null; senkou_b: number | null }>;
+  } | null;
+  wyckoff_events?: Array<{
+    idx: number; time: string; type: string; bias: "bullish" | "bearish";
+    strength: number; description: string;
+  }>;
   order_flow?: {
     volume_profile: {
       poc: number;

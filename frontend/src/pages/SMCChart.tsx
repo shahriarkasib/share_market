@@ -1636,6 +1636,112 @@ export default function SMCChart({ market = "dse" }: SMCChartProps = {}) {
         </div>
       )}
 
+      {/* Advanced Signals — VSA + Wyckoff events + OBV + MFI + Ichimoku */}
+      {data && (data.vsa_events?.length || data.wyckoff_events?.length || data.obv || data.mfi || data.ichimoku) && (
+        <div className="mb-3 rounded border border-[var(--border)] px-3 py-2 text-xs">
+          <div className="font-semibold uppercase tracking-wide text-purple-400 mb-1.5">
+            🔬 Advanced Signals
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
+            {/* VSA latest events */}
+            {data.vsa_events && data.vsa_events.length > 0 && (
+              <div className="rounded border border-[var(--border)] px-2 py-1.5"
+                title="Volume Spread Analysis — Tom Williams. Detects institutional footprints by combining volume + spread + close position. Higher strength = more institutional involvement.">
+                <div className="text-[10px] uppercase opacity-70 mb-1">VSA — last {data.vsa_events.length} events</div>
+                <div className="space-y-1">
+                  {data.vsa_events.slice(-3).reverse().map((e, i) => (
+                    <div key={i} className="text-[11px]">
+                      <span className={
+                        e.bias === "bullish" ? "text-emerald-500 font-medium" :
+                        e.bias === "bearish" ? "text-red-500 font-medium" :
+                        "text-[var(--text-muted)]"
+                      }>
+                        {e.type.replace(/_/g, " ")}
+                      </span>
+                      <span className="text-[var(--text-muted)] ml-1">· {e.time}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            {/* Wyckoff events */}
+            {data.wyckoff_events && data.wyckoff_events.length > 0 && (
+              <div className="rounded border border-fuchsia-500/30 bg-fuchsia-500/5 px-2 py-1.5"
+                title="Wyckoff Spring/SOS/UTAD events within accumulation/distribution phases. Strongest entry triggers in the Wyckoff method.">
+                <div className="text-[10px] uppercase text-fuchsia-400 mb-1">Wyckoff Events</div>
+                {data.wyckoff_events.slice(-2).map((e, i) => (
+                  <div key={i} className="text-[11px]">
+                    <span className={e.bias === "bullish" ? "text-emerald-500 font-bold" : "text-red-500 font-bold"}>
+                      {e.type.replace(/_/g, " ")}
+                    </span>
+                    <span className="text-[var(--text-muted)] ml-1">· {e.time}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+            {/* OBV */}
+            {data.obv && (
+              <div className="rounded border border-[var(--border)] px-2 py-1.5"
+                title="On-Balance Volume = cumulative volume flow. Adds volume on up days, subtracts on down days. DIVERGENCE is the key signal: price LL but OBV HL = bullish reversal coming. Price HH but OBV LH = bearish exhaustion.">
+                <div className="text-[10px] uppercase opacity-70 mb-1">OBV</div>
+                <div className="text-[11px]">
+                  <span className={data.obv.trend === "rising" ? "text-emerald-500" : "text-red-500"}>
+                    {data.obv.trend === "rising" ? "↑ rising" : "↓ falling"}
+                  </span>
+                  {data.obv.divergence && (
+                    <span className={`ml-2 font-bold ${
+                      data.obv.divergence === "bullish" ? "text-emerald-500" : "text-red-500"
+                    }`}>
+                      ⚡ {data.obv.divergence} divergence
+                    </span>
+                  )}
+                </div>
+              </div>
+            )}
+            {/* MFI */}
+            {data.mfi && (
+              <div className="rounded border border-[var(--border)] px-2 py-1.5"
+                title="Money Flow Index = volume-weighted RSI. Overbought >80 (sell signal), oversold <20 (buy signal). More reliable than vanilla RSI in volume-driven markets.">
+                <div className="text-[10px] uppercase opacity-70 mb-1">MFI (vol-weighted RSI)</div>
+                <div className="text-[11px]">
+                  <span className={
+                    data.mfi.signal === "overbought" ? "text-red-500 font-bold" :
+                    data.mfi.signal === "oversold" ? "text-emerald-500 font-bold" :
+                    "text-[var(--text)]"
+                  }>
+                    {data.mfi.current}
+                    {data.mfi.signal !== "neutral" && ` (${data.mfi.signal})`}
+                  </span>
+                </div>
+              </div>
+            )}
+            {/* Ichimoku */}
+            {data.ichimoku && (
+              <div className="rounded border border-[var(--border)] px-2 py-1.5"
+                title="Ichimoku Cloud — Japanese 5-component trend system. Above cloud = bullish bias. Below cloud = bearish. Inside cloud = consolidation. TK cross = momentum signal.">
+                <div className="text-[10px] uppercase opacity-70 mb-1">Ichimoku</div>
+                <div className="text-[11px]">
+                  <span className={
+                    data.ichimoku.signal === "above_cloud_bullish" ? "text-emerald-500 font-medium" :
+                    data.ichimoku.signal === "below_cloud_bearish" ? "text-red-500 font-medium" :
+                    "text-[var(--text-muted)]"
+                  }>
+                    {data.ichimoku.signal.replace(/_/g, " ")}
+                  </span>
+                  {data.ichimoku.tk_cross && (
+                    <span className={`ml-2 font-bold ${
+                      data.ichimoku.tk_cross === "bullish" ? "text-emerald-500" : "text-red-500"
+                    }`}>
+                      TK {data.ichimoku.tk_cross}
+                    </span>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Order Flow — each metric has hover tooltip explaining MEANING + HOW TO TRADE */}
       {data?.order_flow && (
         <div className="mb-3 rounded border border-[var(--border)] px-3 py-2 text-xs">
