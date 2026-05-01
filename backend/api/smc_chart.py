@@ -2187,6 +2187,14 @@ def get_smc_chart(symbol: str, days: int = 180, interval: str = "daily"):
         if ob_conn is not None:
             try: ob_conn.close()
             except Exception: pass
+        # Augment with REAL tick data if available (LankaBD tape scraper)
+        try:
+            from data.dse_tick_analytics import get_tick_order_flow
+            tick_flow = get_tick_order_flow(symbol.upper())
+            if tick_flow and order_flow:
+                order_flow["tick_data"] = tick_flow
+        except Exception:
+            pass
     except Exception:
         order_flow = None
 
