@@ -55,6 +55,8 @@ export default function LiveCompositeSignals({ market = "dse" }: Props = {}) {
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<StatusFilter>("active");
   const [minScore, setMinScore] = useState(60);
+  const [tPlusTwoOnly, setTPlusTwoOnly] = useState(false);
+  const [minAgreement, setMinAgreement] = useState(0);
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
 
   const load = async () => {
@@ -84,11 +86,16 @@ export default function LiveCompositeSignals({ market = "dse" }: Props = {}) {
   }, [filter, minScore]);
 
   const grouped = useMemo(() => {
-    const strong = signals.filter((s) => s.signal_level === "STRONG_BUY");
-    const buy = signals.filter((s) => s.signal_level === "BUY");
-    const watch = signals.filter((s) => s.signal_level === "WATCH");
+    const filtered = signals.filter((s) => {
+      if (tPlusTwoOnly && !s.t_plus_2_friendly) return false;
+      if (minAgreement > 0 && (s.buy_votes ?? 0) < minAgreement) return false;
+      return true;
+    });
+    const strong = filtered.filter((s) => s.signal_level === "STRONG_BUY");
+    const buy = filtered.filter((s) => s.signal_level === "BUY");
+    const watch = filtered.filter((s) => s.signal_level === "WATCH");
     return { strong, buy, watch };
-  }, [signals]);
+  }, [signals, tPlusTwoOnly, minAgreement]);
 
   return (
     <div className="max-w-[1440px] mx-auto px-3 sm:px-4 lg:px-8 py-6">
@@ -146,6 +153,32 @@ export default function LiveCompositeSignals({ market = "dse" }: Props = {}) {
             {s}+
           </button>
         ))}
+        <span className="text-xs text-[var(--text-muted)] ml-4">Agreement:</span>
+        {[0, 4, 5, 6].map((a) => (
+          <button
+            key={a}
+            onClick={() => setMinAgreement(a)}
+            className={`px-2.5 py-1 rounded text-xs border transition ${
+              minAgreement === a
+                ? "bg-[var(--surface-active)] border-[var(--border)] text-[var(--text)]"
+                : "border-[var(--border)] text-[var(--text-muted)] hover:bg-[var(--hover)]"
+            }`}
+            title={a === 0 ? "any agreement" : `at least ${a}/9 strategies say BUY`}
+          >
+            {a === 0 ? "any" : `${a}+/9`}
+          </button>
+        ))}
+        <button
+          onClick={() => setTPlusTwoOnly((v) => !v)}
+          className={`ml-4 px-3 py-1 rounded text-xs border transition font-semibold ${
+            tPlusTwoOnly
+              ? "bg-blue-500/15 border-blue-500/50 text-blue-500"
+              : "border-[var(--border)] text-[var(--text-muted)] hover:bg-[var(--hover)]"
+          }`}
+          title="Show only signals likely to resolve in 1-3 days (BUY_NOW + ADX>=25 + not extreme premium + no overhead supply)"
+        >
+          {tPlusTwoOnly ? "✅ T+2 ONLY" : "T+2 mode"}
+        </button>
       </div>
 
       {error && (

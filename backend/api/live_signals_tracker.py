@@ -77,6 +77,11 @@ def ensure_schema():
         ("state_label", "TEXT"),
         ("days_since_trigger", "INTEGER"),
         ("fvg_distance_pct", "NUMERIC(8,2)"),
+        ("t_plus_2_friendly", "BOOLEAN"),
+        ("t_plus_2_reasons", "JSONB"),
+        ("t_plus_2_bonuses", "JSONB"),
+        ("buy_votes", "INTEGER"),
+        ("weighted_buy_pct", "NUMERIC(6,1)"),
     ]:
         try:
             conn.execute(f"ALTER TABLE live_signals ADD COLUMN IF NOT EXISTS {col} {sql_type}")
@@ -91,7 +96,9 @@ def ensure_schema():
 def get_active_signal(symbol: str):
     conn = get_connection()
     row = conn.execute(
-        "SELECT * FROM live_signals WHERE symbol = %s AND status IN ('active','hit_t1') "
+        "SELECT * FROM live_signals WHERE symbol = %s "
+        "AND (market = 'dse' OR market IS NULL) "
+        "AND status IN ('active','hit_t1') "
         "ORDER BY first_triggered DESC LIMIT 1",
         (symbol.upper(),),
     ).fetchone()
@@ -103,13 +110,14 @@ def insert_signal(sig: dict):
     conn = get_connection()
     conn.execute(
         """INSERT INTO live_signals
-           (symbol, status, composite_score, signal_level, risk_score,
+           (symbol, market, status, composite_score, signal_level, risk_score,
             entry, stop_loss, target1, target2, bias, active_signals, reasons,
             triggered_high, triggered_low, current_price,
             regime, action_type, entry_distance_pct, votes,
-            state_label, days_since_trigger, fvg_distance_pct)
-           VALUES (%s, 'active', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                   %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+            state_label, days_since_trigger, fvg_distance_pct,
+            t_plus_2_friendly, t_plus_2_reasons, t_plus_2_bonuses)
+           VALUES (%s, 'dse', 'active', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                   %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
         (
             sig["symbol"],
             sig["composite_score"], sig["signal_level"], sig["risk_score"],
@@ -124,12 +132,23 @@ def insert_signal(sig: dict):
             json.dumps(sig.get("votes", {})),
             sig.get("state_label"), sig.get("days_since_trigger"),
             sig.get("fvg_distance_pct"),
+            sig.get("t_plus_2_friendly"),
+            json.dumps(sig.get("t_plus_2_reasons", [])),
+            json.dumps(sig.get("t_plus_2_bonuses", [])),
         ),
+    )
+    # patch buy_votes / weighted_buy_pct via separate UPDATE (since INSERT
+    # statement was already finalised — we add agreement columns post-row).
+    conn.execute(
+        "UPDATE live_signals SET buy_votes = %s, weighted_buy_pct = %s "
+        "WHERE id = (SELECT MAX(id) FROM live_signals WHERE symbol = %s)",
+        (sig.get("buy_votes"), sig.get("weighted_buy_pct"), sig["symbol"]),
     )
     conn.commit()
     conn.close()
     log.info(f"NEW signal: {sig['symbol']} regime={sig.get('regime')} score={sig['composite_score']} "
-             f"level={sig['signal_level']} action={sig.get('action_type')}")
+             f"level={sig['signal_level']} action={sig.get('action_type')} "
+             f"agreement={sig.get('buy_votes')}/9")
 
 
 def update_signal_state(active_row: dict, sig: dict, last_high: float, last_low: float):
@@ -196,6 +215,8 @@ def update_signal_state(active_row: dict, sig: dict, last_high: float, last_low:
                active_signals = %s, reasons = %s,
                regime = %s, action_type = %s, entry_distance_pct = %s, votes = %s,
                state_label = %s, days_since_trigger = %s, fvg_distance_pct = %s,
+               t_plus_2_friendly = %s, t_plus_2_reasons = %s, t_plus_2_bonuses = %s,
+               buy_votes = %s, weighted_buy_pct = %s,
                signal_level = %s,
                closed_at = COALESCE(closed_at, %s),
                close_price = COALESCE(close_price, %s),
@@ -211,6 +232,10 @@ def update_signal_state(active_row: dict, sig: dict, last_high: float, last_low:
             json.dumps(sig.get("votes", {})),
             sig.get("state_label"), sig.get("days_since_trigger"),
             sig.get("fvg_distance_pct"),
+            sig.get("t_plus_2_friendly"),
+            json.dumps(sig.get("t_plus_2_reasons", [])),
+            json.dumps(sig.get("t_plus_2_bonuses", [])),
+            sig.get("buy_votes"), sig.get("weighted_buy_pct"),
             sig.get("signal_level"),
             closed_at, close_price, pl_pct, active_row["id"],
         ),

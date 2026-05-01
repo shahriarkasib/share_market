@@ -238,32 +238,86 @@ def compute_sector_rs(symbol: str, df: pd.DataFrame, conn) -> dict:
 
 # Regime-aware weights — different strategies work in different markets.
 # Weights per regime sum to 100. Regime detected from ADX + ATR + range %.
+# vsa + wyckoff_events are NEW — high-edge triggers, especially in chop.
 REGIME_WEIGHTS = {
     "TRENDING_UP": {
-        # Trends → SMC + MTF + Wyckoff lead. Mean-reversion noise.
-        "smc": 25, "mtf": 20, "order_flow": 15, "wyckoff": 15,
-        "sector_rs": 10, "fib_confluence": 5, "liquidity_sweep": 5,
-        "volume_profile": 3, "bb_squeeze": 2,
+        "smc": 22, "mtf": 17, "order_flow": 13, "wyckoff": 8,
+        "wyckoff_events": 10, "vsa": 8,
+        "sector_rs": 8, "fib_confluence": 5, "liquidity_sweep": 5,
+        "volume_profile": 3, "bb_squeeze": 1,
     },
     "TRENDING_DOWN": {
-        # Avoid in downtrends — lower max scores. SMC tells you to stay out.
-        "smc": 30, "mtf": 25, "order_flow": 15, "wyckoff": 10,
-        "sector_rs": 10, "fib_confluence": 3, "liquidity_sweep": 3,
-        "volume_profile": 2, "bb_squeeze": 2,
+        "smc": 25, "mtf": 20, "order_flow": 13, "wyckoff": 5,
+        "wyckoff_events": 8, "vsa": 8,
+        "sector_rs": 8, "fib_confluence": 5, "liquidity_sweep": 5,
+        "volume_profile": 2, "bb_squeeze": 1,
     },
     "SIDEWAYS": {
-        # Mean reversion + range trading dominate. SMC FVGs are noise here.
-        "volume_profile": 20, "order_flow": 18, "liquidity_sweep": 15,
-        "bb_squeeze": 12, "fib_confluence": 10, "sector_rs": 10,
-        "smc": 8, "wyckoff": 5, "mtf": 2,
+        # VSA + Wyckoff events shine here — institutional footprints in chop
+        "volume_profile": 18, "order_flow": 15, "liquidity_sweep": 13,
+        "vsa": 12, "bb_squeeze": 10, "wyckoff_events": 8,
+        "fib_confluence": 8, "sector_rs": 8, "smc": 5,
+        "wyckoff": 2, "mtf": 1,
     },
     "VOLATILE_EXPANSION": {
-        # Volatility breakout regime — BB squeeze + Order Flow lead.
-        "bb_squeeze": 22, "order_flow": 20, "liquidity_sweep": 15,
-        "smc": 13, "mtf": 10, "sector_rs": 10,
-        "volume_profile": 5, "wyckoff": 3, "fib_confluence": 2,
+        "bb_squeeze": 18, "order_flow": 17, "liquidity_sweep": 13,
+        "vsa": 10, "wyckoff_events": 10, "smc": 10,
+        "mtf": 8, "sector_rs": 8, "volume_profile": 4,
+        "wyckoff": 1, "fib_confluence": 1,
     },
 }
+
+
+def score_vsa_events(vsa_events: list, n_bars: int) -> tuple[int, str]:
+    """Score VSA events from last 3 bars. Returns (score 0-100, note)."""
+    if not vsa_events:
+        return 50, ""
+    recent = [e for e in vsa_events if e.get("idx", 0) >= n_bars - 3]
+    if not recent:
+        return 50, ""
+
+    bull_strong = {"SELLING_CLIMAX", "SPRING"}
+    bull_weak = {"NO_SUPPLY", "STOPPING_VOLUME"}
+    bear_strong = {"BUYING_CLIMAX", "UPTHRUST"}
+    bear_weak = {"NO_DEMAND"}
+
+    score = 50
+    notes: list[str] = []
+    for e in recent:
+        t = e.get("type", "")
+        bias = e.get("bias")
+        if t in bull_strong and bias == "bullish":
+            score += 25; notes.append(t)
+        elif t in bull_weak and bias == "bullish":
+            score += 12; notes.append(t)
+        elif t in bear_strong and bias == "bearish":
+            score -= 25; notes.append(t)
+        elif t in bear_weak and bias == "bearish":
+            score -= 10
+        elif t == "STOPPING_VOLUME" and bias == "bullish":
+            score += 15; notes.append(t)
+    return max(0, min(100, score)), ", ".join(notes[:2])
+
+
+def score_wyckoff_events(wyckoff_events: list, n_bars: int) -> tuple[int, str]:
+    """Score Wyckoff Spring/SOS/UTAD in last 5 bars. Returns (score, note)."""
+    if not wyckoff_events:
+        return 50, ""
+    recent = [e for e in wyckoff_events if e.get("idx", 0) >= n_bars - 5]
+    if not recent:
+        return 50, ""
+    score = 50
+    notes: list[str] = []
+    for e in recent:
+        t = e.get("type", "")
+        bias = e.get("bias")
+        if t == "WYCKOFF_SPRING" and bias == "bullish":
+            score = max(score, 90); notes.append("SPRING")
+        elif t == "WYCKOFF_SOS" and bias == "bullish":
+            score = max(score, 85); notes.append("SOS")
+        elif t == "WYCKOFF_UTAD" and bias == "bearish":
+            score = min(score, 15); notes.append("UTAD")
+    return score, ", ".join(notes)
 
 
 def detect_market_regime(df: pd.DataFrame, current_adx: Optional[float]) -> str:
@@ -600,6 +654,27 @@ def compute_composite_signal(chart_data: dict, conn=None) -> dict:
         wy_score = 20
     scores["wyckoff"] = wy_score
 
+    # 10. VSA — institutional footprint signals (Tom Williams)
+    vsa_events = chart_data.get("vsa_events", []) or []
+    n_bars = len(chart_data.get("candles", []))
+    vsa_score, vsa_note = score_vsa_events(vsa_events, n_bars)
+    scores["vsa"] = vsa_score
+    if vsa_note and vsa_score >= 70:
+        active.append(f"VSA {vsa_note}")
+        reasons.append(f"VSA: {vsa_note} (last 3 bars)")
+    elif vsa_note and vsa_score <= 30:
+        reasons.append(f"⚠ VSA bearish: {vsa_note}")
+
+    # 11. Wyckoff Events — Spring / SOS / UTAD entry triggers
+    wyckoff_events = chart_data.get("wyckoff_events", []) or []
+    we_score, we_note = score_wyckoff_events(wyckoff_events, n_bars)
+    scores["wyckoff_events"] = we_score
+    if we_note and we_score >= 80:
+        active.append(f"Wyckoff {we_note}")
+        reasons.append(f"💎 Wyckoff: {we_note} — strongest entry trigger")
+    elif we_note and we_score <= 20:
+        reasons.append(f"⚠ Wyckoff: {we_note} (bearish)")
+
     # ─── Detect market regime + apply regime-specific weights ───
     regime = detect_market_regime(df_proxy, analysis.get("adx"))
     weights = REGIME_WEIGHTS[regime]
@@ -619,27 +694,82 @@ def compute_composite_signal(chart_data: dict, conn=None) -> dict:
     # Entry-distance classification kept for backwards compat
     entry_class = classify_entry_distance(analysis.get("entry"), current_price)
 
-    # ─── Signal level: combine composite score with lifecycle state ───
+    # ─── Strategy agreement requirement ───
+    # User insight: a BUY shouldn't fire just from a high score. Multiple
+    # methodologies must AGREE. Count BUY votes + weighted agreement.
+    buy_votes = sum(1 for v in votes.values() if v["vote"] == "BUY")
+    avoid_votes = sum(1 for v in votes.values() if v["vote"] == "AVOID")
+    # Weighted: % of total weight where BUY vote was cast
+    total_weight = sum(v["weight_in_regime"] for v in votes.values())
+    weighted_buy = sum(v["weight_in_regime"] for v in votes.values() if v["vote"] == "BUY")
+    weighted_buy_pct = (weighted_buy / total_weight * 100) if total_weight > 0 else 0
+
+    # ─── Signal level: combine composite score + lifecycle state + agreement ───
     state = state_info["state"]
     if state in ("STALE", "AVOID"):
         signal_level = "AVOID" if state == "AVOID" else "WATCH"
     elif state == "MISSED_ENTRY":
-        # Already triggered + price moved up — don't flag as fresh BUY
-        signal_level = "WATCH"  # show in watch list as "running, don't chase"
+        signal_level = "WATCH"
     elif state == "RUNNING":
-        signal_level = "WATCH"  # tracking only — don't chase
+        signal_level = "WATCH"
     elif state == "BUY_NOW" and composite_score >= 65:
         signal_level = "STRONG_BUY" if composite_score >= 80 else "BUY"
     elif state == "RECENT_TRIGGER" and composite_score >= 65:
         signal_level = "BUY"
     elif state == "BUY_LIMIT" and composite_score >= 65:
-        signal_level = "BUY"  # set limit, wait for fill
+        signal_level = "BUY"
     elif composite_score >= 50:
         signal_level = "WATCH"
     else:
         signal_level = "NONE"
 
+    # Agreement gate: STRONG_BUY needs >=6 strategies BUY OR >=60% weighted.
+    # BUY needs >=5 BUY votes OR >=45% weighted. Otherwise demote.
+    if signal_level == "STRONG_BUY" and (buy_votes < 6 and weighted_buy_pct < 60):
+        signal_level = "BUY"
+        reasons.append(f"⚠ Demoted from STRONG_BUY: only {buy_votes}/9 strategies agree ({weighted_buy_pct:.0f}% weighted)")
+    if signal_level == "BUY" and (buy_votes < 5 and weighted_buy_pct < 45):
+        signal_level = "WATCH"
+        reasons.append(f"⚠ Demoted from BUY: only {buy_votes}/9 strategies agree ({weighted_buy_pct:.0f}% weighted) — needs broader confirmation")
+
     risk = compute_risk_score(analysis, vp_pos, order_flow.get("vwap"), current_price)
+
+    # ─── T+2 friendliness: is this trade likely to resolve in 1-3 days?
+    # For DSE retail with T+2 settlement, only certain setups are tradeable.
+    state = state_info["state"]
+    t2_reasons = []
+    t2_friendly = True
+    # Hard exclusions
+    if state in ("STALE", "AVOID", "WAITING", "BREAKOUT_PENDING", "SETUP_DEEP", "RUNNING"):
+        t2_friendly = False
+        t2_reasons.append(f"state={state} not actionable in 2 days")
+    if state == "MISSED_ENTRY":
+        t2_friendly = False
+        t2_reasons.append("already past entry — chase risk")
+    # Quality conditions for "yes T+2"
+    adx = analysis.get("adx") or 0
+    if adx < 25:
+        t2_friendly = False
+        t2_reasons.append(f"ADX {adx} < 25 = no trend = whipsaw risk")
+    if in_extreme_premium:
+        t2_friendly = False
+        t2_reasons.append("extreme premium = pullback likely within 2d")
+    if overhead_bear_fvg is not None:
+        t2_friendly = False
+        t2_reasons.append("overhead supply within 3% = ceiling")
+    if analysis.get("bias") in ("WHIPSAW", "BEARISH"):
+        t2_friendly = False
+        t2_reasons.append("bias not bullish")
+    # Bonus boosters (still need base conditions met)
+    t2_bonus = []
+    if state == "BUY_NOW":
+        t2_bonus.append("BUY_NOW today")
+    if vsa_score >= 70:
+        t2_bonus.append(f"VSA bullish trigger ({vsa_note})")
+    if we_score >= 80:
+        t2_bonus.append(f"Wyckoff {we_note}")
+    if order_flow.get("absorption", {}).get("absorbed"):
+        t2_bonus.append("buyer absorption")
 
     return {
         "symbol": symbol,
@@ -664,4 +794,10 @@ def compute_composite_signal(chart_data: dict, conn=None) -> dict:
         "days_since_trigger": state_info["days_since_trigger"],
         "fvg_distance_pct": state_info.get("fvg_distance_pct"),
         "entry_distance_pct": entry_class["distance_pct"],
+        "t_plus_2_friendly": bool(t2_friendly),
+        "t_plus_2_reasons": t2_reasons,
+        "t_plus_2_bonuses": t2_bonus,
+        "buy_votes": buy_votes,
+        "weighted_buy_pct": round(weighted_buy_pct, 1),
+        "total_strategies": len(votes),
     }

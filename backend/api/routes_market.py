@@ -553,21 +553,28 @@ async def get_live_signals(status: str = "active", min_score: int = 0):
     import json as _json
     from database import get_connection
     conn = get_connection()
+    # CRITICAL: filter to DSE rows only. NASDAQ has its own endpoint at
+    # /api/v1/nasdaq/live-signals. Market column may be NULL for legacy rows
+    # (treat NULL as DSE since the DSE tracker pre-dates the column).
     if status == "all":
         rows = conn.execute(
             "SELECT * FROM live_signals WHERE composite_score >= %s "
+            "AND (market = 'dse' OR market IS NULL) "
             "ORDER BY composite_score DESC, last_seen DESC LIMIT 200",
             (min_score,),
         ).fetchall()
     elif status == "closed":
         rows = conn.execute(
             "SELECT * FROM live_signals WHERE status NOT IN ('active','hit_t1') "
-            "AND composite_score >= %s ORDER BY closed_at DESC LIMIT 100",
+            "AND composite_score >= %s "
+            "AND (market = 'dse' OR market IS NULL) "
+            "ORDER BY closed_at DESC LIMIT 100",
             (min_score,),
         ).fetchall()
     else:
         rows = conn.execute(
             "SELECT * FROM live_signals WHERE status = %s AND composite_score >= %s "
+            "AND (market = 'dse' OR market IS NULL) "
             "ORDER BY composite_score DESC, last_seen DESC LIMIT 100",
             (status, min_score),
         ).fetchall()

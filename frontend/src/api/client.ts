@@ -309,6 +309,11 @@ export interface LiveCompositeSignal {
   days_since_trigger: number | null;
   fvg_distance_pct: number | null;
   votes: Record<string, { score: number; vote: "BUY" | "HOLD" | "AVOID"; weight_in_regime: number }> | null;
+  t_plus_2_friendly?: boolean | null;
+  t_plus_2_reasons?: string[];
+  t_plus_2_bonuses?: string[];
+  buy_votes?: number | null;
+  weighted_buy_pct?: number | null;
 }
 
 export async function fetchLiveCompositeSignals(
