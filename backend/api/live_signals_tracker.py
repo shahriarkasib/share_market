@@ -219,8 +219,10 @@ def update_signal_state(active_row: dict, sig: dict, last_high: float, last_low:
     conn.close()
 
 
-def run_cycle(min_score: int = 65):
-    """One pass — scan all A-cat DSE stocks and update signals."""
+def run_cycle(min_score: int = 50):
+    """One pass — scan all A-cat DSE stocks and update signals.
+    min_score=50 captures lifecycle states (MISSED_ENTRY, RUNNING) for
+    monitoring, not just fresh BUY. UI filters restrict display."""
     from api.smc_chart import get_smc_chart
     from api.signal_engine import compute_composite_signal
 

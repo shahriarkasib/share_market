@@ -326,27 +326,34 @@ def classify_stock_state(df: pd.DataFrame, fvgs: list, current_price: float,
     opens = df["open"].astype(float).values
     n = len(df)
 
-    # Look back up to 14 trading days for FVG tags
-    fresh_bull = [f for f in fvgs if f.get("type") == "bullish"
-                  and not f.get("mitigated")
-                  and f.get("top", 0) < current_price * 1.10]
+    # Look back up to 14 trading days for FVG tags. CRITICAL: include
+    # mitigated FVGs too — a "tag and reject" pattern marks the FVG as
+    # mitigated, but THAT IS the signal we want to detect (CCJ case).
+    bull_fvgs = [f for f in fvgs if f.get("type") == "bullish"
+                 and f.get("top", 0) < current_price * 1.20]
 
-    triggered_idx = None  # bar index of first fresh-FVG tag
+    triggered_idx = None  # bar index of MOST RECENT FVG tag with confirmation
     triggered_fvg = None
-    confirmed_idx = None  # bar index of first green-confirmation after tag
+    confirmed_idx = None  # bar index of green-confirmation after tag
 
-    for i in range(max(0, n - 14), n):
+    # Walk NEWEST → OLDEST so we find the *latest* tag-and-confirm pattern.
+    # We want the "current" lifecycle state, not history. An old tag should
+    # only matter if no newer one exists.
+    for i in range(n - 1, max(0, n - 14) - 1, -1):
         bar_low = lows[i]
-        for f in fresh_bull:
+        for f in bull_fvgs:
             if bar_low <= f["top"] and bar_low >= f["bottom"] * 0.97:
-                triggered_idx = i
-                triggered_fvg = f
                 # Look for green confirmation on same bar or any of next 3
+                conf = None
                 for j in range(i, min(n, i + 4)):
                     if closes[j] > opens[j]:
-                        confirmed_idx = j
+                        conf = j
                         break
-                break
+                if conf is not None:
+                    triggered_idx = i
+                    triggered_fvg = f
+                    confirmed_idx = conf
+                    break
         if triggered_idx is not None:
             break
 
