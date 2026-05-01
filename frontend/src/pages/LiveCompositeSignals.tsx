@@ -170,7 +170,8 @@ export default function LiveCompositeSignals() {
                     <th className="text-right px-3 py-2 font-medium">Stop</th>
                     <th className="text-right px-3 py-2 font-medium">T1</th>
                     <th className="text-right px-3 py-2 font-medium">Risk</th>
-                    <th className="text-left px-3 py-2 font-medium">Reasons</th>
+                    <th className="text-left px-3 py-2 font-medium">Action</th>
+                    <th className="text-left px-3 py-2 font-medium">Strategies (vote)</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -222,12 +223,49 @@ export default function LiveCompositeSignals() {
                         </span>
                       </td>
                       <td className="px-3 py-2 text-xs">
-                        <div className="flex flex-wrap gap-1">
-                          {s.active_signals?.slice(0, 6).map((sig, i) => (
-                            <span key={i} className="px-1.5 py-0.5 rounded bg-[var(--surface-active)] text-[10px] text-[var(--text-muted)]">
-                              {sig}
+                        <div className="flex flex-col gap-0.5">
+                          <span className={
+                            s.action_type === "BUY_NOW" ? "text-emerald-500 font-bold" :
+                            s.action_type === "BUY_LIMIT" ? "text-amber-500" :
+                            s.action_type === "STALE" ? "text-gray-500" :
+                            s.action_type === "SETUP" ? "text-blue-400" :
+                            "text-[var(--text-muted)]"
+                          }>
+                            {s.action_type?.replace("_", " ")}
+                            {s.entry_distance_pct !== null && s.entry_distance_pct !== 0 && (
+                              <span className="ml-1 opacity-70">
+                                ({s.entry_distance_pct > 0 ? "−" : "+"}
+                                {Math.abs(s.entry_distance_pct).toFixed(1)}%)
+                              </span>
+                            )}
+                          </span>
+                          {s.regime && (
+                            <span className="text-[10px] text-[var(--text-muted)]">
+                              {s.regime.replace("_", " ").toLowerCase()}
                             </span>
-                          ))}
+                          )}
+                        </div>
+                      </td>
+                      <td className="px-3 py-2 text-xs">
+                        <div className="flex flex-wrap gap-0.5">
+                          {s.votes && Object.entries(s.votes)
+                            .sort(([, a], [, b]) => b.weight_in_regime - a.weight_in_regime)
+                            .slice(0, 6)
+                            .map(([name, v]) => (
+                              <span
+                                key={name}
+                                className={`px-1.5 py-0.5 rounded text-[10px] font-mono ${
+                                  v.vote === "BUY"
+                                    ? "bg-emerald-500/15 text-emerald-500 border border-emerald-500/30"
+                                    : v.vote === "AVOID"
+                                    ? "bg-red-500/15 text-red-500 border border-red-500/30"
+                                    : "bg-gray-500/10 text-gray-500 border border-gray-500/30"
+                                }`}
+                                title={`${name}: ${v.vote} (score ${v.score}, weight ${v.weight_in_regime}%)`}
+                              >
+                                {name}:{v.score}
+                              </span>
+                            ))}
                         </div>
                       </td>
                     </tr>

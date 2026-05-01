@@ -298,6 +298,10 @@ export interface LiveCompositeSignal {
   closed_at: string | null;
   close_price: number | null;
   pl_pct: number | null;
+  regime: "TRENDING_UP" | "TRENDING_DOWN" | "SIDEWAYS" | "VOLATILE_EXPANSION" | null;
+  action_type: "BUY_NOW" | "BUY_LIMIT" | "SETUP" | "STALE" | "BREAKOUT_PENDING" | "NO_ENTRY" | null;
+  entry_distance_pct: number | null;
+  votes: Record<string, { score: number; vote: "BUY" | "HOLD" | "AVOID"; weight_in_regime: number }> | null;
 }
 
 export async function fetchLiveCompositeSignals(

@@ -61,9 +61,24 @@ def ensure_schema():
             closed_at TIMESTAMPTZ,
             close_price NUMERIC(12,2),
             pl_pct NUMERIC(8,2),
-            current_price NUMERIC(12,2)
+            current_price NUMERIC(12,2),
+            regime VARCHAR(25),
+            action_type VARCHAR(20),
+            entry_distance_pct NUMERIC(8,2),
+            votes JSONB
         )
     """)
+    # Add new columns if upgrading from old schema (idempotent)
+    for col, sql_type in [
+        ("regime", "VARCHAR(25)"),
+        ("action_type", "VARCHAR(20)"),
+        ("entry_distance_pct", "NUMERIC(8,2)"),
+        ("votes", "JSONB"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE live_signals ADD COLUMN IF NOT EXISTS {col} {sql_type}")
+        except Exception:
+            pass
     conn.execute("CREATE INDEX IF NOT EXISTS idx_live_signals_symbol_status ON live_signals (symbol, status)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_live_signals_status_seen ON live_signals (status, last_seen DESC)")
     conn.commit()
@@ -87,8 +102,10 @@ def insert_signal(sig: dict):
         """INSERT INTO live_signals
            (symbol, status, composite_score, signal_level, risk_score,
             entry, stop_loss, target1, target2, bias, active_signals, reasons,
-            triggered_high, triggered_low, current_price)
-           VALUES (%s, 'active', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+            triggered_high, triggered_low, current_price,
+            regime, action_type, entry_distance_pct, votes)
+           VALUES (%s, 'active', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                   %s, %s, %s, %s, %s, %s, %s)""",
         (
             sig["symbol"],
             sig["composite_score"], sig["signal_level"], sig["risk_score"],
@@ -98,11 +115,15 @@ def insert_signal(sig: dict):
             json.dumps(sig.get("active_signals", [])),
             json.dumps(sig.get("reasons", [])),
             sig["current_price"], sig["current_price"], sig["current_price"],
+            sig.get("regime"), sig.get("action_type"),
+            sig.get("entry_distance_pct"),
+            json.dumps(sig.get("votes", {})),
         ),
     )
     conn.commit()
     conn.close()
-    log.info(f"NEW signal: {sig['symbol']} score={sig['composite_score']} level={sig['signal_level']}")
+    log.info(f"NEW signal: {sig['symbol']} regime={sig.get('regime')} score={sig['composite_score']} "
+             f"level={sig['signal_level']} action={sig.get('action_type')}")
 
 
 def update_signal_state(active_row: dict, sig: dict, last_high: float, last_low: float):
@@ -167,6 +188,7 @@ def update_signal_state(active_row: dict, sig: dict, last_high: float, last_low:
                triggered_high = GREATEST(COALESCE(triggered_high, 0), %s),
                triggered_low = LEAST(COALESCE(triggered_low, 9999999), %s),
                active_signals = %s, reasons = %s,
+               regime = %s, action_type = %s, entry_distance_pct = %s, votes = %s,
                closed_at = COALESCE(closed_at, %s),
                close_price = COALESCE(close_price, %s),
                pl_pct = COALESCE(pl_pct, %s)
@@ -176,6 +198,9 @@ def update_signal_state(active_row: dict, sig: dict, last_high: float, last_low:
             cur_price, last_high, last_low,
             json.dumps(sig.get("active_signals", [])),
             json.dumps(sig.get("reasons", [])),
+            sig.get("regime"), sig.get("action_type"),
+            sig.get("entry_distance_pct"),
+            json.dumps(sig.get("votes", {})),
             closed_at, close_price, pl_pct, active_row["id"],
         ),
     )
@@ -210,6 +235,10 @@ def run_cycle(min_score: int = 65):
             # Skip if score below threshold AND no active signal
             active_row = get_active_signal(sym)
             if sig["composite_score"] < min_score and not active_row:
+                continue
+            # Skip STALE entries — they're aspirational zones price hasn't
+            # tested in a long time. Don't pollute the live tracker with them.
+            if sig.get("action_type") == "STALE" and not active_row:
                 continue
 
             # Get today's bar high/low for stop/target check

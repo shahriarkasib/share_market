@@ -1,5 +1,7 @@
-"""Composite signal engine — combines ALL trading methodologies into a single
-0-100 score + risk grade per stock.
+"""Composite signal engine — combines ALL trading methodologies with
+**regime-aware weighting** (no fixed weights — different strategies work in
+different market conditions) and **entry-distance classification** (so we
+distinguish BUY-NOW from BUY-LIMIT-on-pullback from STALE).
 
 Methodologies combined:
   1. SMC (FVG + BOS + Order Blocks)               weight 25
@@ -234,18 +236,95 @@ def compute_sector_rs(symbol: str, df: pd.DataFrame, conn) -> dict:
 #  Composite scoring orchestrator
 # ───────────────────────────────────────────────────────────────────────
 
-# Weight per methodology — sums to 100
-WEIGHTS = {
-    "smc": 25,
-    "order_flow": 15,
-    "mtf": 15,
-    "liquidity_sweep": 10,
-    "volume_profile": 5,
-    "bb_squeeze": 5,
-    "sector_rs": 10,
-    "fib_confluence": 5,
-    "wyckoff": 10,
+# Regime-aware weights — different strategies work in different markets.
+# Weights per regime sum to 100. Regime detected from ADX + ATR + range %.
+REGIME_WEIGHTS = {
+    "TRENDING_UP": {
+        # Trends → SMC + MTF + Wyckoff lead. Mean-reversion noise.
+        "smc": 25, "mtf": 20, "order_flow": 15, "wyckoff": 15,
+        "sector_rs": 10, "fib_confluence": 5, "liquidity_sweep": 5,
+        "volume_profile": 3, "bb_squeeze": 2,
+    },
+    "TRENDING_DOWN": {
+        # Avoid in downtrends — lower max scores. SMC tells you to stay out.
+        "smc": 30, "mtf": 25, "order_flow": 15, "wyckoff": 10,
+        "sector_rs": 10, "fib_confluence": 3, "liquidity_sweep": 3,
+        "volume_profile": 2, "bb_squeeze": 2,
+    },
+    "SIDEWAYS": {
+        # Mean reversion + range trading dominate. SMC FVGs are noise here.
+        "volume_profile": 20, "order_flow": 18, "liquidity_sweep": 15,
+        "bb_squeeze": 12, "fib_confluence": 10, "sector_rs": 10,
+        "smc": 8, "wyckoff": 5, "mtf": 2,
+    },
+    "VOLATILE_EXPANSION": {
+        # Volatility breakout regime — BB squeeze + Order Flow lead.
+        "bb_squeeze": 22, "order_flow": 20, "liquidity_sweep": 15,
+        "smc": 13, "mtf": 10, "sector_rs": 10,
+        "volume_profile": 5, "wyckoff": 3, "fib_confluence": 2,
+    },
 }
+
+
+def detect_market_regime(df: pd.DataFrame, current_adx: Optional[float]) -> str:
+    """Classify the regime from ADX + 20-day return + ATR expansion."""
+    if len(df) < 30:
+        return "SIDEWAYS"
+    closes = df["close"].astype(float)
+    highs = df["high"].astype(float)
+    lows = df["low"].astype(float)
+
+    # 20-day return + slope
+    ret_20 = (closes.iloc[-1] - closes.iloc[-20]) / closes.iloc[-20] * 100
+
+    # ATR expansion: today's ATR vs 20-bar avg ATR
+    tr = pd.concat([
+        highs - lows,
+        (highs - closes.shift(1)).abs(),
+        (lows - closes.shift(1)).abs(),
+    ], axis=1).max(axis=1)
+    atr_now = tr.iloc[-5:].mean()
+    atr_avg = tr.iloc[-30:-5].mean() if len(tr) >= 30 else atr_now
+    atr_expanding = atr_now > atr_avg * 1.4 if atr_avg > 0 else False
+
+    # Decision tree
+    if atr_expanding and current_adx and current_adx < 30:
+        return "VOLATILE_EXPANSION"
+    if current_adx is not None and current_adx >= 25:
+        return "TRENDING_UP" if ret_20 > 0 else "TRENDING_DOWN"
+    return "SIDEWAYS"
+
+
+def classify_entry_distance(entry: Optional[float], current_price: float) -> dict:
+    """Classify how tradeable the entry is RIGHT NOW.
+
+    Returns:
+      action_type: BUY_NOW | BUY_LIMIT | SETUP | STALE | NO_ENTRY
+      distance_pct: how far below current (positive = below)
+      label: human-readable
+    """
+    if entry is None or entry <= 0 or current_price <= 0:
+        return {"action_type": "NO_ENTRY", "distance_pct": None,
+                "label": "No entry zone"}
+    distance_pct = (current_price - entry) / current_price * 100  # positive = entry below current
+
+    if abs(distance_pct) <= 1.5:
+        return {"action_type": "BUY_NOW", "distance_pct": round(distance_pct, 2),
+                "label": "BUY NOW (price at entry)"}
+    if -1.5 <= distance_pct <= 6:
+        return {"action_type": "BUY_LIMIT", "distance_pct": round(distance_pct, 2),
+                "label": f"BUY LIMIT — pullback {round(distance_pct,1)}% to entry"}
+    if 6 < distance_pct <= 12:
+        return {"action_type": "SETUP", "distance_pct": round(distance_pct, 2),
+                "label": f"Setup zone — {round(distance_pct,1)}% below"}
+    if distance_pct > 12:
+        return {"action_type": "STALE", "distance_pct": round(distance_pct, 2),
+                "label": f"Stale — {round(distance_pct,1)}% below (old level)"}
+    # entry above current = breakout zone
+    if distance_pct < -1.5:
+        return {"action_type": "BREAKOUT_PENDING", "distance_pct": round(distance_pct, 2),
+                "label": f"Breakout pending — needs +{round(abs(distance_pct),1)}% rise"}
+    return {"action_type": "BUY_NOW", "distance_pct": round(distance_pct, 2), "label": "BUY"}
 
 
 def compute_risk_score(analysis: dict, vp_pos: dict, vwap_data: Optional[dict],
@@ -402,21 +481,37 @@ def compute_composite_signal(chart_data: dict, conn=None) -> dict:
         wy_score = 20
     scores["wyckoff"] = wy_score
 
-    # ─── Composite weighted score ───
-    weighted = sum(scores[k] * WEIGHTS[k] for k in WEIGHTS) / 100
+    # ─── Detect market regime + apply regime-specific weights ───
+    regime = detect_market_regime(df_proxy, analysis.get("adx"))
+    weights = REGIME_WEIGHTS[regime]
+    weighted = sum(scores.get(k, 50) * weights.get(k, 0) for k in weights) / 100
     composite_score = round(weighted)
 
-    # Signal level
-    if composite_score >= 80:
+    # ─── Per-strategy votes (each gets BUY/HOLD/AVOID independently) ───
+    def _vote(score: int) -> str:
+        if score >= 70: return "BUY"
+        if score >= 50: return "HOLD"
+        return "AVOID"
+    votes = {k: {"score": scores.get(k, 50), "vote": _vote(scores.get(k, 50)),
+                 "weight_in_regime": weights.get(k, 0)} for k in weights}
+
+    # ─── Entry-distance classification (the KDSALTD fix) ───
+    entry_class = classify_entry_distance(analysis.get("entry"), current_price)
+
+    # ─── Signal level: combine composite score with action_type to avoid
+    # ranking aspirational "buy below current" zones as STRONG_BUY when price
+    # hasn't actually retraced yet.
+    if entry_class["action_type"] == "STALE":
+        signal_level = "WATCH"  # cap stale signals to WATCH max
+    elif composite_score >= 80 and entry_class["action_type"] in ("BUY_NOW", "BUY_LIMIT"):
         signal_level = "STRONG_BUY"
-    elif composite_score >= 65:
+    elif composite_score >= 65 and entry_class["action_type"] in ("BUY_NOW", "BUY_LIMIT"):
         signal_level = "BUY"
     elif composite_score >= 50:
         signal_level = "WATCH"
     else:
         signal_level = "NONE"
 
-    # Risk
     risk = compute_risk_score(analysis, vp_pos, order_flow.get("vwap"), current_price)
 
     return {
@@ -425,7 +520,9 @@ def compute_composite_signal(chart_data: dict, conn=None) -> dict:
         "composite_score": composite_score,
         "signal_level": signal_level,
         "risk_score": risk,
+        "regime": regime,
         "scores_by_method": scores,
+        "votes": votes,
         "active_signals": active,
         "reasons": reasons[:6],
         "entry": analysis.get("entry"),
@@ -434,4 +531,7 @@ def compute_composite_signal(chart_data: dict, conn=None) -> dict:
         "target2": analysis.get("target2"),
         "risk_reward": analysis.get("risk_reward"),
         "bias": analysis.get("bias"),
+        "entry_class": entry_class,
+        "action_type": entry_class["action_type"],
+        "entry_distance_pct": entry_class["distance_pct"],
     }
