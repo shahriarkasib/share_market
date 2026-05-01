@@ -94,7 +94,7 @@ const DEFAULT_TOGGLES: Toggles = {
   volumeProfile: false,
 };
 
-const TOGGLES_STORAGE_KEY = "smc-chart-toggles-v4";
+const TOGGLES_STORAGE_KEY = "smc-chart-toggles-v5";
 const MAX_BOS = 2;
 const MAX_FVG = 6;
 const CHART_HEIGHT = 600;
@@ -1551,6 +1551,25 @@ export default function SMCChart({ market = "dse" }: SMCChartProps = {}) {
           </div>
           <div className="px-4 py-3 bg-white/80 dark:bg-gray-900/40">
             <p className="text-sm mb-3">{data.analysis.summary}</p>
+
+            {/* Plain-language Trade Thesis — per-stock specific */}
+            {(data.analysis as { thesis?: string[] }).thesis && (data.analysis as { thesis?: string[] }).thesis!.length > 0 && (
+              <div className="mb-3 rounded border border-blue-500/30 bg-blue-500/5 px-3 py-2">
+                <div className="text-[10px] uppercase tracking-wider text-blue-500 font-semibold mb-1">
+                  📋 Trade Thesis
+                </div>
+                <div className="text-xs space-y-1.5 text-[var(--text)]">
+                  {(data.analysis as { thesis?: string[] }).thesis!.map((para, i) => (
+                    <p key={i} dangerouslySetInnerHTML={{
+                      __html: para
+                        .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+                        .replace(/⚠/g, '<span style="color:#f97316">⚠</span>')
+                    }} />
+                  ))}
+                </div>
+              </div>
+            )}
+
             {data.analysis.reasons.length > 0 && (
               <ul className="text-xs text-gray-600 dark:text-gray-400 space-y-1 mb-3">
                 {data.analysis.reasons.map((r, i) => (
@@ -1617,85 +1636,102 @@ export default function SMCChart({ market = "dse" }: SMCChartProps = {}) {
         </div>
       )}
 
-      {/* Order Flow status — absorption, OB imbalance, VWAP zone, POC */}
+      {/* Order Flow — each metric has hover tooltip explaining MEANING + HOW TO TRADE */}
       {data?.order_flow && (
-        <div className="mb-3 rounded border border-[var(--border)] px-3 py-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
-          <span className="font-semibold uppercase tracking-wide text-indigo-400">Order Flow</span>
-          {data.order_flow.absorption && (
-            <span
-              className={
-                data.order_flow.absorption.absorbed
-                  ? "text-emerald-500 font-medium"
-                  : "text-[var(--text-muted)]"
-              }
-              title="Buyer absorbed sellers — high vol, lower wick, close near high"
-            >
-              {data.order_flow.absorption.absorbed ? "🟢 ABSORPTION" : "no absorption"}
-              <span className="ml-1 opacity-70">
-                strength {Math.round(data.order_flow.absorption.strength * 100)}%
-                {" · "}vol×{data.order_flow.absorption.vol_ratio}
-              </span>
+        <div className="mb-3 rounded border border-[var(--border)] px-3 py-2 text-xs">
+          <div className="font-semibold uppercase tracking-wide text-indigo-400 mb-1.5 flex items-center gap-2">
+            Order Flow
+            <span className="text-[10px] font-normal text-[var(--text-muted)] normal-case">
+              hover any metric for explanation + how to trade
             </span>
-          )}
-          {data.order_flow.vwap && data && (
-            <span title="Where price sits vs volume-weighted average">
-              VWAP: {cur}{data.order_flow.vwap.value}
-              {data.current_price > data.order_flow.vwap.upper_2sd && (
-                <span className="ml-1 text-orange-500">↑ +2σ extreme</span>
-              )}
-              {data.current_price > data.order_flow.vwap.upper_1sd &&
-                data.current_price <= data.order_flow.vwap.upper_2sd && (
-                <span className="ml-1 text-emerald-500">↑ above +1σ</span>
-              )}
-              {data.current_price >= data.order_flow.vwap.lower_1sd &&
-                data.current_price <= data.order_flow.vwap.upper_1sd && (
-                <span className="ml-1 text-[var(--text-muted)]">at fair value</span>
-              )}
-              {data.current_price < data.order_flow.vwap.lower_1sd &&
-                data.current_price >= data.order_flow.vwap.lower_2sd && (
-                <span className="ml-1 text-amber-500">↓ below −1σ</span>
-              )}
-              {data.current_price < data.order_flow.vwap.lower_2sd && (
-                <span className="ml-1 text-red-500">↓ −2σ extreme</span>
-              )}
-            </span>
-          )}
-          {data.order_flow.volume_profile && (
-            <span title="Point of Control = highest-volume price = institutional fair value">
-              POC: {cur}{data.order_flow.volume_profile.poc}
-              {" · "}VA {cur}{data.order_flow.volume_profile.val}–{data.order_flow.volume_profile.vah}
-            </span>
-          )}
-          {data.order_flow.volume_delta && (
-            <span title="Cumulative buy-vs-sell pressure (5-day window)">
-              Δ5d:{" "}
-              <span
-                className={
-                  data.order_flow.volume_delta.delta_5d > 0
-                    ? "text-emerald-500"
-                    : "text-red-500"
-                }
-              >
-                {data.order_flow.volume_delta.delta_5d > 0 ? "+" : ""}
-                {data.order_flow.volume_delta.delta_5d.toLocaleString()}
-              </span>
-            </span>
-          )}
-          {data.order_flow.orderbook_imbalance && (
-            <span
-              className={
-                data.order_flow.orderbook_imbalance.imbalance > 0.05
-                  ? "text-emerald-500"
-                  : data.order_flow.orderbook_imbalance.imbalance < -0.05
-                  ? "text-red-500"
-                  : "text-[var(--text-muted)]"
-              }
-              title="Live bid/ask depth imbalance from order book"
-            >
-              OB: {data.order_flow.orderbook_imbalance.imbalance_pct > 0 ? "+" : ""}
-              {data.order_flow.orderbook_imbalance.imbalance_pct}% — {data.order_flow.orderbook_imbalance.verdict}
-            </span>
-          )}
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2">
+            {data.order_flow.absorption && (() => {
+              const a = data.order_flow.absorption;
+              const tip = a.absorbed
+                ? `BUYER ABSORPTION — high volume (${a.vol_ratio}x avg) + long lower wick (${Math.round((a.lower_wick_ratio || 0) * 100)}%) + closed near high (${Math.round(a.close_strength * 100)}%). Institutions stepped in. NEXT 1-3 DAYS USUALLY BULLISH. Trade: buy at close, stop below today's low.`
+                : `No absorption today. Strength score ${Math.round(a.strength * 100)}/100. Wait for >65% strength to confirm institutional buying.`;
+              return (
+                <div
+                  className={`rounded border px-2 py-1 cursor-help ${a.absorbed
+                    ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-500"
+                    : "border-[var(--border)]"}`}
+                  title={tip}
+                >
+                  <div className="text-[10px] uppercase opacity-70">Absorption</div>
+                  <div className="font-bold">
+                    {a.absorbed ? "🟢 YES" : "—"}
+                    <span className="text-[10px] font-normal ml-1 opacity-80">
+                      {Math.round(a.strength * 100)}%
+                    </span>
+                  </div>
+                </div>
+              );
+            })()}
+            {data.order_flow.vwap && (() => {
+              const v = data.order_flow.vwap;
+              const cp = data.current_price;
+              let zone = "fair value", color = "text-[var(--text-muted)]";
+              if (cp > v.upper_2sd) { zone = "+2σ extreme — fade short"; color = "text-orange-500"; }
+              else if (cp > v.upper_1sd) { zone = "above +1σ — strong"; color = "text-emerald-500"; }
+              else if (cp < v.lower_2sd) { zone = "−2σ extreme — fade long"; color = "text-red-500"; }
+              else if (cp < v.lower_1sd) { zone = "below −1σ — weak"; color = "text-amber-500"; }
+              const tip = `VWAP = Volume-Weighted Average Price. Institutions try to fill near VWAP. ABOVE VWAP = bullish bias day. ±1σ/±2σ bands act as mean-reversion levels. Trade: buy at lower band reject, sell at upper band reject when in chop. In trends, stay long while above VWAP.`;
+              return (
+                <div className="rounded border border-[var(--border)] px-2 py-1 cursor-help" title={tip}>
+                  <div className="text-[10px] uppercase opacity-70">VWAP</div>
+                  <div className="font-mono">{cur}{v.value}</div>
+                  <div className={`text-[10px] ${color}`}>{zone}</div>
+                </div>
+              );
+            })()}
+            {data.order_flow.volume_profile && (() => {
+              const vp = data.order_flow.volume_profile;
+              const cp = data.current_price;
+              const above = cp > vp.poc;
+              const tip = `POC = Point of Control = price level where MOST volume traded. This is institutional "fair value" — price magnetizes here. VA (Value Area) = where 70% of volume happened. Trade: above POC = bulls in control; below POC = bears. Price often returns to POC after extension. Use POC as profit target if you're long below it, or stop level if short above it.`;
+              return (
+                <div className="rounded border border-[var(--border)] px-2 py-1 cursor-help" title={tip}>
+                  <div className="text-[10px] uppercase opacity-70">POC (fair value)</div>
+                  <div className="font-mono">{cur}{vp.poc}</div>
+                  <div className="text-[10px] text-[var(--text-muted)]">
+                    VA {cur}{vp.val}–{vp.vah} · price {above ? "above" : "below"}
+                  </div>
+                </div>
+              );
+            })()}
+            {data.order_flow.volume_delta && (() => {
+              const vd = data.order_flow.volume_delta;
+              const positive = vd.delta_5d > 0;
+              const tip = `Cumulative Volume Delta over 5 days = (buy volume) − (sell volume). Approximated from candle-position weighting. POSITIVE = net buying pressure → bullish. NEGATIVE = net selling pressure → bearish. Watch for DIVERGENCE: if price up but Δ negative = exhaustion (likely top). If price flat but Δ rising = absorption (likely break up).`;
+              return (
+                <div className="rounded border border-[var(--border)] px-2 py-1 cursor-help" title={tip}>
+                  <div className="text-[10px] uppercase opacity-70">Volume Delta 5d</div>
+                  <div className={`font-mono ${positive ? "text-emerald-500" : "text-red-500"}`}>
+                    {positive ? "+" : ""}{vd.delta_5d.toLocaleString()}
+                  </div>
+                  <div className="text-[10px] text-[var(--text-muted)]">
+                    {positive ? "net buyers" : "net sellers"}
+                  </div>
+                </div>
+              );
+            })()}
+            {data.order_flow.orderbook_imbalance && (() => {
+              const obi = data.order_flow.orderbook_imbalance;
+              const tip = `Order Book Imbalance = (bid size − ask size) / total. Live snapshot from order book depth. POSITIVE = more buyers than sellers waiting → bullish lean. NEGATIVE = more sellers waiting → bearish lean. >+15% = strong, >+30% = institutional accumulation. Combine with absorption: positive imbalance + absorption = high-conviction long.`;
+              const color = obi.imbalance > 0.05 ? "text-emerald-500"
+                : obi.imbalance < -0.05 ? "text-red-500" : "text-[var(--text-muted)]";
+              return (
+                <div className="rounded border border-[var(--border)] px-2 py-1 cursor-help" title={tip}>
+                  <div className="text-[10px] uppercase opacity-70">Bid/Ask</div>
+                  <div className={`font-mono ${color}`}>
+                    {obi.imbalance_pct > 0 ? "+" : ""}{obi.imbalance_pct}%
+                  </div>
+                  <div className="text-[10px] opacity-70">{obi.verdict}</div>
+                </div>
+              );
+            })()}
+          </div>
         </div>
       )}
 

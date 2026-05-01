@@ -447,7 +447,12 @@ export interface SMCChartData {
   fib_circles?: SMCFibCircles | null;
   key_levels?: SMCKeyLevel[];
   order_blocks?: SMCOrderBlock[];
-  analysis?: SMCAnalysis;
+  analysis?: SMCAnalysis & {
+    thesis?: string[];
+    adx?: number | null;
+    is_trendy?: boolean;
+    confluence?: { bottom: number; top: number; support_touches: number } | null;
+  };
   rsi?: { time: string; value: number }[];
   macd?: {
     macd: { time: string; value: number }[];

@@ -1684,14 +1684,29 @@ def generate_analysis(structure_events, fvgs, order_blocks, key_levels, current_
             entry = round(current_price, 2)
             entry_label = f"Market ৳{entry}"
 
-        # Stop loss: use deepest fresh support
+        # Stop loss: pick CLOSEST structural support — keep stops tight (≤5%).
+        # Wider stops are not tradeable for retail T+2 holders.
+        candidate_stops = []
         if fresh_bull_obs:
-            stop_loss = round(fresh_bull_obs[0]["bottom"] * 0.985, 2)
-        elif fresh_bull_fvgs_below:
-            deepest_fvg = fresh_bull_fvgs_below[-1]
-            stop_loss = round(deepest_fvg["bottom"] * 0.985, 2)
+            candidate_stops.append(round(fresh_bull_obs[0]["bottom"] * 0.99, 2))
+        if fresh_bull_fvgs_below:
+            # Use the SHALLOWEST (closest) FVG, not the deepest
+            shallowest_fvg = fresh_bull_fvgs_below[0]
+            candidate_stops.append(round(shallowest_fvg["bottom"] * 0.99, 2))
+        candidate_stops.append(round(swing_low * 0.99, 2))
+        # Pick the highest stop (closest to entry) that's still BELOW entry
+        valid = [s for s in candidate_stops if s and 0 < s < entry]
+        if valid:
+            stop_loss = max(valid)
         else:
-            stop_loss = round(swing_low * 0.98, 2)
+            stop_loss = round(entry * 0.97, 2)  # fallback: 3% stop
+
+        # Hard cap stop loss at 5% from entry — wider is not retail-tradeable
+        max_acceptable_stop = entry * 0.95
+        if stop_loss < max_acceptable_stop:
+            stop_loss = round(max_acceptable_stop, 2)
+            # Mark the trade with a warning since natural stop is wider than ideal
+            entry_label = (entry_label or "") + " ⚠ tight stop (5% cap)"
 
         # Targets
         target1 = round(swing_high * 1.05, 2)
@@ -1731,19 +1746,139 @@ def generate_analysis(structure_events, fvgs, order_blocks, key_levels, current_
             "text": f"Daily close below ৳{breakdown_trigger} = downtrend confirmed → avoid/short",
         })
     elif bias == "WHIPSAW":
-        # Use last 20 bars range for actionable near-term levels (not full-window swings)
-        recent_window = min(20, len(df))
-        recent_high = round(float(df["high"].iloc[-recent_window:].max()), 2)
-        recent_low = round(float(df["low"].iloc[-recent_window:].min()), 2)
-        triggers.append({
-            "icon": "⏸",
-            "text": f"Wait for daily close above ৳{recent_high} OR below ৳{recent_low} (20-day range) to pick a side",
-        })
+        # Use the LATEST structural break levels from structure_events —
+        # these are the actual BOS triggers, always within 5-10% of price.
+        # Falling back to a tight 10-bar range if no recent structure.
+        latest_bull_break = None
+        latest_bear_break = None
+        for ev in reversed(structure_events):
+            if ev["type"].startswith("bullish") and latest_bull_break is None:
+                latest_bull_break = ev["price"]
+            elif ev["type"].startswith("bearish") and latest_bear_break is None:
+                latest_bear_break = ev["price"]
+            if latest_bull_break and latest_bear_break:
+                break
+
+        # Cap any trigger to within 8% of current price — wider isn't actionable
+        def _cap(level, is_above):
+            if level is None:
+                return None
+            pct = (level - current_price) / current_price * 100
+            if is_above and pct > 8:
+                return round(current_price * 1.04, 2)  # cap 4% above
+            if not is_above and pct < -8:
+                return round(current_price * 0.96, 2)  # cap 4% below
+            return level
+
+        up_level = _cap(latest_bull_break, True)
+        dn_level = _cap(latest_bear_break, False)
+
+        if up_level and dn_level:
+            up_dist = (up_level - current_price) / current_price * 100
+            dn_dist = (current_price - dn_level) / current_price * 100
+            triggers.append({
+                "icon": "⏸",
+                "text": f"Wait for daily close above ৳{up_level} (+{up_dist:.1f}%) "
+                        f"OR below ৳{dn_level} (−{dn_dist:.1f}%) — latest break levels",
+            })
+        else:
+            recent_window = min(10, len(df))
+            recent_high = round(float(df["high"].iloc[-recent_window:].max()), 2)
+            recent_low = round(float(df["low"].iloc[-recent_window:].min()), 2)
+            triggers.append({
+                "icon": "⏸",
+                "text": f"Wait for daily close above ৳{recent_high} OR below ৳{recent_low}",
+            })
     else:
         triggers.append({
             "icon": "⏸",
             "text": "Watch for first ChoCh / BOS event to develop bias",
         })
+
+    # ─── Plain-language Trade Thesis (per-stock specific) ───
+    thesis_lines = []
+    # Section 1: What's happening NOW
+    if bias == "BULLISH":
+        if confluence_zone:
+            thesis_lines.append(
+                f"Trend is bullish and we have a high-edge **CONFLUENCE setup**: "
+                f"a fresh FVG at ৳{confluence_zone['bottom']}-{confluence_zone['top']} "
+                f"sitting on a {confluence_zone['support_touches']}-touch support. "
+                f"This is the highest-probability entry pattern (53% historical win rate)."
+            )
+        elif in_extreme_premium:
+            thesis_lines.append(
+                f"Trend is bullish but price sits at {round(range_pct or 0)}% of its "
+                f"recent range — that's **extreme premium**, where smart money sells. "
+                f"Don't chase from here."
+            )
+        elif overhead_bear_fvg:
+            thesis_lines.append(
+                f"Bullish bias but a fresh bearish FVG ৳{overhead_bear_fvg['bottom']}-"
+                f"{overhead_bear_fvg['top']} sits right above price — institutional supply. "
+                f"Wait for that to mitigate or for a deeper pullback."
+            )
+        elif fresh_bull_fvgs_below:
+            top_f = fresh_bull_fvgs_below[0]
+            thesis_lines.append(
+                f"Bullish bias intact. Best entry on pullback to FVG "
+                f"৳{top_f['bottom']}-{top_f['top']} where institutional buyers stepped in."
+            )
+        else:
+            thesis_lines.append(
+                "Bullish bias but no clear demand zone below — wait for a structural pullback."
+            )
+    elif bias == "BEARISH":
+        thesis_lines.append(
+            "Trend has flipped bearish — recent ChoCh + lower lows. "
+            "Don't catch falling knives. Wait for either bullish reversal structure "
+            "or move to confirmed support before considering a buy."
+        )
+    elif bias == "WHIPSAW":
+        thesis_lines.append(
+            "Multiple alternating reversals in recent structure = no clean trend, "
+            "no statistical edge in either direction. The trigger levels in the "
+            "card below tell you which side to take ONLY after a confirmed daily close."
+        )
+    else:
+        thesis_lines.append(
+            "No clear directional bias yet. Wait for the first BOS or ChoCh event."
+        )
+
+    # Section 2: T+2 fitness
+    if bias == "BULLISH" and confluence_zone and is_trendy_market and not in_extreme_premium:
+        thesis_lines.append(
+            "**T+2 friendly**: high-edge setup, trending market, near demand zone. "
+            "Move typically resolves in 1-3 trading days."
+        )
+    elif bias == "BULLISH" and is_trendy_market and not in_extreme_premium:
+        thesis_lines.append(
+            "**T+2 acceptable**: trend strong (ADX≥25), reasonable position. "
+            "Consider entry only on green confirmation candle, not on first wick into FVG."
+        )
+    elif bias == "WHIPSAW":
+        thesis_lines.append(
+            "**Not T+2 friendly**: whipsaw means high probability of reversal "
+            "within 1-3 days = settlement risk. Wait for break of trigger first."
+        )
+    elif in_extreme_premium:
+        thesis_lines.append(
+            "**Not T+2 friendly**: extreme premium = high probability of pullback "
+            "within your settlement window. Wait for retest of equilibrium "
+            f"(~৳{premium_discount.get('equilibrium') if premium_discount else 'EQ'})."
+        )
+
+    # Section 3: Trade plan if we have one
+    if entry and stop_loss and target1:
+        risk_pct = (entry - stop_loss) / entry * 100
+        reward_pct = (target1 - entry) / entry * 100
+        thesis_lines.append(
+            f"**Trade plan**: Entry ৳{entry} · Stop ৳{stop_loss} (-{risk_pct:.1f}%) · "
+            f"T1 ৳{target1} (+{reward_pct:.1f}%) · R/R 1:{rr if rr else '?'}. "
+            + ("Risk is tight." if risk_pct <= 4 else
+               "⚠ Risk is wider than ideal — size down." if risk_pct <= 6 else
+               "⚠ Risk too wide for this entry — wait for closer stop level.")
+        )
 
     return {
         "bias": bias,
@@ -1759,6 +1894,7 @@ def generate_analysis(structure_events, fvgs, order_blocks, key_levels, current_
         "target2": target2,
         "risk_reward": rr,
         "triggers": triggers,
+        "thesis": thesis_lines,
         "adx": float(adx_value) if adx_value is not None else None,
         "is_trendy": bool(is_trendy_market),
         "confluence": confluence_zone,
