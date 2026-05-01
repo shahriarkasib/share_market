@@ -314,6 +314,57 @@ export async function fetchLiveCompositeSignals(
   return data;
 }
 
+export interface AccuracyBucket {
+  trades: number;
+  wins: number;
+  win_rate: number;
+  avg_t1_days: number;
+  avg_max_fav_pct?: number;
+  avg_max_adv_pct?: number;
+}
+
+export interface StrategyVoteAccuracy {
+  buy_signals: number;
+  wins: number;
+  win_rate: number;
+}
+
+export interface StockAccuracy extends AccuracyBucket {
+  symbol: string;
+}
+
+export interface SignalAccuracyReport {
+  overall: AccuracyBucket;
+  by_regime: Record<string, AccuracyBucket>;
+  by_score_bucket: Record<string, AccuracyBucket>;
+  by_action_type: Record<string, AccuracyBucket>;
+  by_strategy_vote: Record<string, StrategyVoteAccuracy>;
+  by_stock: { top: StockAccuracy[] };
+  total_closed: number;
+}
+
+export async function fetchCompositeSignalAccuracy(): Promise<SignalAccuracyReport> {
+  const { data } = await api.get<SignalAccuracyReport>("/market/signal-accuracy");
+  return data;
+}
+
+// NASDAQ versions — same shapes, different backend
+export async function fetchNasdaqLiveSignals(
+  status: string = "active",
+  minScore: number = 0,
+): Promise<LiveCompositeSignal[]> {
+  const { data } = await nasdaqApi.get<LiveCompositeSignal[]>(
+    "/api/v1/nasdaq/live-signals",
+    { params: { status, min_score: minScore } },
+  );
+  return data;
+}
+
+export async function fetchNasdaqSignalAccuracy(): Promise<SignalAccuracyReport> {
+  const { data } = await nasdaqApi.get<SignalAccuracyReport>("/api/v1/nasdaq/signal-accuracy");
+  return data;
+}
+
 export interface SMCStructureEvent {
   type: "bullish_BOS" | "bearish_BOS" | "bullish_ChoCh" | "bearish_ChoCh";
   price: number;

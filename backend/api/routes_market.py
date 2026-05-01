@@ -525,6 +525,18 @@ async def get_heatmap_data(size_by: str = "turnover"):
     return result
 
 
+@router.get("/signal-accuracy")
+async def get_signal_accuracy():
+    """Aggregated win-rate stats across all closed live signals.
+
+    Returns: overall, by regime, by score bucket, by action type,
+    by individual strategy vote (which strategy correlates with wins?),
+    by stock (top 20).
+    """
+    from api.signal_performance import aggregate_accuracy
+    return aggregate_accuracy()
+
+
 @router.get("/live-signals")
 async def get_live_signals(status: str = "active", min_score: int = 0):
     """

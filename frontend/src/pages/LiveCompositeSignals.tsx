@@ -1,7 +1,15 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { RefreshCw, TrendingUp, AlertTriangle, Clock } from "lucide-react";
-import { fetchLiveCompositeSignals, type LiveCompositeSignal } from "../api/client";
+import {
+  fetchLiveCompositeSignals,
+  fetchNasdaqLiveSignals,
+  type LiveCompositeSignal,
+} from "../api/client";
+
+interface Props {
+  market?: "dse" | "nasdaq";
+}
 
 type StatusFilter = "active" | "hit_t1" | "all" | "closed";
 
@@ -37,7 +45,11 @@ function riskBars(risk: number): string {
   return "█".repeat(risk) + "░".repeat(5 - risk);
 }
 
-export default function LiveCompositeSignals() {
+export default function LiveCompositeSignals({ market = "dse" }: Props = {}) {
+  const isNasdaq = market === "nasdaq";
+  const cur = isNasdaq ? "$" : "৳";
+  const fmtPrice = (n: number) => isNasdaq ? n.toFixed(2) : n.toFixed(1);
+  const chartBase = isNasdaq ? "/nasdaq/smc-chart/" : "/smc-chart/";
   const [signals, setSignals] = useState<LiveCompositeSignal[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -49,7 +61,9 @@ export default function LiveCompositeSignals() {
     setLoading(true);
     setError(null);
     try {
-      const data = await fetchLiveCompositeSignals(filter, minScore);
+      const data = isNasdaq
+        ? await fetchNasdaqLiveSignals(filter, minScore)
+        : await fetchLiveCompositeSignals(filter, minScore);
       setSignals(data);
       setLastRefresh(new Date());
     } catch (e: unknown) {
@@ -81,9 +95,9 @@ export default function LiveCompositeSignals() {
       <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
         <div>
           <h1 className="text-xl font-bold flex items-center gap-2">
-            Live Composite Signals
+            {isNasdaq ? "NASDAQ Live Composite Signals" : "Live Composite Signals"}
             <span className="text-xs font-normal text-[var(--text-muted)]">
-              9 strategies × all stocks · refreshes every 5 min
+              9 strategies × {isNasdaq ? "halal NASDAQ" : "all DSE"} stocks · refreshes every 5 min
             </span>
           </h1>
           {lastRefresh && (
@@ -179,7 +193,7 @@ export default function LiveCompositeSignals() {
                     <tr key={s.id} className="border-t border-[var(--border)] hover:bg-[var(--hover)]">
                       <td className="px-3 py-2">
                         <Link
-                          to={`/smc-chart/${s.symbol}`}
+                          to={`${chartBase}${s.symbol}`}
                           className="font-mono font-bold text-blue-500 hover:underline"
                         >
                           {s.symbol}
@@ -205,13 +219,13 @@ export default function LiveCompositeSignals() {
                         {timeAgo(s.first_triggered)}
                       </td>
                       <td className="px-3 py-2 text-right font-mono text-xs">
-                        {s.entry !== null ? `৳${s.entry.toFixed(1)}` : "—"}
+                        {s.entry !== null ? `${cur}${fmtPrice(s.entry)}` : "—"}
                       </td>
                       <td className="px-3 py-2 text-right font-mono text-xs text-red-500/80">
-                        {s.stop_loss !== null ? `৳${s.stop_loss.toFixed(1)}` : "—"}
+                        {s.stop_loss !== null ? `${cur}${fmtPrice(s.stop_loss)}` : "—"}
                       </td>
                       <td className="px-3 py-2 text-right font-mono text-xs text-emerald-500/80">
-                        {s.target1 !== null ? `৳${s.target1.toFixed(1)}` : "—"}
+                        {s.target1 !== null ? `${cur}${fmtPrice(s.target1)}` : "—"}
                       </td>
                       <td className="px-3 py-2 text-right font-mono text-xs">
                         <span title={`Risk ${s.risk_score}/5`} className={

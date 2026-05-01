@@ -16,6 +16,7 @@ import FloorDetection from "./pages/FloorDetection.tsx";
 import Signals from "./pages/Signals.tsx";
 import NasdaqSignals from "./pages/NasdaqSignals.tsx";
 import LiveCompositeSignals from "./pages/LiveCompositeSignals.tsx";
+import SignalAccuracy from "./pages/SignalAccuracy.tsx";
 
 export default function App() {
   return (
@@ -36,8 +37,11 @@ export default function App() {
         <Route path="/floor" element={<FloorDetection />} />
         <Route path="/signals" element={<Signals />} />
         <Route path="/live-signals" element={<LiveCompositeSignals />} />
+        <Route path="/accuracy" element={<SignalAccuracy />} />
         <Route path="/nasdaq/signals" element={<NasdaqSignals />} />
         <Route path="/nasdaq/smc-chart/:symbol?" element={<SMCChart market="nasdaq" />} />
+        <Route path="/nasdaq/live-signals" element={<LiveCompositeSignals market="nasdaq" />} />
+        <Route path="/nasdaq/accuracy" element={<SignalAccuracy market="nasdaq" />} />
       </Route>
     </Routes>
   );

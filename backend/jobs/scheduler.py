@@ -732,6 +732,28 @@ async def run_composite_signal_tracker():
         logger.error(f"Composite signal tracker failed: {e}")
 
 
+async def run_signal_performance_update():
+    """Walk every signal and update day-N returns + outcome (post-market)."""
+    try:
+        from api.signal_performance import update_all_performances
+        thread = threading.Thread(target=update_all_performances, daemon=True)
+        thread.start()
+    except Exception as e:
+        logger.error(f"Signal performance update failed: {e}")
+
+
+async def run_nasdaq_signal_tracker():
+    """NASDAQ composite signal cycle (during US market hours, Mon-Fri)."""
+    try:
+        # nasdaq_live_tracker lives in the same backend dir on the VM
+        sys.path.insert(0, "/home/shariarsourav/dse_analysis/backend")
+        from nasdaq_live_tracker import run_cycle
+        thread = threading.Thread(target=run_cycle, daemon=True)
+        thread.start()
+    except Exception as e:
+        logger.error(f"NASDAQ signal tracker failed: {e}")
+
+
 async def verify_scan_decisions():
     """Verify past scan decisions against actual outcomes."""
     try:
@@ -987,6 +1009,33 @@ def setup_scheduler() -> AsyncIOScheduler:
         ),
         id="composite_signals",
         name="Composite multi-strategy signal tracker",
+        replace_existing=True,
+    )
+
+    # Signal performance / accuracy tracker — daily after market close
+    # Walks every signal and updates day-1/2/3/5/10/15 returns + outcomes
+    scheduler.add_job(
+        run_signal_performance_update,
+        trigger=CronTrigger(
+            day_of_week="sun,mon,tue,wed,thu",
+            hour=15, minute=45, timezone="Asia/Dhaka",
+        ),
+        id="signal_performance",
+        name="Signal performance / accuracy tracker",
+        replace_existing=True,
+    )
+
+    # NASDAQ composite signal tracker — every 10 min during US market hours
+    # NYSE: 09:30-16:00 ET = 19:30-02:00 UTC = 01:30-08:00 BST (next day)
+    scheduler.add_job(
+        run_nasdaq_signal_tracker,
+        trigger=CronTrigger(
+            day_of_week="mon,tue,wed,thu,fri",
+            hour="20-23,0-2", minute="*/10",  # 20:00-02:59 BST roughly = US market
+            timezone="Asia/Dhaka",
+        ),
+        id="nasdaq_signals",
+        name="NASDAQ composite signal tracker",
         replace_existing=True,
     )
 
