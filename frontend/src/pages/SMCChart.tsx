@@ -1838,12 +1838,11 @@ export default function SMCChart({ market = "dse" }: SMCChartProps = {}) {
                 ))}
               </div>
             )}
-            {/* OBV */}
+            {/* OBV — with stock-specific impact */}
             {data.obv && (
-              <div className="rounded border border-[var(--border)] px-2 py-1.5"
-                title="On-Balance Volume = cumulative volume flow. Adds volume on up days, subtracts on down days. DIVERGENCE is the key signal: price LL but OBV HL = bullish reversal coming. Price HH but OBV LH = bearish exhaustion.">
+              <div className="rounded border border-[var(--border)] px-2 py-1.5">
                 <div className="text-[10px] uppercase opacity-70 mb-1">OBV</div>
-                <div className="text-[11px]">
+                <div className="text-[11px] mb-1">
                   <span className={data.obv.trend === "rising" ? "text-emerald-500" : "text-red-500"}>
                     {data.obv.trend === "rising" ? "↑ rising" : "↓ falling"}
                   </span>
@@ -1855,14 +1854,18 @@ export default function SMCChart({ market = "dse" }: SMCChartProps = {}) {
                     </span>
                   )}
                 </div>
+                {data.obv.impact && (
+                  <p className="text-[10px] text-[var(--text-muted)] leading-snug">
+                    {data.obv.impact}
+                  </p>
+                )}
               </div>
             )}
-            {/* MFI */}
+            {/* MFI — with stock-specific impact */}
             {data.mfi && (
-              <div className="rounded border border-[var(--border)] px-2 py-1.5"
-                title="Money Flow Index = volume-weighted RSI. Overbought >80 (sell signal), oversold <20 (buy signal). More reliable than vanilla RSI in volume-driven markets.">
+              <div className="rounded border border-[var(--border)] px-2 py-1.5">
                 <div className="text-[10px] uppercase opacity-70 mb-1">MFI (vol-weighted RSI)</div>
-                <div className="text-[11px]">
+                <div className="text-[11px] mb-1">
                   <span className={
                     data.mfi.signal === "overbought" ? "text-red-500 font-bold" :
                     data.mfi.signal === "oversold" ? "text-emerald-500 font-bold" :
@@ -1872,14 +1875,18 @@ export default function SMCChart({ market = "dse" }: SMCChartProps = {}) {
                     {data.mfi.signal !== "neutral" && ` (${data.mfi.signal})`}
                   </span>
                 </div>
+                {data.mfi.impact && (
+                  <p className="text-[10px] text-[var(--text-muted)] leading-snug">
+                    {data.mfi.impact}
+                  </p>
+                )}
               </div>
             )}
-            {/* Ichimoku */}
+            {/* Ichimoku — with stock-specific impact */}
             {data.ichimoku && (
-              <div className="rounded border border-[var(--border)] px-2 py-1.5"
-                title="Ichimoku Cloud — Japanese 5-component trend system. Above cloud = bullish bias. Below cloud = bearish. Inside cloud = consolidation. TK cross = momentum signal.">
+              <div className="rounded border border-[var(--border)] px-2 py-1.5">
                 <div className="text-[10px] uppercase opacity-70 mb-1">Ichimoku</div>
-                <div className="text-[11px]">
+                <div className="text-[11px] mb-1">
                   <span className={
                     data.ichimoku.signal === "above_cloud_bullish" ? "text-emerald-500 font-medium" :
                     data.ichimoku.signal === "below_cloud_bearish" ? "text-red-500 font-medium" :
@@ -1895,6 +1902,11 @@ export default function SMCChart({ market = "dse" }: SMCChartProps = {}) {
                     </span>
                   )}
                 </div>
+                {data.ichimoku.impact && (
+                  <p className="text-[10px] text-[var(--text-muted)] leading-snug">
+                    {data.ichimoku.impact}
+                  </p>
+                )}
               </div>
             )}
           </div>

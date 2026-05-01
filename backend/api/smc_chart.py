@@ -2464,6 +2464,36 @@ def generate_analysis(structure_events, fvgs, order_blocks, key_levels, current_
                "⚠ Risk too wide for this entry — wait for closer stop level.")
         )
 
+        # ── Explicit "Don't buy if..." rules ──
+        # The chase-prevention zone: how far above current entry is too far?
+        max_chase = entry * 1.025  # 2.5% above the ideal entry
+        invalidation = entry * 0.97  # 3% below entry = structure broken
+        no_buy_lines = []
+        if current_price > max_chase:
+            no_buy_lines.append(
+                f"❌ **DON'T buy at current price {cur}{current_price}** — too far above the "
+                f"ideal entry zone {cur}{entry}. Chasing here = bad R/R."
+            )
+        no_buy_lines.append(
+            f"❌ **DON'T buy above {cur}{round(max_chase, 2)}** — past this level you're "
+            f"chasing. Wait for pullback to {cur}{entry} or skip this trade."
+        )
+        no_buy_lines.append(
+            f"❌ **DON'T buy if daily close below {cur}{round(invalidation, 2)}** — that "
+            f"breaks the structural support, signal is invalidated."
+        )
+        if in_extreme_premium:
+            no_buy_lines.append(
+                f"❌ **DON'T buy at extreme premium ({round(range_pct or 0)}% of range)** — "
+                f"smart money sells here. Wait for price to come back to discount zone."
+            )
+        if overhead_bear_fvg is not None:
+            no_buy_lines.append(
+                f"❌ **DON'T buy with overhead supply** — fresh bearish FVG ৳{overhead_bear_fvg['bottom']}-"
+                f"{overhead_bear_fvg['top']} above caps any rally. Wait for it to mitigate first."
+            )
+        thesis_lines.append("**No-buy zones:** " + " ".join(no_buy_lines))
+
     return {
         "bias": bias,
         "confidence": confidence,
@@ -2936,6 +2966,116 @@ def get_smc_chart(symbol: str, days: int = 180, interval: str = "daily"):
             pass
     except Exception:
         order_flow = None
+
+    # ── Per-metric stock-specific IMPACT narratives ──
+    # Each metric gets an `impact` field interpreting what its value means
+    # for THIS stock at its current price + whether to buy/wait/skip.
+    cp_now = round(float(c.iloc[-1]), 2)
+    in_premium = False
+    if isinstance(analysis, dict):
+        adx_val = analysis.get("adx") or 0
+        in_premium = "premium" in (analysis.get("summary", "") or "").lower() or False
+
+    # OBV impact
+    obv_data = advanced.get("obv") if advanced else None
+    if obv_data:
+        div = obv_data.get("divergence")
+        trend = obv_data.get("trend")
+        if div == "bullish":
+            obv_data["impact"] = (
+                f"OBV is making higher lows while price made a lower low — institutions are "
+                f"quietly accumulating while retail panics. Leading bullish reversal signal. "
+                f"FOR THIS STOCK: combined with current state, treat as supporting evidence — "
+                f"buy ONLY if price retraces to the FVG/demand zone, don't chase at {cur}{cp_now}."
+            )
+        elif div == "bearish":
+            obv_data["impact"] = (
+                f"OBV is making lower highs while price made a higher high — buyers running out "
+                f"of fuel. Leading bearish exhaustion signal. FOR THIS STOCK: do not buy fresh longs. "
+                f"If you're already in a position, take partial profits."
+            )
+        elif trend == "rising":
+            obv_data["impact"] = (
+                f"OBV trending up — net buying pressure is real (not just price moving). "
+                f"Confirms uptrend. FOR THIS STOCK: aligns with bullish bias; entries in demand zone are valid."
+            )
+        elif trend == "falling":
+            obv_data["impact"] = (
+                f"OBV falling — net selling pressure under the surface. Even if price holds, "
+                f"the volume isn't supporting it. FOR THIS STOCK: be cautious; wait for OBV to "
+                f"flip rising or for bullish divergence before fresh buys."
+            )
+
+    # MFI impact
+    mfi_data = advanced.get("mfi") if advanced else None
+    if mfi_data:
+        v = mfi_data.get("current", 50)
+        sig = mfi_data.get("signal")
+        if sig == "oversold":
+            mfi_data["impact"] = (
+                f"MFI {v} is below 20 = oversold extreme. Volume-weighted RSI says stock is "
+                f"deeply unloved here. FOR THIS STOCK at {cur}{cp_now}: high-edge bounce zone — "
+                f"COMBINED with structural support (FVG/demand zone) this is a classic buy setup."
+            )
+        elif sig == "overbought":
+            mfi_data["impact"] = (
+                f"MFI {v} is above 80 = overbought extreme. FOR THIS STOCK at {cur}{cp_now}: "
+                f"high probability of pullback within 2-5 days. DON'T buy fresh; if long, take "
+                f"partial profits or trail stop tighter."
+            )
+        else:
+            mfi_data["impact"] = (
+                f"MFI {v} = neutral zone. No oversold-bounce or overbought-pullback signal. "
+                f"FOR THIS STOCK: not contributing edge either way; rely on structure + order flow."
+            )
+
+    # Ichimoku impact
+    ich_data = advanced.get("ichimoku") if advanced else None
+    if ich_data:
+        sig = ich_data.get("signal", "")
+        tk = ich_data.get("tk_cross")
+        if "above_cloud_bullish" in sig:
+            tail = ""
+            if tk == "bullish":
+                tail = f" Plus a fresh TK bullish cross — that's a NEW momentum signal."
+            elif tk == "bearish":
+                tail = f" BUT a fresh TK bearish cross warns momentum is rolling — be cautious."
+            ich_data["impact"] = (
+                f"Price is above the cloud — full Ichimoku trend system is bullish (5 of 5 components agree).{tail} "
+                f"FOR THIS STOCK at {cur}{cp_now}: trend-following entries valid, cloud below acts as dynamic support."
+            )
+        elif "below_cloud_bearish" in sig:
+            ich_data["impact"] = (
+                f"Price is below the cloud — full Ichimoku trend system is bearish. "
+                f"FOR THIS STOCK at {cur}{cp_now}: don't buy fresh; cloud above is dynamic resistance. "
+                f"Wait for price to reclaim cloud before considering longs."
+            )
+        else:
+            ich_data["impact"] = (
+                f"Price is inside the cloud = consolidation/no-trend phase. "
+                f"FOR THIS STOCK: Ichimoku gives no edge here. Use Volume Profile + VSA instead."
+            )
+
+    # Absorption impact (in order_flow, not advanced)
+    if order_flow and isinstance(order_flow, dict):
+        absorption = order_flow.get("absorption")
+        if absorption:
+            if absorption.get("absorbed"):
+                absorption["impact"] = (
+                    f"🟢 Today's bar shows institutional buyer absorption — high volume "
+                    f"({absorption['vol_ratio']}× avg), long lower wick "
+                    f"(rejection {int(absorption['lower_wick_ratio']*100)}% of range), "
+                    f"closed near high (strength {int(absorption['close_strength']*100)}%). "
+                    f"FOR THIS STOCK: 1-3 day continuation rally is statistically likely. "
+                    f"Buy at close ({cur}{cp_now}) with stop below today's low."
+                )
+            else:
+                strength_pct = int(absorption.get('strength', 0) * 100)
+                absorption["impact"] = (
+                    f"No buyer absorption today (composite strength {strength_pct}%). "
+                    f"FOR THIS STOCK: no institutional commitment YET. Wait for absorption "
+                    f"day before entering — that's the typical pre-rally signal."
+                )
 
     # ── Volume narrative (now that VSA / OBV / MFI / Ichimoku are computed) ──
     vol_lines = []

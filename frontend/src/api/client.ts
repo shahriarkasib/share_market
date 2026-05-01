@@ -571,16 +571,17 @@ export interface SMCChartData {
     strength: number; description: string; high?: number; low?: number;
   }>;
   obv?: { current: number; trend: "rising" | "falling"; divergence: "bullish" | "bearish" | null;
-          series: { time: string; value: number }[] } | null;
+          series: { time: string; value: number }[]; impact?: string } | null;
   mfi?: { current: number; signal: "overbought" | "oversold" | "neutral";
           overbought_threshold: number; oversold_threshold: number;
-          series: { time: string; value: number }[] } | null;
+          series: { time: string; value: number }[]; impact?: string } | null;
   ichimoku?: {
     tenkan: number | null; kijun: number | null;
     senkou_a: number | null; senkou_b: number | null;
     signal: string; tk_cross: string | null;
     series: Array<{ time: string; tenkan: number | null; kijun: number | null;
                     senkou_a: number | null; senkou_b: number | null }>;
+    impact?: string;
   } | null;
   wyckoff_events?: Array<{
     idx: number; time: string; type: string; bias: "bullish" | "bearish";
