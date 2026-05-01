@@ -116,6 +116,7 @@ export interface NasdaqTicker {
   symbol: string;
   name: string | null;
   sector: string | null;
+  halal_status?: string;
 }
 
 export async function fetchNasdaqTickers(): Promise<NasdaqTicker[]> {
@@ -299,8 +300,14 @@ export interface LiveCompositeSignal {
   close_price: number | null;
   pl_pct: number | null;
   regime: "TRENDING_UP" | "TRENDING_DOWN" | "SIDEWAYS" | "VOLATILE_EXPANSION" | null;
-  action_type: "BUY_NOW" | "BUY_LIMIT" | "SETUP" | "STALE" | "BREAKOUT_PENDING" | "NO_ENTRY" | null;
+  action_type:
+    | "BUY_NOW" | "RECENT_TRIGGER" | "MISSED_ENTRY" | "RUNNING"
+    | "BUY_LIMIT" | "SETUP_DEEP" | "STALE" | "BREAKOUT_PENDING"
+    | "AVOID" | "WAITING" | null;
   entry_distance_pct: number | null;
+  state_label: string | null;
+  days_since_trigger: number | null;
+  fvg_distance_pct: number | null;
   votes: Record<string, { score: number; vote: "BUY" | "HOLD" | "AVOID"; weight_in_regime: number }> | null;
 }
 

@@ -154,6 +154,16 @@ export default function LiveCompositeSignals({ market = "dse" }: Props = {}) {
         </div>
       )}
 
+      <div className="mb-4 rounded border border-[var(--border)] px-3 py-2 text-xs text-[var(--text-muted)] flex flex-wrap gap-x-4 gap-y-1">
+        <span className="font-semibold text-[var(--text)]">Legend:</span>
+        <span><span className="text-emerald-500 font-bold">BUY NOW</span> = today tagged FVG + green close</span>
+        <span><span className="text-emerald-400">RECENT TRIGGER</span> = tagged 1-3d ago, re-entry possible</span>
+        <span><span className="text-blue-400">MISSED ENTRY</span> = triggered, price moved past zone</span>
+        <span><span className="text-purple-400">RUNNING</span> = tagged &gt;7d ago, trend continuing</span>
+        <span><span className="text-amber-500">BUY LIMIT</span> = pullback to entry pending</span>
+        <span><span className="text-gray-500">STALE</span> = entry &gt;12% away</span>
+      </div>
+
       {grouped.strong.length === 0 && grouped.buy.length === 0 && grouped.watch.length === 0 && !loading && (
         <div className="rounded border border-[var(--border)] px-4 py-8 text-center text-[var(--text-muted)] text-sm">
           No signals matching this filter. Lower min-score or change status to see more.
@@ -240,16 +250,24 @@ export default function LiveCompositeSignals({ market = "dse" }: Props = {}) {
                         <div className="flex flex-col gap-0.5">
                           <span className={
                             s.action_type === "BUY_NOW" ? "text-emerald-500 font-bold" :
+                            s.action_type === "RECENT_TRIGGER" ? "text-emerald-400 font-medium" :
                             s.action_type === "BUY_LIMIT" ? "text-amber-500" :
+                            s.action_type === "MISSED_ENTRY" ? "text-blue-400" :
+                            s.action_type === "RUNNING" ? "text-purple-400" :
+                            s.action_type === "SETUP_DEEP" ? "text-blue-300/70" :
                             s.action_type === "STALE" ? "text-gray-500" :
-                            s.action_type === "SETUP" ? "text-blue-400" :
+                            s.action_type === "AVOID" ? "text-red-500" :
                             "text-[var(--text-muted)]"
                           }>
-                            {s.action_type?.replace("_", " ")}
-                            {s.entry_distance_pct !== null && s.entry_distance_pct !== 0 && (
-                              <span className="ml-1 opacity-70">
-                                ({s.entry_distance_pct > 0 ? "−" : "+"}
-                                {Math.abs(s.entry_distance_pct).toFixed(1)}%)
+                            {s.action_type?.replace(/_/g, " ")}
+                            {s.days_since_trigger !== null && s.days_since_trigger !== undefined && s.days_since_trigger > 0 && (
+                              <span className="ml-1 opacity-70 text-[10px]">
+                                {s.days_since_trigger}d ago
+                              </span>
+                            )}
+                            {s.fvg_distance_pct !== null && s.fvg_distance_pct !== undefined && s.fvg_distance_pct > 1 && (
+                              <span className="ml-1 opacity-70 text-[10px]">
+                                +{s.fvg_distance_pct.toFixed(1)}% above zone
                               </span>
                             )}
                           </span>

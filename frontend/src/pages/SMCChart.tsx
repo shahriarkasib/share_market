@@ -213,6 +213,7 @@ export default function SMCChart({ market = "dse" }: SMCChartProps = {}) {
               symbol: t.symbol,
               company_name: t.name ?? undefined,
               sector: t.sector ?? undefined,
+              halal_status: t.halal_status,
               ltp: 0,
               high: 0,
               low: 0,
@@ -1269,11 +1270,30 @@ export default function SMCChart({ market = "dse" }: SMCChartProps = {}) {
 
   const selectStock = useCallback(
     (sym: string) => {
+      const upper = sym.toUpperCase().trim();
+      if (!upper) return;
       setSearch("");
       setShowDropdown(false);
-      nav(`/smc-chart/${sym}`);
+      // Cross-market routing: if typed ticker not in current market's universe
+      // but looks like the OTHER market, navigate to that market's chart.
+      const inLocal = stocks.some((s) => s.symbol.toUpperCase() === upper);
+      if (!inLocal) {
+        // NASDAQ tickers are typically 1-5 alpha chars all uppercase
+        const looksNasdaq = /^[A-Z]{1,5}$/.test(upper);
+        if (isNasdaq) {
+          // On NASDAQ chart, just go to NASDAQ chart (Enter for any ticker)
+          nav(`/nasdaq/smc-chart/${upper}`);
+        } else if (looksNasdaq) {
+          // On DSE chart but ticker looks NASDAQ → route to NASDAQ
+          nav(`/nasdaq/smc-chart/${upper}`);
+        } else {
+          nav(`/smc-chart/${upper}`);
+        }
+        return;
+      }
+      nav(isNasdaq ? `/nasdaq/smc-chart/${upper}` : `/smc-chart/${upper}`);
     },
-    [nav],
+    [nav, stocks, isNasdaq],
   );
 
   const toggle = useCallback(
@@ -1357,7 +1377,14 @@ export default function SMCChart({ market = "dse" }: SMCChartProps = {}) {
               onBlur={() => {
                 window.setTimeout(() => setShowDropdown(false), 150);
               }}
-              placeholder="Search stock..."
+              onKeyDown={(e) => {
+                // Enter → navigate to typed ticker even if not in our list.
+                // Lets users open any NASDAQ stock not in the halal universe.
+                if (e.key === "Enter" && search.trim()) {
+                  selectStock(search.trim().toUpperCase());
+                }
+              }}
+              placeholder={isNasdaq ? "Search ticker (Enter for any)" : "Search stock..."}
               className="bg-transparent flex-1 outline-none text-sm"
             />
           </div>

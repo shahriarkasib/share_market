@@ -74,6 +74,9 @@ def ensure_schema():
         ("action_type", "VARCHAR(20)"),
         ("entry_distance_pct", "NUMERIC(8,2)"),
         ("votes", "JSONB"),
+        ("state_label", "TEXT"),
+        ("days_since_trigger", "INTEGER"),
+        ("fvg_distance_pct", "NUMERIC(8,2)"),
     ]:
         try:
             conn.execute(f"ALTER TABLE live_signals ADD COLUMN IF NOT EXISTS {col} {sql_type}")
@@ -103,9 +106,10 @@ def insert_signal(sig: dict):
            (symbol, status, composite_score, signal_level, risk_score,
             entry, stop_loss, target1, target2, bias, active_signals, reasons,
             triggered_high, triggered_low, current_price,
-            regime, action_type, entry_distance_pct, votes)
+            regime, action_type, entry_distance_pct, votes,
+            state_label, days_since_trigger, fvg_distance_pct)
            VALUES (%s, 'active', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                   %s, %s, %s, %s, %s, %s, %s)""",
+                   %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
         (
             sig["symbol"],
             sig["composite_score"], sig["signal_level"], sig["risk_score"],
@@ -118,6 +122,8 @@ def insert_signal(sig: dict):
             sig.get("regime"), sig.get("action_type"),
             sig.get("entry_distance_pct"),
             json.dumps(sig.get("votes", {})),
+            sig.get("state_label"), sig.get("days_since_trigger"),
+            sig.get("fvg_distance_pct"),
         ),
     )
     conn.commit()
@@ -189,6 +195,8 @@ def update_signal_state(active_row: dict, sig: dict, last_high: float, last_low:
                triggered_low = LEAST(COALESCE(triggered_low, 9999999), %s),
                active_signals = %s, reasons = %s,
                regime = %s, action_type = %s, entry_distance_pct = %s, votes = %s,
+               state_label = %s, days_since_trigger = %s, fvg_distance_pct = %s,
+               signal_level = %s,
                closed_at = COALESCE(closed_at, %s),
                close_price = COALESCE(close_price, %s),
                pl_pct = COALESCE(pl_pct, %s)
@@ -201,6 +209,9 @@ def update_signal_state(active_row: dict, sig: dict, last_high: float, last_low:
             sig.get("regime"), sig.get("action_type"),
             sig.get("entry_distance_pct"),
             json.dumps(sig.get("votes", {})),
+            sig.get("state_label"), sig.get("days_since_trigger"),
+            sig.get("fvg_distance_pct"),
+            sig.get("signal_level"),
             closed_at, close_price, pl_pct, active_row["id"],
         ),
     )

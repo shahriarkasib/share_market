@@ -295,6 +295,118 @@ def detect_market_regime(df: pd.DataFrame, current_adx: Optional[float]) -> str:
     return "SIDEWAYS"
 
 
+def classify_stock_state(df: pd.DataFrame, fvgs: list, current_price: float,
+                          analysis: dict) -> dict:
+    """Lifecycle-aware classification — answers "where is this stock RIGHT NOW
+    in its setup → trigger → run cycle?"
+
+    States:
+      BUY_NOW          today tagged a fresh bullish FVG + closed green
+      RECENT_TRIGGER   tagged 1-3 days ago + still near zone (re-entry possible)
+      MISSED_ENTRY     tagged 2-7 days ago + price already moved >2% above FVG
+      RUNNING          tagged >7 days ago, trend continuing (hold, don't chase)
+      BUY_LIMIT        entry 1.5-6% below current, no recent tag
+      SETUP_DEEP       entry 6-12% below current, just a watch zone
+      STALE            entry >12% below current
+      BREAKOUT_PENDING entry above current — wait for break
+      AVOID            bearish bias / whipsaw / structure broken
+      WAITING          bullish bias but no clear entry zone
+    """
+    if df.empty:
+        return {"state": "WAITING", "label": "no data", "days_since_trigger": None}
+
+    bias = analysis.get("bias")
+    if bias in ("BEARISH", "WHIPSAW"):
+        return {"state": "AVOID", "label": f"avoid ({bias.lower()})",
+                "days_since_trigger": None}
+
+    closes = df["close"].astype(float).values
+    highs = df["high"].astype(float).values
+    lows = df["low"].astype(float).values
+    opens = df["open"].astype(float).values
+    n = len(df)
+
+    # Look back up to 14 trading days for FVG tags
+    fresh_bull = [f for f in fvgs if f.get("type") == "bullish"
+                  and not f.get("mitigated")
+                  and f.get("top", 0) < current_price * 1.10]
+
+    triggered_idx = None  # bar index of first fresh-FVG tag
+    triggered_fvg = None
+    confirmed_idx = None  # bar index of first green-confirmation after tag
+
+    for i in range(max(0, n - 14), n):
+        bar_low = lows[i]
+        for f in fresh_bull:
+            if bar_low <= f["top"] and bar_low >= f["bottom"] * 0.97:
+                triggered_idx = i
+                triggered_fvg = f
+                # Look for green confirmation on same bar or any of next 3
+                for j in range(i, min(n, i + 4)):
+                    if closes[j] > opens[j]:
+                        confirmed_idx = j
+                        break
+                break
+        if triggered_idx is not None:
+            break
+
+    days_since = (n - 1 - confirmed_idx) if confirmed_idx is not None else None
+
+    # Distance from current to FVG top
+    fvg_dist_pct = None
+    if triggered_fvg:
+        fvg_top = triggered_fvg["top"]
+        fvg_dist_pct = (current_price - fvg_top) / fvg_top * 100
+
+    # ─── State decision ───
+    if confirmed_idx is not None:
+        if days_since == 0:
+            state = "BUY_NOW"
+            label = "BUY NOW — today tagged FVG + green close"
+        elif days_since <= 3 and fvg_dist_pct is not None and fvg_dist_pct < 2:
+            state = "RECENT_TRIGGER"
+            label = f"Triggered {days_since}d ago — re-entry near FVG still possible"
+        elif days_since <= 7 and fvg_dist_pct is not None and fvg_dist_pct >= 2:
+            state = "MISSED_ENTRY"
+            label = f"Missed entry — triggered {days_since}d ago, price +{fvg_dist_pct:.1f}% above zone"
+        elif days_since > 7:
+            state = "RUNNING"
+            label = f"Running — triggered {days_since}d ago, trend continuing"
+        else:
+            state = "RECENT_TRIGGER"
+            label = f"Triggered {days_since}d ago"
+    else:
+        # No recent trigger — fall back to entry-distance classifier
+        ed = classify_entry_distance(analysis.get("entry"), current_price)
+        if ed["action_type"] == "BUY_NOW":
+            state = "BUY_LIMIT"  # no real trigger yet, pretend it's a limit
+            label = "Entry near current — limit order setup"
+        elif ed["action_type"] == "BUY_LIMIT":
+            state = "BUY_LIMIT"
+            label = ed["label"]
+        elif ed["action_type"] == "SETUP":
+            state = "SETUP_DEEP"
+            label = ed["label"]
+        elif ed["action_type"] == "STALE":
+            state = "STALE"
+            label = ed["label"]
+        elif ed["action_type"] == "BREAKOUT_PENDING":
+            state = "BREAKOUT_PENDING"
+            label = ed["label"]
+        else:
+            state = "WAITING"
+            label = "Bullish bias but no clear entry"
+
+    return {
+        "state": state,
+        "label": label,
+        "days_since_trigger": days_since,
+        "fvg_distance_pct": round(fvg_dist_pct, 2) if fvg_dist_pct is not None else None,
+        "triggered_at_bar": triggered_idx,
+        "confirmed_at_bar": confirmed_idx,
+    }
+
+
 def classify_entry_distance(entry: Optional[float], current_price: float) -> dict:
     """Classify how tradeable the entry is RIGHT NOW.
 
@@ -495,18 +607,26 @@ def compute_composite_signal(chart_data: dict, conn=None) -> dict:
     votes = {k: {"score": scores.get(k, 50), "vote": _vote(scores.get(k, 50)),
                  "weight_in_regime": weights.get(k, 0)} for k in weights}
 
-    # ─── Entry-distance classification (the KDSALTD fix) ───
+    # ─── Lifecycle state classification (CCJ-style "missed entry" fix) ───
+    state_info = classify_stock_state(df_proxy, fvgs, current_price, analysis)
+    # Entry-distance classification kept for backwards compat
     entry_class = classify_entry_distance(analysis.get("entry"), current_price)
 
-    # ─── Signal level: combine composite score with action_type to avoid
-    # ranking aspirational "buy below current" zones as STRONG_BUY when price
-    # hasn't actually retraced yet.
-    if entry_class["action_type"] == "STALE":
-        signal_level = "WATCH"  # cap stale signals to WATCH max
-    elif composite_score >= 80 and entry_class["action_type"] in ("BUY_NOW", "BUY_LIMIT"):
-        signal_level = "STRONG_BUY"
-    elif composite_score >= 65 and entry_class["action_type"] in ("BUY_NOW", "BUY_LIMIT"):
+    # ─── Signal level: combine composite score with lifecycle state ───
+    state = state_info["state"]
+    if state in ("STALE", "AVOID"):
+        signal_level = "AVOID" if state == "AVOID" else "WATCH"
+    elif state == "MISSED_ENTRY":
+        # Already triggered + price moved up — don't flag as fresh BUY
+        signal_level = "WATCH"  # show in watch list as "running, don't chase"
+    elif state == "RUNNING":
+        signal_level = "WATCH"  # tracking only — don't chase
+    elif state == "BUY_NOW" and composite_score >= 65:
+        signal_level = "STRONG_BUY" if composite_score >= 80 else "BUY"
+    elif state == "RECENT_TRIGGER" and composite_score >= 65:
         signal_level = "BUY"
+    elif state == "BUY_LIMIT" and composite_score >= 65:
+        signal_level = "BUY"  # set limit, wait for fill
     elif composite_score >= 50:
         signal_level = "WATCH"
     else:
@@ -532,6 +652,9 @@ def compute_composite_signal(chart_data: dict, conn=None) -> dict:
         "risk_reward": analysis.get("risk_reward"),
         "bias": analysis.get("bias"),
         "entry_class": entry_class,
-        "action_type": entry_class["action_type"],
+        "action_type": state_info["state"],  # use lifecycle state as action_type
+        "state_label": state_info["label"],
+        "days_since_trigger": state_info["days_since_trigger"],
+        "fvg_distance_pct": state_info.get("fvg_distance_pct"),
         "entry_distance_pct": entry_class["distance_pct"],
     }
