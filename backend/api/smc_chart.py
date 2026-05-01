@@ -1518,6 +1518,18 @@ def generate_analysis(structure_events, fvgs, order_blocks, key_levels, current_
                 confidence = "MEDIUM"
             elif confidence == "MEDIUM":
                 confidence = "HIGH"
+        # Order-flow absorption: today's bar shows volume + lower-wick rejection
+        # + close strength = real institutional buyer absorbing supply. Promote.
+        try:
+            from api.order_flow import detect_absorption as _abs
+            abs_today = _abs(df)
+            if abs_today and abs_today.get("absorbed"):
+                if confidence == "LOW":
+                    confidence = "MEDIUM"
+                elif confidence == "MEDIUM":
+                    confidence = "HIGH"
+        except Exception:
+            pass
 
     # === Action ===
     action = "WAIT"
@@ -1747,8 +1759,8 @@ def generate_analysis(structure_events, fvgs, order_blocks, key_levels, current_
         "target2": target2,
         "risk_reward": rr,
         "triggers": triggers,
-        "adx": adx_value,
-        "is_trendy": is_trendy_market,
+        "adx": float(adx_value) if adx_value is not None else None,
+        "is_trendy": bool(is_trendy_market),
         "confluence": confluence_zone,
     }
 
@@ -2163,6 +2175,21 @@ def get_smc_chart(symbol: str, days: int = 180, interval: str = "daily"):
     premium_discount = detect_premium_discount(swings, df, lookback=60)
     bos_zones = detect_bos_zones(swings, structure_events, df)
 
+    # Order Flow stack — Volume Profile, VWAP, Volume Delta, Absorption, OB imbalance
+    try:
+        from api.order_flow import compute_full_order_flow
+        from database import get_connection
+        try:
+            ob_conn = get_connection()
+        except Exception:
+            ob_conn = None
+        order_flow = compute_full_order_flow(df, symbol=symbol.upper(), conn=ob_conn)
+        if ob_conn is not None:
+            try: ob_conn.close()
+            except Exception: pass
+    except Exception:
+        order_flow = None
+
     return {
         "symbol": symbol.upper(),
         "candles": candles,
@@ -2188,5 +2215,6 @@ def get_smc_chart(symbol: str, days: int = 180, interval: str = "daily"):
         "accumulation": accumulation,
         "premium_discount": premium_discount,
         "bos_zones": bos_zones,
+        "order_flow": order_flow,
         "current_price": round(float(c.iloc[-1]), 2),
     }

@@ -64,6 +64,8 @@ interface Toggles {
   sr: boolean;
   premiumDiscount: boolean;
   bosZones: boolean;
+  vwap: boolean;
+  volumeProfile: boolean;
 }
 
 const DEFAULT_TOGGLES: Toggles = {
@@ -88,9 +90,11 @@ const DEFAULT_TOGGLES: Toggles = {
   sr: false,
   premiumDiscount: true,
   bosZones: true,
+  vwap: true,
+  volumeProfile: false,
 };
 
-const TOGGLES_STORAGE_KEY = "smc-chart-toggles-v3";
+const TOGGLES_STORAGE_KEY = "smc-chart-toggles-v4";
 const MAX_BOS = 2;
 const MAX_FVG = 6;
 const CHART_HEIGHT = 600;
@@ -161,6 +165,8 @@ export default function SMCChart({ market = "dse" }: SMCChartProps = {}) {
   const levelsLinesRef = useRef<IPriceLine[]>([]);
   const pdLinesRef = useRef<IPriceLine[]>([]);
   const bosZoneLinesRef = useRef<IPriceLine[]>([]);
+  const vwapSeriesRef = useRef<ISeriesApi<"Line">[]>([]);
+  const volumeProfileLinesRef = useRef<IPriceLine[]>([]);
   const fibLinesRef = useRef<IPriceLine[]>([]);
   const pivotLinesRef = useRef<IPriceLine[]>([]);
   const maSeriesRef = useRef<Record<string, ISeriesApi<"Line">>>({});
@@ -382,6 +388,8 @@ export default function SMCChart({ market = "dse" }: SMCChartProps = {}) {
     pivotLinesRef.current = [];
     pdLinesRef.current = [];
     bosZoneLinesRef.current = [];
+    vwapSeriesRef.current = [];
+    volumeProfileLinesRef.current = [];
     maSeriesRef.current = {};
 
     setChartReady(true);
@@ -823,6 +831,88 @@ export default function SMCChart({ market = "dse" }: SMCChartProps = {}) {
     }
   }, [chartReady, data, toggles.bosZones]);
 
+  // === VWAP + bands ===
+  useEffect(() => {
+    if (!chartReady || !data) return;
+    const chart = chartRef.current;
+    if (!chart) return;
+    vwapSeriesRef.current.forEach((s) => {
+      try { chart.removeSeries(s); } catch {}
+    });
+    vwapSeriesRef.current = [];
+    if (!toggles.vwap || !data.order_flow?.vwap?.series?.length) return;
+    const vwap = data.order_flow.vwap;
+    const lines = [
+      { key: "vwap", color: "rgba(99, 102, 241, 0.95)", width: 2 as const },
+      { key: "upper_1sd", color: "rgba(99, 102, 241, 0.4)", width: 1 as const },
+      { key: "lower_1sd", color: "rgba(99, 102, 241, 0.4)", width: 1 as const },
+      { key: "upper_2sd", color: "rgba(99, 102, 241, 0.25)", width: 1 as const },
+      { key: "lower_2sd", color: "rgba(99, 102, 241, 0.25)", width: 1 as const },
+    ];
+    lines.forEach(({ key, color, width }) => {
+      try {
+        const s = chart.addSeries(LineSeries, {
+          color, lineWidth: width, lineStyle: key === "vwap" ? 0 : 2,
+          priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
+        });
+        s.setData(
+          vwap.series.map((p) => ({
+            time: p.time as Time,
+            value: p[key as "vwap" | "upper_1sd" | "lower_1sd" | "upper_2sd" | "lower_2sd"],
+          })),
+        );
+        vwapSeriesRef.current.push(s);
+      } catch {}
+    });
+  }, [chartReady, data, toggles.vwap]);
+
+  // === Volume Profile (POC, VAH, VAL, HVN, LVN) ===
+  useEffect(() => {
+    if (!chartReady || !data) return;
+    const series = candleSeriesRef.current;
+    if (!series) return;
+    volumeProfileLinesRef.current.forEach((ln) => {
+      try { series.removePriceLine(ln); } catch {}
+    });
+    volumeProfileLinesRef.current = [];
+    if (!toggles.volumeProfile || !data.order_flow?.volume_profile) return;
+    const vp = data.order_flow.volume_profile;
+    const lines = [
+      { price: vp.poc, color: "rgba(245, 158, 11, 0.95)", title: `POC ${vp.poc}`, w: 2 as const },
+      { price: vp.vah, color: "rgba(245, 158, 11, 0.5)", title: "VAH", w: 1 as const },
+      { price: vp.val, color: "rgba(245, 158, 11, 0.5)", title: "VAL", w: 1 as const },
+    ];
+    lines.forEach((ln) => {
+      try {
+        volumeProfileLinesRef.current.push(
+          series.createPriceLine({
+            price: ln.price,
+            color: ln.color,
+            lineWidth: ln.w,
+            lineStyle: 2,
+            axisLabelVisible: true,
+            title: ln.title,
+          }),
+        );
+      } catch {}
+    });
+    // HVN nodes (top volume bins) — thinner lines
+    vp.hvn.forEach((px, i) => {
+      try {
+        volumeProfileLinesRef.current.push(
+          series.createPriceLine({
+            price: px,
+            color: "rgba(168, 85, 247, 0.35)",
+            lineWidth: 1,
+            lineStyle: 3, // dotted
+            axisLabelVisible: false,
+            title: i === 0 ? "HVN" : "",
+          }),
+        );
+      } catch {}
+    });
+  }, [chartReady, data, toggles.volumeProfile]);
+
   // === Fibonacci retracement ===
   useEffect(() => {
     if (!chartReady || !data) return;
@@ -1207,6 +1297,8 @@ export default function SMCChart({ market = "dse" }: SMCChartProps = {}) {
     { key: "bos", label: "BOS/ChoCh", color: "text-yellow-500" },
     { key: "premiumDiscount", label: "Premium/Discount", color: "text-fuchsia-400" },
     { key: "bosZones", label: "BOS Triggers", color: "text-lime-400" },
+    { key: "vwap", label: "VWAP", color: "text-indigo-400" },
+    { key: "volumeProfile", label: "Volume Profile", color: "text-amber-400" },
     { key: "levels", label: "Key Levels", color: "text-amber-400" },
     { key: "sr", label: "S/R Zones", color: "text-teal-400" },
     { key: "fib", label: "Fibonacci", color: "text-purple-500" },
@@ -1495,6 +1587,88 @@ export default function SMCChart({ market = "dse" }: SMCChartProps = {}) {
               </div>
             )}
           </div>
+        </div>
+      )}
+
+      {/* Order Flow status — absorption, OB imbalance, VWAP zone, POC */}
+      {data?.order_flow && (
+        <div className="mb-3 rounded border border-[var(--border)] px-3 py-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
+          <span className="font-semibold uppercase tracking-wide text-indigo-400">Order Flow</span>
+          {data.order_flow.absorption && (
+            <span
+              className={
+                data.order_flow.absorption.absorbed
+                  ? "text-emerald-500 font-medium"
+                  : "text-[var(--text-muted)]"
+              }
+              title="Buyer absorbed sellers — high vol, lower wick, close near high"
+            >
+              {data.order_flow.absorption.absorbed ? "🟢 ABSORPTION" : "no absorption"}
+              <span className="ml-1 opacity-70">
+                strength {Math.round(data.order_flow.absorption.strength * 100)}%
+                {" · "}vol×{data.order_flow.absorption.vol_ratio}
+              </span>
+            </span>
+          )}
+          {data.order_flow.vwap && data && (
+            <span title="Where price sits vs volume-weighted average">
+              VWAP: {cur}{data.order_flow.vwap.value}
+              {data.current_price > data.order_flow.vwap.upper_2sd && (
+                <span className="ml-1 text-orange-500">↑ +2σ extreme</span>
+              )}
+              {data.current_price > data.order_flow.vwap.upper_1sd &&
+                data.current_price <= data.order_flow.vwap.upper_2sd && (
+                <span className="ml-1 text-emerald-500">↑ above +1σ</span>
+              )}
+              {data.current_price >= data.order_flow.vwap.lower_1sd &&
+                data.current_price <= data.order_flow.vwap.upper_1sd && (
+                <span className="ml-1 text-[var(--text-muted)]">at fair value</span>
+              )}
+              {data.current_price < data.order_flow.vwap.lower_1sd &&
+                data.current_price >= data.order_flow.vwap.lower_2sd && (
+                <span className="ml-1 text-amber-500">↓ below −1σ</span>
+              )}
+              {data.current_price < data.order_flow.vwap.lower_2sd && (
+                <span className="ml-1 text-red-500">↓ −2σ extreme</span>
+              )}
+            </span>
+          )}
+          {data.order_flow.volume_profile && (
+            <span title="Point of Control = highest-volume price = institutional fair value">
+              POC: {cur}{data.order_flow.volume_profile.poc}
+              {" · "}VA {cur}{data.order_flow.volume_profile.val}–{data.order_flow.volume_profile.vah}
+            </span>
+          )}
+          {data.order_flow.volume_delta && (
+            <span title="Cumulative buy-vs-sell pressure (5-day window)">
+              Δ5d:{" "}
+              <span
+                className={
+                  data.order_flow.volume_delta.delta_5d > 0
+                    ? "text-emerald-500"
+                    : "text-red-500"
+                }
+              >
+                {data.order_flow.volume_delta.delta_5d > 0 ? "+" : ""}
+                {data.order_flow.volume_delta.delta_5d.toLocaleString()}
+              </span>
+            </span>
+          )}
+          {data.order_flow.orderbook_imbalance && (
+            <span
+              className={
+                data.order_flow.orderbook_imbalance.imbalance > 0.05
+                  ? "text-emerald-500"
+                  : data.order_flow.orderbook_imbalance.imbalance < -0.05
+                  ? "text-red-500"
+                  : "text-[var(--text-muted)]"
+              }
+              title="Live bid/ask depth imbalance from order book"
+            >
+              OB: {data.order_flow.orderbook_imbalance.imbalance_pct > 0 ? "+" : ""}
+              {data.order_flow.orderbook_imbalance.imbalance_pct}% — {data.order_flow.orderbook_imbalance.verdict}
+            </span>
+          )}
         </div>
       )}
 

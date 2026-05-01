@@ -355,10 +355,6 @@ def backtest_symbol(symbol: str, df: pd.DataFrame, warmup: int = 60,
         if t <= in_trade_until:
             continue
 
-        is_green = float(c.iloc[t]) > float(o.iloc[t])
-        if not is_green:
-            continue
-
         # Trend / consolidation gates — FVGs only work in clean uptrends
         swings_t = find_swings(h.iloc[: t + 1], l.iloc[: t + 1], n=3)
         events_t = detect_structure_events(swings_t)
@@ -369,66 +365,94 @@ def backtest_symbol(symbol: str, df: pd.DataFrame, warmup: int = 60,
         if require_trendy and not is_trendy(df, t):
             continue
 
-        bar_low = float(l.iloc[t])
+        # Sourav's rule: a TOUCH is the day's LOW reaching the FVG (not the
+        # close). Confirmation comes from "buyers pull it back" = either:
+        #   (a) same-day rejection: today's low touched FVG AND today closed
+        #       green above the touch (intra-day reversal), OR
+        #   (b) next-day continuation: yesterday's low touched FVG AND today
+        #       closed green (delayed confirmation; today is the entry bar).
+
+        bar_open = float(o.iloc[t])
         bar_close = float(c.iloc[t])
+        bar_low = float(l.iloc[t])
+        prev_low = float(l.iloc[t - 1]) if t > 0 else None
 
-        # State as of bar t (no lookahead)
-        fvgs = detect_fvgs_validated(o, h, l, c, v, end_idx=t)
-        fvgs = fvg_mitigation_state(fvgs, l, end_idx=t)
-        # Only consider FVGs in the last 60 bars
-        recent_fvgs = [f for f in fvgs if f["idx"] >= t - 60]
+        is_green_today = bar_close > bar_open
+        if not is_green_today:
+            continue  # need green confirmation today regardless of variant
 
-        fresh_bull_fvgs = [
-            f for f in recent_fvgs
-            if not f["mitigated"] and f["top"] < bar_close
-        ]
+        # FVG state — for variant (b) we use yesterday's state (no lookahead);
+        # for (a) we use today's state. Touch decision uses the appropriate low.
+        fvgs_today = detect_fvgs_validated(o, h, l, c, v, end_idx=t)
+        fvgs_today = fvg_mitigation_state(fvgs_today, l, end_idx=t)
+        recent_today = [f for f in fvgs_today if f["idx"] >= t - 60]
+        fresh_today = [f for f in recent_today if not f["mitigated"] and f["top"] < bar_close]
+
+        if t > 0:
+            fvgs_prev = detect_fvgs_validated(o, h, l, c, v, end_idx=t - 1)
+            fvgs_prev = fvg_mitigation_state(fvgs_prev, l, end_idx=t - 1)
+            recent_prev = [f for f in fvgs_prev if f["idx"] >= (t - 1) - 60]
+            fresh_prev = [f for f in recent_prev if not f["mitigated"] and f["top"] < bar_close]
+        else:
+            recent_prev, fresh_prev = [], []
+
+        def _touched(low_val, f):
+            # "Touch" = wick into the gap. Boundary tag (low == top) counts.
+            # Reject only if low is meaningfully below the FVG bottom (price
+            # broke through, mitigation not rejection).
+            return low_val <= f["top"] and low_val >= f["bottom"] * 0.97
 
         # ─── Pattern detection (priority: CONFLUENCE > FRESH_FVG > SUPPORT) ───
         pattern = None
         entry_fvg = None
         support_used = None
+        touch_low = None  # used for stop placement
 
-        # CONFLUENCE: fresh FVG zone overlaps a prominent multi-touch support
-        # Today's low taps both — strongest setup
-        supports = detect_support_levels(h, l, end_idx=t, lookback=60, min_touches=2)
-        for f in fresh_bull_fvgs:
-            if not (bar_low <= f["top"] and bar_low >= f["bottom"] * 0.985):
-                continue
-            for s in supports:
-                # Support level falls within or near (±2%) the FVG zone
-                in_fvg = f["bottom"] * 0.98 <= s["price"] <= f["top"] * 1.02
-                if in_fvg:
-                    pattern = "CONFLUENCE"
-                    entry_fvg = f
-                    support_used = s
+        supports_today = detect_support_levels(h, l, end_idx=t, lookback=60, min_touches=2)
+        supports_prev = detect_support_levels(h, l, end_idx=t - 1, lookback=60, min_touches=2) if t > 0 else []
+
+        # Variant (a): same-day touch + green close
+        for f in fresh_today:
+            if _touched(bar_low, f):
+                # Check confluence first
+                for s in supports_today:
+                    if f["bottom"] * 0.98 <= s["price"] <= f["top"] * 1.02:
+                        pattern, entry_fvg, support_used, touch_low = "CONFLUENCE", f, s, bar_low
+                        break
+                if pattern:
                     break
-            if pattern:
+                pattern, entry_fvg, touch_low = "FRESH_FVG", f, bar_low
                 break
 
-        # FRESH_FVG only (no overlapping support)
-        if pattern is None:
-            for f in fresh_bull_fvgs:
-                if bar_low <= f["top"] and bar_low >= f["bottom"] * 0.985:
-                    pattern = "FRESH_FVG"
-                    entry_fvg = f
+        # Variant (b): previous-day touch + today green confirmation
+        if pattern is None and t > 0 and prev_low is not None:
+            for f in fresh_prev:
+                if _touched(prev_low, f):
+                    for s in supports_prev:
+                        if f["bottom"] * 0.98 <= s["price"] <= f["top"] * 1.02:
+                            pattern, entry_fvg, support_used, touch_low = "CONFLUENCE", f, s, prev_low
+                            break
+                    if pattern:
+                        break
+                    pattern, entry_fvg, touch_low = "FRESH_FVG", f, prev_low
                     break
 
-        # SUPPORT only (all FVGs mitigated, but support holds)
-        if pattern is None and len([f for f in recent_fvgs if not f["mitigated"]]) == 0:
-            for s in supports:
+        # SUPPORT-only fallback (all FVGs mitigated, support holds, today green)
+        if pattern is None and len([f for f in recent_today if not f["mitigated"]]) == 0:
+            for s in supports_today:
                 if abs(bar_low - s["price"]) / s["price"] <= 0.02:
-                    pattern = "SUPPORT"
-                    support_used = s
+                    pattern, support_used, touch_low = "SUPPORT", s, bar_low
                     break
 
         if pattern is None:
             continue
 
         entry_price = bar_close
-        if pattern == "FRESH_FVG":
-            stop_loss = max(entry_fvg["bottom"] - TICK, bar_low - TICK)
+        # Stop = below the touch low (wick low) and below FVG bottom for safety
+        if entry_fvg is not None:
+            stop_loss = min(entry_fvg["bottom"], touch_low) - TICK
         else:
-            stop_loss = bar_low - TICK
+            stop_loss = touch_low - TICK
 
         # Sanity: skip if stop is too tight (<1%) or too wide (>8%)
         risk_pct = (entry_price - stop_loss) / entry_price

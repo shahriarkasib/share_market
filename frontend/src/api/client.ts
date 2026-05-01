@@ -431,6 +431,56 @@ export interface SMCChartData {
     bullish_trigger?: { price: number; from_idx: number; label: string };
     bearish_trigger?: { price: number; from_idx: number; label: string };
   } | null;
+  order_flow?: {
+    volume_profile: {
+      poc: number;
+      vah: number;
+      val: number;
+      hvn: number[];
+      lvn: number[];
+      bins: { price: number; volume: number; pct: number }[];
+    } | null;
+    vwap: {
+      value: number;
+      upper_1sd: number;
+      lower_1sd: number;
+      upper_2sd: number;
+      lower_2sd: number;
+      anchor_time: string;
+      series: {
+        time: string;
+        vwap: number;
+        upper_1sd: number;
+        lower_1sd: number;
+        upper_2sd: number;
+        lower_2sd: number;
+      }[];
+    } | null;
+    volume_delta: {
+      last_delta: number;
+      last_cum: number;
+      delta_5d: number;
+      delta_20d: number;
+      series: { time: string; delta: number; cumulative: number; color: string }[];
+    } | null;
+    absorption: {
+      absorbed: boolean;
+      strength: number;
+      vol_ratio: number;
+      lower_wick_ratio: number;
+      upper_wick_ratio: number;
+      close_strength: number;
+      body_pct: number;
+    } | null;
+    orderbook_imbalance: {
+      imbalance: number;
+      imbalance_pct: number;
+      bid_size: number;
+      ask_size: number;
+      verdict: string;
+      snapshots: number;
+    } | null;
+  } | null;
 }
 
 export type SMCCandlePattern = NonNullable<SMCChartData["candle_patterns"]>[number];
