@@ -2471,15 +2471,15 @@ def generate_analysis(structure_events, fvgs, order_blocks, key_levels, current_
         no_buy_lines = []
         if current_price > max_chase:
             no_buy_lines.append(
-                f"❌ **DON'T buy at current price {cur}{current_price}** — too far above the "
-                f"ideal entry zone {cur}{entry}. Chasing here = bad R/R."
+                f"❌ **DON'T buy at current price ৳{current_price}** — too far above the "
+                f"ideal entry zone ৳{entry}. Chasing here = bad R/R."
             )
         no_buy_lines.append(
-            f"❌ **DON'T buy above {cur}{round(max_chase, 2)}** — past this level you're "
-            f"chasing. Wait for pullback to {cur}{entry} or skip this trade."
+            f"❌ **DON'T buy above ৳{round(max_chase, 2)}** — past this level you're "
+            f"chasing. Wait for pullback to ৳{entry} or skip this trade."
         )
         no_buy_lines.append(
-            f"❌ **DON'T buy if daily close below {cur}{round(invalidation, 2)}** — that "
+            f"❌ **DON'T buy if daily close below ৳{round(invalidation, 2)}** — that "
             f"breaks the structural support, signal is invalidated."
         )
         if in_extreme_premium:
@@ -2986,7 +2986,7 @@ def get_smc_chart(symbol: str, days: int = 180, interval: str = "daily"):
                 f"OBV is making higher lows while price made a lower low — institutions are "
                 f"quietly accumulating while retail panics. Leading bullish reversal signal. "
                 f"FOR THIS STOCK: combined with current state, treat as supporting evidence — "
-                f"buy ONLY if price retraces to the FVG/demand zone, don't chase at {cur}{cp_now}."
+                f"buy ONLY if price retraces to the FVG/demand zone, don't chase at ৳{cp_now}."
             )
         elif div == "bearish":
             obv_data["impact"] = (
@@ -3014,12 +3014,12 @@ def get_smc_chart(symbol: str, days: int = 180, interval: str = "daily"):
         if sig == "oversold":
             mfi_data["impact"] = (
                 f"MFI {v} is below 20 = oversold extreme. Volume-weighted RSI says stock is "
-                f"deeply unloved here. FOR THIS STOCK at {cur}{cp_now}: high-edge bounce zone — "
+                f"deeply unloved here. FOR THIS STOCK at ৳{cp_now}: high-edge bounce zone — "
                 f"COMBINED with structural support (FVG/demand zone) this is a classic buy setup."
             )
         elif sig == "overbought":
             mfi_data["impact"] = (
-                f"MFI {v} is above 80 = overbought extreme. FOR THIS STOCK at {cur}{cp_now}: "
+                f"MFI {v} is above 80 = overbought extreme. FOR THIS STOCK at ৳{cp_now}: "
                 f"high probability of pullback within 2-5 days. DON'T buy fresh; if long, take "
                 f"partial profits or trail stop tighter."
             )
@@ -3042,12 +3042,12 @@ def get_smc_chart(symbol: str, days: int = 180, interval: str = "daily"):
                 tail = f" BUT a fresh TK bearish cross warns momentum is rolling — be cautious."
             ich_data["impact"] = (
                 f"Price is above the cloud — full Ichimoku trend system is bullish (5 of 5 components agree).{tail} "
-                f"FOR THIS STOCK at {cur}{cp_now}: trend-following entries valid, cloud below acts as dynamic support."
+                f"FOR THIS STOCK at ৳{cp_now}: trend-following entries valid, cloud below acts as dynamic support."
             )
         elif "below_cloud_bearish" in sig:
             ich_data["impact"] = (
                 f"Price is below the cloud — full Ichimoku trend system is bearish. "
-                f"FOR THIS STOCK at {cur}{cp_now}: don't buy fresh; cloud above is dynamic resistance. "
+                f"FOR THIS STOCK at ৳{cp_now}: don't buy fresh; cloud above is dynamic resistance. "
                 f"Wait for price to reclaim cloud before considering longs."
             )
         else:
@@ -3067,7 +3067,7 @@ def get_smc_chart(symbol: str, days: int = 180, interval: str = "daily"):
                     f"(rejection {int(absorption['lower_wick_ratio']*100)}% of range), "
                     f"closed near high (strength {int(absorption['close_strength']*100)}%). "
                     f"FOR THIS STOCK: 1-3 day continuation rally is statistically likely. "
-                    f"Buy at close ({cur}{cp_now}) with stop below today's low."
+                    f"Buy at close (৳{cp_now}) with stop below today's low."
                 )
             else:
                 strength_pct = int(absorption.get('strength', 0) * 100)
