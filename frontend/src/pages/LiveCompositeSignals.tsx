@@ -93,20 +93,26 @@ export default function LiveCompositeSignals({ market = "dse" }: Props = {}) {
     return true;
   }), [signals, tPlusTwoOnly, minAgreement]);
 
-  // Derive bucket if backend hasn't yet (fallback to entry_distance_pct logic)
+  // Derive bucket if backend hasn't yet — mirror backend logic (1.5% tolerance above zone)
   const deriveBucket = (s: LiveCompositeSignal): "IN_ZONE" | "WATCHING" | "MISSED" | "STALE" => {
     if (s.bucket) return s.bucket;
     const cp = s.current_price;
+    if (cp == null) return "STALE";
     const t1l = s.aggressive_entry_zone_low; const t1h = s.aggressive_entry_zone_high;
     const t2l = s.entry_zone_low; const t2h = s.entry_zone_high;
-    if (cp != null) {
-      if (t1l != null && t1h != null && cp >= t1l && cp <= t1h) return "IN_ZONE";
-      if (t2l != null && t2h != null && cp >= t2l && cp <= t2h) return "IN_ZONE";
-    }
-    if (s.entry_status === "AT_ENTRY" || s.entry_status === "DISCOUNT_TRIGGERED") return "IN_ZONE";
-    if (s.entry_status === "WAIT_PULLBACK") return "WATCHING";
-    if (s.entry_status === "TOO_FAR") return "MISSED";
-    return "STALE";
+    // Strictly inside any zone
+    if ((t1l != null && t1h != null && cp >= t1l && cp <= t1h)
+      || (t2l != null && t2h != null && cp >= t2l && cp <= t2h)) return "IN_ZONE";
+    // Below all zones = discount triggered (still actionable)
+    if ((t1l != null && cp < t1l) || (t2l != null && cp < t2l)) return "IN_ZONE";
+    // Above zones — distance from closest top
+    const highs = [t1h, t2h].filter((x): x is number => x != null);
+    if (!highs.length) return "STALE";
+    const closest = Math.max(...highs);
+    const pctAbove = ((cp - closest) / closest) * 100;
+    if (pctAbove <= 1.5) return "IN_ZONE";
+    if (pctAbove <= 8) return "WATCHING";
+    return "MISSED";
   };
 
   const bucketed = useMemo(() => {

@@ -169,9 +169,11 @@ def derive_bucket(sig: dict) -> str:
     candidates_high = [h for h in (t1h, t2h) if h is not None]
     if not candidates_high:
         return "STALE"
-    closest_high = max(candidates_high)  # the higher (closer to current) zone top
+    closest_high = max(candidates_high)
     pct_above = (cp - closest_high) / closest_high * 100 if closest_high > 0 else 999
-    if pct_above <= 0:
+    # Tolerance: within 1.5% above zone_high still counts as IN_ZONE
+    # (zone is the IDEAL — slight overshoot is fine and still profitable).
+    if pct_above <= 1.5:
         return "IN_ZONE"
     if pct_above <= 8.0:
         return "WATCHING"
@@ -362,6 +364,8 @@ def update_signal_state(active_row: dict, sig: dict, last_high: float, last_low:
                t_plus_2_friendly = %s, t_plus_2_reasons = %s, t_plus_2_bonuses = %s,
                buy_votes = %s, weighted_buy_pct = %s,
                signal_level = %s,
+               entry = %s, stop_loss = %s, target1 = %s, target2 = %s,
+               bias = %s,
                entry_label = %s, entry_status = %s, chase_warning = %s,
                aggressive_entry = %s, aggressive_entry_label = %s,
                aggressive_entry_distance_pct = %s,
@@ -394,6 +398,8 @@ def update_signal_state(active_row: dict, sig: dict, last_high: float, last_low:
             json.dumps(sig.get("t_plus_2_bonuses", [])),
             sig.get("buy_votes"), sig.get("weighted_buy_pct"),
             sig.get("signal_level"),
+            sig.get("entry"), sig.get("stop_loss"), sig.get("target1"), sig.get("target2"),
+            sig.get("bias"),
             sig.get("entry_label"), sig.get("entry_status"), sig.get("chase_warning"),
             sig.get("aggressive_entry"), sig.get("aggressive_entry_label"),
             sig.get("aggressive_entry_distance_pct"),
