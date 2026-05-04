@@ -1910,7 +1910,8 @@ def calc_fib_circles(df, pivot_idx, pivot_price, ref_idx, ref_price):
 
 def generate_analysis(structure_events, fvgs, order_blocks, key_levels, current_price, df,
                       premium_discount=None, bos_zones=None, fib_dealing_range=None,
-                      htf_bias=None, liquidity_sweeps=None):
+                      htf_bias=None, liquidity_sweeps=None,
+                      support_resistance=None):
     """
     Translate structural data into a plain-language trade card:
     bias, confidence, recommended action, entry/stop/targets, tomorrow's triggers.
@@ -2333,11 +2334,33 @@ def generate_analysis(structure_events, fvgs, order_blocks, key_levels, current_
     rr = None
 
     # Entry zone = a RANGE, not a single price. Above zone_high → don't enter (chase).
+    # KEY RULE: zones MUST be within reachable distance (≤8% below current).
+    # A "high-edge" confluence at 14% below is theoretically nice but if price
+    # never gets there, it's not tradeable. Prefer NEAREST tested support.
+    MAX_ZONE_DIST_PCT = 8.0
+
+    def _nearest_tested_support_below(min_touches=2, max_dist_pct=8.0):
+        """Find the closest multi-touch support within max_dist_pct of current."""
+        if not support_resistance:
+            return None
+        candidates = [
+            r for r in support_resistance
+            if r.get("role") == "support"
+            and r.get("touches", 0) >= min_touches
+            and float(r.get("price", 0)) < current_price
+            and (current_price - float(r.get("price", 0))) / current_price * 100 <= max_dist_pct
+        ]
+        if not candidates:
+            return None
+        # Closest to current first
+        return sorted(candidates, key=lambda r: -float(r.get("price", 0)))[0]
+
     entry_zone_low = None
     entry_zone_high = None
     if action.startswith("BUY"):
-        # Pick entry — CONFLUENCE zone wins (highest-edge setup, matches summary)
-        if "CONFLUENCE" in action and confluence_zone is not None:
+        # Try CONFLUENCE first ONLY if it's reachable (within 8%)
+        if "CONFLUENCE" in action and confluence_zone is not None and \
+                (current_price - confluence_zone["top"]) / current_price * 100 <= MAX_ZONE_DIST_PCT:
             entry = round(confluence_zone["top"], 2)
             entry_zone_low = round(confluence_zone["bottom"], 2)
             entry_zone_high = round(confluence_zone["top"], 2)
@@ -2346,12 +2369,37 @@ def generate_analysis(structure_events, fvgs, order_blocks, key_levels, current_
                 f"(FVG retest at {confluence_zone['support_touches']}-touch "
                 f"support — confluence)"
             )
+        # Otherwise prefer NEAREST multi-touch support (≥3 touches = strong)
+        elif (sup := _nearest_tested_support_below(min_touches=3, max_dist_pct=MAX_ZONE_DIST_PCT)):
+            sup_px = float(sup["price"])
+            touches = int(sup["touches"])
+            entry = round(sup_px, 2)
+            entry_zone_low = round(sup_px * 0.99, 2)
+            entry_zone_high = round(sup_px * 1.01, 2)
+            entry_label = f"Limit ৳{entry_zone_low}-{entry_zone_high} ({touches}-touch tested support)"
+        # Fall back to nearest 2-touch support
+        elif (sup := _nearest_tested_support_below(min_touches=2, max_dist_pct=MAX_ZONE_DIST_PCT)):
+            sup_px = float(sup["price"])
+            touches = int(sup["touches"])
+            entry = round(sup_px, 2)
+            entry_zone_low = round(sup_px * 0.99, 2)
+            entry_zone_high = round(sup_px * 1.01, 2)
+            entry_label = f"Limit ৳{entry_zone_low}-{entry_zone_high} ({touches}-touch support)"
+        # Fall back to fresh FVG within reach
         elif "DIP" in action and fresh_bull_fvgs_below:
-            f = fresh_bull_fvgs_below[0]
-            entry = round(f["top"], 2)
-            entry_zone_low = round(f["bottom"], 2)
-            entry_zone_high = round(f["top"], 2)
-            entry_label = f"Limit ৳{entry_zone_low}-{entry_zone_high} (FVG retest)"
+            reachable = [f for f in fresh_bull_fvgs_below
+                          if (current_price - float(f["top"])) / current_price * 100 <= MAX_ZONE_DIST_PCT]
+            if reachable:
+                f = reachable[0]
+                entry = round(f["top"], 2)
+                entry_zone_low = round(f["bottom"], 2)
+                entry_zone_high = round(f["top"], 2)
+                entry_label = f"Limit ৳{entry_zone_low}-{entry_zone_high} (FVG retest)"
+            else:
+                entry = round(current_price, 2)
+                entry_zone_low = round(current_price * 0.99, 2)
+                entry_zone_high = round(current_price * 1.01, 2)
+                entry_label = f"Market ৳{entry} (no reachable FVG)"
         elif "BREAKOUT" in action and current_price >= breakout_trigger:
             entry = round(current_price, 2)
             entry_zone_low = round(current_price * 0.995, 2)
@@ -3488,6 +3536,9 @@ def get_smc_chart(symbol: str, days: int = 180, interval: str = "daily"):
     volatility_imbalances = detect_volatility_imbalance(df, lookback=40)
     htf_bias = detect_htf_bias(df, weeks_lookback=12)
     liquidity_sweeps = detect_liquidity_sweep(df, swings, lookback=20)
+    # Multi-touch support/resistance — used to pick a TESTED, NEARBY Tier-2
+    # entry zone instead of the deepest confluence FVG (which may never fill).
+    sr_for_entry = detect_support_resistance(swings, df, float(c.iloc[-1]))
 
     analysis = generate_analysis(
         structure_events,
@@ -3501,6 +3552,7 @@ def get_smc_chart(symbol: str, days: int = 180, interval: str = "daily"):
         fib_dealing_range=fib_dealing_range,
         htf_bias=htf_bias,
         liquidity_sweeps=liquidity_sweeps,
+        support_resistance=sr_for_entry,
     )
 
     # ─── ACTUAL TECHNICAL TRIGGER DATE ───────────────────────────────────
