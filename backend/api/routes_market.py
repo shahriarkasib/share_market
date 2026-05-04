@@ -614,66 +614,6 @@ async def get_live_signals(
     return out
 
 
-@router.get("/method-signals")
-async def get_method_signals(method: str = "SMC", bucket: str | None = None,
-                              market: str = "dse"):
-    """Per-methodology live signals.
-
-    method: SMC | ORDER_FLOW | VSA | WYCKOFF | HARMONIC | FIBONACCI | ELLIOTT
-            | ICHIMOKU | RSI_MACD | BOLLINGER | CHART_PATTERN | CANDLE_PATTERN
-            | MOVING_AVG | SUPPORT_RESISTANCE | OBV_MFI
-    bucket: optional — IN_ZONE | WATCHING | MISSED | WRONG_TRIGGER | STALE
-    """
-    from database import get_connection
-    conn = get_connection()
-    try:
-        params = [method.upper(), market]
-        sql = ("SELECT * FROM method_signals WHERE method = %s AND market = %s "
-                "AND signal != 'NONE'")
-        if bucket:
-            sql += " AND bucket = %s"
-            params.append(bucket.upper())
-        sql += " ORDER BY (confidence = 'HIGH') DESC, (confidence = 'MEDIUM') DESC, last_seen DESC LIMIT 200"
-        rows = conn.execute(sql, tuple(params)).fetchall()
-    finally:
-        conn.close()
-    out = []
-    for r in rows:
-        d = dict(r)
-        for k, v in d.items():
-            if hasattr(v, "isoformat"):
-                d[k] = v.isoformat()
-            elif hasattr(v, "__float__") and k != "id":
-                try: d[k] = float(v)
-                except Exception: pass
-        out.append(d)
-    return out
-
-
-@router.get("/method-signals/methods")
-async def list_methods():
-    """List available methodologies + counts per bucket."""
-    from database import get_connection
-    conn = get_connection()
-    try:
-        rows = conn.execute(
-            "SELECT method, bucket, COUNT(*) AS n FROM method_signals "
-            "WHERE signal != 'NONE' AND (market = 'dse' OR market IS NULL) "
-            "GROUP BY method, bucket ORDER BY method, bucket"
-        ).fetchall()
-    finally:
-        conn.close()
-    methods: dict[str, dict] = {}
-    for r in rows:
-        d = dict(r)
-        m = d["method"]
-        b = d["bucket"] or "STALE"
-        if m not in methods:
-            methods[m] = {"method": m, "buckets": {}}
-        methods[m]["buckets"][b] = int(d["n"])
-    return list(methods.values())
-
-
 @router.get("/smc-screener")
 async def get_smc_screener(min_confidence: str = "MEDIUM"):
     """

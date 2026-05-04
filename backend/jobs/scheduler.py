@@ -732,19 +732,6 @@ async def run_composite_signal_tracker():
         logger.error(f"Composite signal tracker failed: {e}")
 
 
-async def run_method_signals_tracker():
-    """Update per-methodology signals (SMC, RSI, Wyckoff, etc.) — runs every
-    30 min since the per-symbol compute is heavier."""
-    try:
-        from api.method_signals_tracker import run_cycle_for_market
-        thread = threading.Thread(
-            target=run_cycle_for_market,
-            kwargs={"market": "dse", "limit": 200},
-            daemon=True,
-        )
-        thread.start()
-    except Exception as e:
-        logger.error(f"Method-signals tracker failed: {e}")
 
 
 async def run_signal_performance_update():
@@ -1027,18 +1014,6 @@ def setup_scheduler() -> AsyncIOScheduler:
         replace_existing=True,
     )
 
-    # Per-methodology signals (SMC, RSI, Wyckoff, Harmonic, etc.) — every 30 min
-    scheduler.add_job(
-        run_method_signals_tracker,
-        trigger=CronTrigger(
-            day_of_week="sun,mon,tue,wed,thu",
-            hour="10-16", minute="0,30",
-            timezone="Asia/Dhaka",
-        ),
-        id="method_signals",
-        name="Per-methodology signal tracker (SMC/RSI/Wyckoff/etc.)",
-        replace_existing=True,
-    )
 
     # Signal performance / accuracy tracker — daily after market close
     # Walks every signal and updates day-1/2/3/5/10/15 returns + outcomes
