@@ -2634,9 +2634,29 @@ def generate_analysis(structure_events, fvgs, order_blocks, key_levels, current_
             aggressive_entry = agg_px
             aggressive_entry_zone_low = agg_zlow
             aggressive_entry_zone_high = agg_zhigh
-            aggressive_entry_label = (
-                f"Tier-1 aggressive: ৳{agg_zlow}-{agg_zhigh} ({agg_lbl})"
-            )
+            # Check if Tier-1 coincides with a multi-touch S/R level (polarity flip).
+            # If price was bouncing at this level multiple times historically, it's
+            # a HIGH-CONVICTION support — even if the short-term trend is down.
+            aggressive_entry_is_key_level = False
+            aggressive_entry_touches = 0
+            if support_resistance:
+                for r in support_resistance:
+                    rp = float(r.get("price", 0))
+                    if rp <= 0: continue
+                    if abs(rp - agg_px) / agg_px * 100 <= 1.5:  # within 1.5%
+                        touches = int(r.get("touches", 0))
+                        if touches >= 3 and touches > aggressive_entry_touches:
+                            aggressive_entry_touches = touches
+                            aggressive_entry_is_key_level = True
+            if aggressive_entry_is_key_level:
+                aggressive_entry_label = (
+                    f"Tier-1: ৳{agg_zlow}-{agg_zhigh} "
+                    f"({aggressive_entry_touches}-touch tested support — polarity flip)"
+                )
+            else:
+                aggressive_entry_label = (
+                    f"Tier-1 aggressive: ৳{agg_zlow}-{agg_zhigh} ({agg_lbl})"
+                )
             aggressive_entry_distance_pct = round((current_price - agg_px) / current_price * 100, 1)
 
     # === Entry status — distinguish "buy now" vs "wait for pullback" vs "too far" ===
@@ -3152,6 +3172,8 @@ def generate_analysis(structure_events, fvgs, order_blocks, key_levels, current_
         "aggressive_entry_distance_pct": aggressive_entry_distance_pct,
         "aggressive_entry_zone_low": aggressive_entry_zone_low,
         "aggressive_entry_zone_high": aggressive_entry_zone_high,
+        "aggressive_entry_is_key_level": locals().get("aggressive_entry_is_key_level", False),
+        "aggressive_entry_touches": locals().get("aggressive_entry_touches", 0),
         "stop_loss": stop_loss,
         "target1": target1,
         "target2": target2,

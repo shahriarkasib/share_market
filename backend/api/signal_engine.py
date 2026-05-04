@@ -963,6 +963,8 @@ def compute_composite_signal(chart_data: dict, conn=None) -> dict:
         "aggressive_entry_distance_pct": analysis.get("aggressive_entry_distance_pct"),
         "aggressive_entry_zone_low": analysis.get("aggressive_entry_zone_low"),
         "aggressive_entry_zone_high": analysis.get("aggressive_entry_zone_high"),
+        "aggressive_entry_is_key_level": analysis.get("aggressive_entry_is_key_level", False),
+        "aggressive_entry_touches": analysis.get("aggressive_entry_touches", 0),
         # Real technical trigger dates (when price last entered each zone)
         "tier1_trigger": analysis.get("tier1_trigger"),
         "tier2_trigger": analysis.get("tier2_trigger"),
