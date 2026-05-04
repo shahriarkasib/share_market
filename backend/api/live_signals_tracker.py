@@ -177,6 +177,9 @@ def derive_bucket(sig: dict) -> str:
     except: max_profit = 0
     try: max_drawdown = float(max_drawdown)
     except: max_drawdown = 0
+    # MISSED is "recently missed" — cap at 21 trading days. Older triggers
+    # are STALE history, not actionable lessons.
+    MISSED_MAX_AGE_BARS = 21
     triggered_in_past = bars_ago >= 2
     delivered_profit = max_profit >= 3.0
     zone_broke = max_drawdown < -3.0
@@ -198,15 +201,24 @@ def derive_bucket(sig: dict) -> str:
     is_real_bounce = (trend_dir != "DOWN" and consec_red <= 1) or bounce_confirmed
     # Falling knife: trend DOWN and last bar didn't confirm a bounce
     is_falling_knife = trend_dir == "DOWN" and not bounce_confirmed
-    # POLARITY FLIP / KEY LEVEL: Tier-1 zone IS a multi-touch tested support
-    # (≥3 touches). Old resistance turned support. This is high-conviction
-    # even in a short-term downtrend — major historical buyers there.
+
+    # POLARITY FLIP only overrides falling-knife when price has at least
+    # STOPPED FALLING. A multi-touch support means buyers SHOULD step in,
+    # but until they actually do (close >= prior close, OR not 2+ red bars
+    # in a row), price is still in a pullback — not yet a bounce.
+    last_close_diff = float(st_trend.get("last_close_vs_prior") or 0)
     is_key_level = bool(sig.get("aggressive_entry_is_key_level"))
     if is_key_level:
-        # A polarity-flip support overrides "falling knife" — institutions
-        # are likely defending this level. Treat as a real bounce.
-        is_real_bounce = True
-        is_falling_knife = False
+        # Require at least minimal bounce evidence:
+        #   bounce_confirmed (today's bar green AND > prior close)
+        #   OR last close didn't drop further (≥ prior close)
+        #   AND consec_red <= 2 (not in a strong red streak)
+        has_min_evidence = (bounce_confirmed or last_close_diff >= 0) and consec_red <= 2
+        if has_min_evidence:
+            is_real_bounce = True
+            is_falling_knife = False
+        # If price is STILL actively falling (last close down + key level not yet
+        # defended), keep is_falling_knife True. The level may fail.
 
     in_t1 = t1l is not None and t1h is not None and t1l <= cp <= t1h
     in_t2 = t2l is not None and t2h is not None and t2l <= cp <= t2h
@@ -222,7 +234,7 @@ def derive_bucket(sig: dict) -> str:
 
     candidates_high = [h for h in (t1h, t2h) if h is not None]
     if not candidates_high:
-        if triggered_in_past and delivered_profit:
+        if triggered_in_past and delivered_profit and bars_ago <= MISSED_MAX_AGE_BARS:
             return "MISSED"
         return "STALE"
     closest_high = max(candidates_high)
@@ -238,14 +250,17 @@ def derive_bucket(sig: dict) -> str:
         # but with the user-warning baked into the bucket-tab description
         return "JUST_BOUNCED"
 
-    if triggered_in_past and delivered_profit:
+    if triggered_in_past and delivered_profit and bars_ago <= MISSED_MAX_AGE_BARS:
         return "MISSED"
 
     if pct_above <= 1.5:
         return "IN_ZONE"
     if pct_above <= 8.0:
         return "WATCHING"
-    return "MISSED"
+    # Far above zone — MISSED only if recent (≤21 bars). Otherwise STALE.
+    if bars_ago <= MISSED_MAX_AGE_BARS and delivered_profit:
+        return "MISSED"
+    return "STALE"
 
 
 def _trigger_fields(sig: dict) -> dict:
@@ -493,7 +508,7 @@ def update_signal_state(active_row: dict, sig: dict, last_high: float, last_low:
     conn.close()
 
 
-def run_cycle(min_score: int = 50):
+def run_cycle(min_score: int = 40):
     """One pass — scan all A-cat DSE stocks and update signals.
     min_score=50 captures lifecycle states (MISSED_ENTRY, RUNNING) for
     monitoring, not just fresh BUY. UI filters restrict display."""
@@ -503,7 +518,7 @@ def run_cycle(min_score: int = 50):
     ensure_schema()
     conn = get_connection()
     rows = conn.execute(
-        "SELECT symbol FROM fundamentals WHERE category = 'A' ORDER BY symbol"
+        "SELECT symbol FROM fundamentals WHERE category IN ('A', 'B') ORDER BY symbol"
     ).fetchall()
     symbols = [r[0] for r in rows]
     conn.close()
