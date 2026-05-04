@@ -343,7 +343,7 @@ export interface LiveCompositeSignal {
   tier2_trigger_date?: string | null;
   tier2_trigger_bars_ago?: number | null;
   tier2_max_profit_pct?: number | null;
-  bucket?: "IN_ZONE" | "WATCHING" | "MISSED" | "WRONG_TRIGGER" | "STALE" | null;
+  bucket?: "IN_ZONE" | "JUST_BOUNCED" | "WATCHING" | "MISSED" | "WRONG_TRIGGER" | "STALE" | null;
 }
 
 export async function fetchLiveCompositeSignals(

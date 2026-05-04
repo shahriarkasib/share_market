@@ -138,13 +138,17 @@ def get_active_signal(symbol: str):
 
 def derive_bucket(sig: dict) -> str:
     """Categorise a signal:
-      IN_ZONE       — price is inside (or barely above) an entry zone — buy now.
-      WATCHING      — price 1.5-8% above zone — set a buy limit.
-      MISSED        — we triggered ≥2 days ago AND max profit since ≥3% but we
-                      didn't buy. The opportunity was real and is now past.
-      WRONG_TRIGGER — we triggered ≥2 days ago BUT price went below the zone /
-                      max profit < 0%. Our zone was wrong; learn from it.
-      STALE         — no entry / no recent trigger.
+      IN_ZONE        — price is currently inside (or ≤1.5% above) the entry
+                       zone — buy now / market is at the level.
+      JUST_BOUNCED   — price touched the zone in last 5 bars AND has moved up
+                       since (≥1% gain) AND is currently above zone but ≤6%.
+                       Support CONFIRMED, momentum bullish. Higher conviction
+                       than WATCHING. Buy on next pullback or continuation.
+      WATCHING       — price 1.5-8% above zone, has NOT recently touched it —
+                       waiting for first pullback. Lower conviction.
+      MISSED         — triggered ≥2d ago, delivered ≥3% profit, didn't buy.
+      WRONG_TRIGGER  — triggered ≥2d ago, zone broke (price fell below).
+      STALE          — no entry / no recent trigger.
     """
     cp = sig.get("current_price")
     t1l = sig.get("aggressive_entry_zone_low")
@@ -155,50 +159,60 @@ def derive_bucket(sig: dict) -> str:
     if cp is None:
         return "STALE"
 
-    # Past trigger info — used to classify MISSED vs WRONG_TRIGGER
-    bars_ago = sig.get("primary_trigger_bars_ago") or 0
-    max_profit = sig.get("primary_trigger_max_profit_pct") or 0
-    max_drawdown = sig.get("primary_trigger_max_drawdown_pct") or 0
-    triggered_in_past = bars_ago >= 2  # at least 2 trading days old
+    # Trigger info — try flat fields first (DB row), fall back to nested
+    # `primary_trigger` dict (computed signal from compute_composite_signal).
+    pt = sig.get("primary_trigger") or {}
+    bars_ago = sig.get("primary_trigger_bars_ago")
+    if bars_ago is None: bars_ago = pt.get("bars_since_hit") or 0
+    max_profit = sig.get("primary_trigger_max_profit_pct")
+    if max_profit is None: max_profit = pt.get("max_profit_pct_mid_entry") or 0
+    max_drawdown = sig.get("primary_trigger_max_drawdown_pct")
+    if max_drawdown is None: max_drawdown = pt.get("max_drawdown_pct") or 0
+    # Coerce to float (DB may return Decimal)
+    try: bars_ago = int(bars_ago)
+    except: bars_ago = 0
+    try: max_profit = float(max_profit)
+    except: max_profit = 0
+    try: max_drawdown = float(max_drawdown)
+    except: max_drawdown = 0
+    triggered_in_past = bars_ago >= 2
     delivered_profit = max_profit >= 3.0
-    zone_broke = max_drawdown < -3.0  # price dropped >3% below zone after trigger
+    zone_broke = max_drawdown < -3.0
+    # Recent bounce: zone hit in last 5 bars AND price moved up since
+    recent_touch = 0 <= bars_ago <= 5
+    bounced_up = max_profit >= 1.0
 
-    # Strictly inside a zone (current actionable buy)
     in_t1 = t1l is not None and t1h is not None and t1l <= cp <= t1h
     in_t2 = t2l is not None and t2h is not None and t2l <= cp <= t2h
     if in_t1 or in_t2:
         return "IN_ZONE"
 
-    # Below all zones — could be DISCOUNT (still actionable) OR WRONG_TRIGGER
-    # (zone broke). Use the bars_ago + drawdown heuristic.
     below_t1 = t1l is not None and cp < t1l
     below_t2 = t2l is not None and cp < t2l
     if below_t1 or below_t2:
         if triggered_in_past and zone_broke:
-            return "WRONG_TRIGGER"  # triggered, then price fell BELOW zone
-        return "IN_ZONE"  # below zone but stable = discount
+            return "WRONG_TRIGGER"
+        return "IN_ZONE"
 
-    # Above zones: distance from closest zone_high
     candidates_high = [h for h in (t1h, t2h) if h is not None]
     if not candidates_high:
-        # No zone at all but might still have past trigger
         if triggered_in_past and delivered_profit:
             return "MISSED"
         return "STALE"
     closest_high = max(candidates_high)
     pct_above = (cp - closest_high) / closest_high * 100 if closest_high > 0 else 999
 
-    # Past meaningful trigger always wins — that's a real missed opportunity
-    # even if currently still close to zone.
+    # JUST_BOUNCED: just touched zone, bounced up, currently 0-6% above
+    if recent_touch and bounced_up and pct_above <= 6.0 and not zone_broke:
+        return "JUST_BOUNCED"
+
     if triggered_in_past and delivered_profit:
         return "MISSED"
 
-    # Slight overshoot (≤1.5%) still counts as actionable
     if pct_above <= 1.5:
         return "IN_ZONE"
     if pct_above <= 8.0:
         return "WATCHING"
-    # >8% above with no past meaningful trigger = setup is stale (price ran away)
     return "MISSED"
 
 
