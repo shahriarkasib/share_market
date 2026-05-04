@@ -60,9 +60,43 @@ def _scan_zone_trigger(zone_low: float, zone_high: float, df: pd.DataFrame,
         return None
 
 
+SIGNAL_TYPES = {
+    # PULLBACK = buy at/below the zone (price has retraced to support)
+    "SMC": "PULLBACK",
+    "VSA": "PULLBACK",
+    "WYCKOFF": "PULLBACK",
+    "HARMONIC": "PULLBACK",
+    "FIBONACCI": "PULLBACK",
+    "SUPPORT_RESISTANCE": "PULLBACK",
+    "CANDLE_PATTERN": "PULLBACK",
+    "MOVING_AVG": "PULLBACK",
+    # BREAKOUT = buy ABOVE the level (price has cleared resistance)
+    "CHART_PATTERN": "BREAKOUT",
+    "BOLLINGER": "BREAKOUT",
+    "ICHIMOKU": "BREAKOUT",
+    "ELLIOTT": "BREAKOUT",
+    # MOMENTUM = buy near current (signal is "now is the moment")
+    "ORDER_FLOW": "MOMENTUM",
+    "RSI_MACD": "MOMENTUM",
+    "OBV_MFI": "MOMENTUM",
+}
+
+
 def _classify_bucket(current_price: float, zone_low: float, zone_high: float,
-                      trigger: Optional[dict]) -> str:
-    """Same logic as live_signals_tracker.derive_bucket but for a single zone."""
+                      trigger: Optional[dict],
+                      signal_type: str = "PULLBACK") -> str:
+    """Bucket classification varies by signal type:
+
+    PULLBACK (SMC FVG, Fib, S/R, Wyckoff, VSA, Candle@support, MA pullback):
+        Buy AT or BELOW the zone. Above zone = wait for pullback.
+
+    BREAKOUT (Chart Patterns, Bollinger squeeze, Ichimoku break, Elliott break):
+        Buy ABOVE the level (price has cleared resistance). Below = setup
+        not triggered yet = WATCHING.
+
+    MOMENTUM (Order Flow, RSI/MACD, OBV/MFI):
+        Buy near current price. Zone is current ± buffer. Both sides fine.
+    """
     if current_price is None or zone_low is None or zone_high is None:
         return "STALE"
     bars_ago = (trigger or {}).get("bars_since_trigger", 0)
@@ -71,13 +105,43 @@ def _classify_bucket(current_price: float, zone_low: float, zone_high: float,
     triggered_in_past = bars_ago >= 2
     delivered_profit = max_profit >= 3.0
     zone_broke = max_drawdown < -3.0
-    if zone_low <= current_price <= zone_high:
+
+    inside = zone_low <= current_price <= zone_high
+    pct_above = (current_price - zone_high) / zone_high * 100 if zone_high > 0 else 999
+    pct_below = (zone_low - current_price) / zone_low * 100 if zone_low > 0 else 999
+
+    if signal_type == "BREAKOUT":
+        if inside or (0 < pct_above <= 1.0):
+            return "IN_ZONE"
+        if 1.0 < pct_above <= 2.5:
+            return "IN_ZONE"
+        if 2.5 < pct_above <= 8.0:
+            return "WATCHING"  # already broke out by more than 2.5% — slight chase
+        if pct_above > 8.0:
+            if triggered_in_past and delivered_profit:
+                return "MISSED"
+            return "MISSED"
+        # Below level — setup pending, NOT a buy
+        if pct_below <= 5.0:
+            return "WATCHING"
+        return "STALE"
+
+    if signal_type == "MOMENTUM":
+        if inside or pct_above <= 2.0 or pct_below <= 5.0:
+            return "IN_ZONE"
+        if pct_above <= 8.0:
+            return "WATCHING"
+        if triggered_in_past and delivered_profit:
+            return "MISSED"
+        return "MISSED"
+
+    # PULLBACK (default)
+    if inside:
         return "IN_ZONE"
     if current_price < zone_low:
         if triggered_in_past and zone_broke:
             return "WRONG_TRIGGER"
         return "IN_ZONE"
-    pct_above = (current_price - zone_high) / zone_high * 100 if zone_high > 0 else 999
     if triggered_in_past and delivered_profit:
         return "MISSED"
     if pct_above <= 1.5:
@@ -109,9 +173,15 @@ def _build_signal(method: str, symbol: str, current_price: float,
                    stop_loss: Optional[float], target1: Optional[float],
                    confidence: str, reason: str,
                    df: pd.DataFrame, signal_level: str = "BUY") -> dict:
-    """Common builder — runs trigger scan + bucket classification."""
+    """Common builder — runs trigger scan + bucket classification.
+    Bucket logic depends on the method's signal type (BREAKOUT vs PULLBACK
+    vs MOMENTUM). Without that distinction, breakout setups (chart patterns,
+    Bollinger squeeze, etc.) get falsely flagged as IN_ZONE when price is
+    still BELOW the breakout level — i.e., the setup hasn't triggered yet.
+    """
     trigger = _scan_zone_trigger(zone_low, zone_high, df)
-    bucket = _classify_bucket(current_price, zone_low, zone_high, trigger)
+    sig_type = SIGNAL_TYPES.get(method, "PULLBACK")
+    bucket = _classify_bucket(current_price, zone_low, zone_high, trigger, signal_type=sig_type)
     entry_mid = round((zone_low + zone_high) / 2, 2)
     return {
         "method": method,
@@ -263,7 +333,8 @@ def signal_harmonic(chart: dict, df: pd.DataFrame) -> dict:
 
 
 def signal_fibonacci(chart: dict, df: pd.DataFrame) -> dict:
-    """Fibonacci: price at 61.8% or 78.6% retrace of recent dealing range."""
+    """Fibonacci: price at 61.8% or 78.6% retrace of recent dealing range.
+    Only fire when price is currently near the Golden Pocket (within 5%)."""
     sym = chart.get("symbol") or ""
     cp = chart.get("current_price")
     fib = chart.get("fib_dealing_range") or {}
@@ -271,13 +342,17 @@ def signal_fibonacci(chart: dict, df: pd.DataFrame) -> dict:
         return _empty_signal("FIBONACCI", sym, cp, "no valid dealing range")
     swing_low = float(fib.get("swing_low") or 0)
     swing_high = float(fib.get("swing_high") or 0)
-    if swing_high <= swing_low:
+    if swing_high <= swing_low or cp is None:
         return _empty_signal("FIBONACCI", sym, cp, "invalid swing")
     rng = swing_high - swing_low
     fib_618 = swing_high - rng * 0.618
     fib_786 = swing_high - rng * 0.786
-    # Zone = 61.8 → 78.6 (Golden Pocket)
     zlow = round(min(fib_618, fib_786), 2); zhigh = round(max(fib_618, fib_786), 2)
+    # Quality gate: current must be within 5% of the Golden Pocket
+    mid = (zlow + zhigh) / 2
+    if mid > 0 and abs(cp - mid) / mid > 0.05:
+        return _empty_signal("FIBONACCI", sym, cp,
+                              f"Golden Pocket ৳{zlow}-{zhigh} too far from ৳{cp}")
     reason = f"Golden Pocket ৳{zlow}-{zhigh} (61.8-78.6 of leg ৳{swing_low}-৳{swing_high})"
     stop = round(swing_low * 0.99, 2)
     target = round(swing_high, 2)
@@ -308,26 +383,37 @@ def signal_elliott(chart: dict, df: pd.DataFrame) -> dict:
 
 
 def signal_ichimoku(chart: dict, df: pd.DataFrame) -> dict:
-    """Ichimoku: above cloud + bullish TK cross."""
+    """Ichimoku: above cloud + bullish TK cross — full system bullish.
+    Treated as BREAKOUT: only fire when ALL bullish conditions are aligned
+    AND price recently broke above the cloud (not perpetually above)."""
     sym = chart.get("symbol") or ""
     cp = chart.get("current_price")
     ich = chart.get("ichimoku") or {}
-    if not ich:
+    if not ich or cp is None:
         return _empty_signal("ICHIMOKU", sym, cp, "no Ichimoku data")
     sig = ich.get("signal", "")
     if "above_cloud_bullish" not in sig:
         return _empty_signal("ICHIMOKU", sym, cp, f"signal: {sig or 'none'}")
     kijun = float(ich.get("kijun") or 0)
-    if kijun <= 0:
-        return _empty_signal("ICHIMOKU", sym, cp, "kijun missing")
-    # Entry zone = price pullback to kijun line
-    zlow = round(kijun * 0.99, 2); zhigh = round(kijun * 1.01, 2)
-    reason = "Above cloud bullish — pullback to Kijun"
-    if ich.get("tk_cross") == "bullish":
-        reason += " + TK bullish cross"
+    senkou_a = float(ich.get("senkou_a") or 0)
     senkou_b = float(ich.get("senkou_b") or 0)
-    stop = round(senkou_b * 0.99, 2) if senkou_b else round(kijun * 0.95, 2)
-    target = round(kijun * 1.10, 2)
+    cloud_top = max(senkou_a, senkou_b) if senkou_a and senkou_b else kijun
+    if cloud_top <= 0:
+        return _empty_signal("ICHIMOKU", sym, cp, "cloud values missing")
+    # Quality gate: TK bullish cross required (not just "above cloud forever")
+    if ich.get("tk_cross") != "bullish":
+        return _empty_signal("ICHIMOKU", sym, cp, "no bullish TK cross")
+    # Recently broke above cloud — verify by checking last 30 bars
+    recent_n = min(30, len(df))
+    recent_lows = df["low"].iloc[-recent_n:].astype(float)
+    cloud_break_recent = bool((recent_lows < cloud_top).any())
+    if not cloud_break_recent:
+        return _empty_signal("ICHIMOKU", sym, cp, "above cloud >30 bars (stale)")
+    # BREAKOUT entry: at the cloud_top (re-test of cloud after break)
+    zlow = round(cloud_top * 0.998, 2); zhigh = round(cloud_top * 1.005, 2)
+    reason = f"Above cloud + TK bullish cross — cloud retest @ ৳{cloud_top:.1f}"
+    stop = round(senkou_b * 0.99, 2) if senkou_b else round(cloud_top * 0.95, 2)
+    target = round(cp * 1.10, 2)
     return _build_signal("ICHIMOKU", sym, cp, zlow, zhigh, stop, target, "MEDIUM", reason, df)
 
 
@@ -364,7 +450,8 @@ def signal_rsi_macd(chart: dict, df: pd.DataFrame) -> dict:
 
 
 def signal_bollinger(chart: dict, df: pd.DataFrame) -> dict:
-    """Bollinger: squeeze breakout (close above upper after squeeze)."""
+    """Bollinger: squeeze + breakout above upper band (TIGHT criteria).
+    Only fire on REAL squeeze breakouts, not "price near upper band"."""
     sym = chart.get("symbol") or ""
     cp = chart.get("current_price")
     bb = chart.get("bollinger_bands") or {}
@@ -377,48 +464,63 @@ def signal_bollinger(chart: dict, df: pd.DataFrame) -> dict:
     if not (last_upper and last_lower and last_mid):
         return _empty_signal("BOLLINGER", sym, cp, "BB values missing")
     bandwidth = (last_upper - last_lower) / last_mid * 100 if last_mid else 0
-    # Bandwidth over last 20 bars
     bw_20 = []
     for i in range(max(0, len(upper) - 20), len(upper)):
         u = float(upper[i].get("value") or 0); l_ = float(lower[i].get("value") or 0); m = float(middle[i].get("value") or 0)
         if m: bw_20.append((u - l_) / m * 100)
     avg_bw = sum(bw_20) / len(bw_20) if bw_20 else bandwidth
-    is_squeeze = bandwidth < avg_bw * 0.85
-    if cp >= last_upper * 0.99 and not is_squeeze:
-        reason = f"Closing near upper band ৳{last_upper:.1f} — momentum"
-        zlow = round(last_mid, 2); zhigh = round(cp * 1.005, 2)
-        conf = "MEDIUM"
-    elif is_squeeze and cp > last_mid:
-        reason = "BB squeeze + price above mid — breakout pending"
-        zlow = round(last_mid * 0.99, 2); zhigh = round(last_mid * 1.01, 2)
-        conf = "MEDIUM"
-    elif cp <= last_lower * 1.01:
-        reason = f"At lower band ৳{last_lower:.1f} — mean reversion"
-        zlow = round(last_lower * 0.99, 2); zhigh = round(last_lower * 1.01, 2)
+    # Real squeeze: bandwidth in bottom 30% of recent 20 days
+    is_squeeze = bandwidth < avg_bw * 0.70
+    # BREAKOUT signal: only fire when price ACTUALLY closes above upper band
+    just_broke_out = cp > last_upper * 1.001
+    if just_broke_out and is_squeeze:
+        reason = f"BB squeeze breakout — close ৳{cp:.1f} above upper ৳{last_upper:.1f}"
+        zlow = round(last_upper * 0.998, 2); zhigh = round(last_upper * 1.005, 2)
+        conf = "HIGH"
+    elif just_broke_out:
+        reason = f"Close above upper ৳{last_upper:.1f} — momentum (no squeeze)"
+        zlow = round(last_upper * 0.998, 2); zhigh = round(last_upper * 1.005, 2)
         conf = "MEDIUM"
     else:
-        return _empty_signal("BOLLINGER", sym, cp, "no BB setup")
-    stop = round(last_lower * 0.98, 2)
-    target = round(last_upper, 2) if cp < last_upper else round(cp * 1.05, 2)
+        return _empty_signal("BOLLINGER", sym, cp, "no breakout above upper")
+    stop = round(last_mid * 0.99, 2)
+    target = round(cp + (last_upper - last_lower), 2)  # measured-move target
     return _build_signal("BOLLINGER", sym, cp, zlow, zhigh, stop, target, conf, reason, df)
 
 
 def signal_chart_patterns(chart: dict, df: pd.DataFrame) -> dict:
-    """Chart Patterns: bullish pattern (cup&handle, double bottom, ascending triangle)."""
+    """Chart Patterns: bullish pattern (cup&handle, double bottom, ascending triangle).
+    BREAKOUT signal: buy AFTER price clears the neckline. Below neckline = setup
+    pending. Patterns must be recent (right rim within last 60 bars)."""
     sym = chart.get("symbol") or ""
     cp = chart.get("current_price")
     patterns = chart.get("chart_patterns") or []
     bull = [p for p in patterns if p.get("bias") == "bullish"]
     if not bull:
         return _empty_signal("CHART_PATTERN", sym, cp, "no bullish patterns")
-    p = bull[-1]
+    n = len(df)
+    # Filter: pattern must be RECENT (right rim / detection idx within last 60 bars)
+    def _is_recent(p):
+        for k in ("right_rim_idx", "p2_idx", "handle_end_idx", "idx", "detected_idx"):
+            v = p.get(k)
+            if isinstance(v, (int, float)):
+                return n - int(v) <= 60
+        return True  # if no idx available, accept
+    recent = [p for p in bull if _is_recent(p)]
+    if not recent:
+        return _empty_signal("CHART_PATTERN", sym, cp, "patterns too old (>60 bars)")
+    p = recent[-1]
     neckline = float(p.get("neckline") or 0)
     target = float(p.get("target") or 0)
     if neckline <= 0:
         return _empty_signal("CHART_PATTERN", sym, cp, "neckline missing")
-    # Entry zone = neckline retest
-    zlow = round(neckline * 0.99, 2); zhigh = round(neckline * 1.01, 2)
-    reason = f"{p.get('type', 'Pattern').replace('_', ' ').title()} neckline ৳{neckline}"
+    # Sanity check: neckline must be within ±15% of current — anything wider
+    # is a stale pattern that no longer reflects current price action.
+    if cp and abs(cp - neckline) / neckline > 0.15:
+        return _empty_signal("CHART_PATTERN", sym, cp, f"neckline ৳{neckline} too far from ৳{cp}")
+    # BREAKOUT entry zone = neckline (the trigger level), tight ±0.5%
+    zlow = round(neckline * 0.995, 2); zhigh = round(neckline * 1.005, 2)
+    reason = f"{p.get('type', 'Pattern').replace('_', ' ').title()} — break above neckline ৳{neckline}"
     stop = round(neckline * 0.95, 2)
     return _build_signal("CHART_PATTERN", sym, cp, zlow, zhigh, stop, target, "MEDIUM", reason, df)
 
@@ -475,25 +577,29 @@ def signal_moving_avg(chart: dict, df: pd.DataFrame) -> dict:
 
 
 def signal_support_resistance(chart: dict, df: pd.DataFrame) -> dict:
-    """S/R: bouncing from multi-touch support."""
+    """S/R: bouncing from multi-touch support.
+    PULLBACK signal — actionable when price is at or just above the support.
+    Filters: support must be within 8% of current, ≥3 touches (was 2)."""
     sym = chart.get("symbol") or ""
     cp = chart.get("current_price")
     sr = chart.get("support_resistance") or []
     if cp is None:
         return _empty_signal("SUPPORT_RESISTANCE", sym, cp, "no price")
-    sup = [r for r in sr if r.get("role") == "support" and r.get("touches", 0) >= 2
-           and float(r.get("price", 0)) < cp]
+    # Stricter filter: ≥3 touches, support within 10% below current
+    sup = [r for r in sr if r.get("role") == "support"
+           and r.get("touches", 0) >= 3
+           and float(r.get("price", 0)) < cp
+           and (cp - float(r.get("price", 0))) / cp <= 0.10]
     if not sup:
-        return _empty_signal("SUPPORT_RESISTANCE", sym, cp, "no multi-touch support below")
-    # Pick highest support (closest to current)
+        return _empty_signal("SUPPORT_RESISTANCE", sym, cp, "no nearby ≥3-touch support")
     s = sorted(sup, key=lambda r: -float(r.get("price", 0)))[0]
     s_px = float(s.get("price"))
-    touches = int(s.get("touches", 2))
+    touches = int(s.get("touches", 3))
     zlow = round(s_px * 0.995, 2); zhigh = round(s_px * 1.005, 2)
     reason = f"{touches}-touch support @ ৳{s_px}"
     stop = round(s_px * 0.97, 2)
     target = round(cp * 1.06, 2) if cp > s_px else round(s_px * 1.08, 2)
-    conf = "HIGH" if touches >= 4 else "MEDIUM"
+    conf = "HIGH" if touches >= 5 else "MEDIUM"
     return _build_signal("SUPPORT_RESISTANCE", sym, cp, zlow, zhigh, stop, target, conf, reason, df)
 
 
