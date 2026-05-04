@@ -103,6 +103,46 @@ def _append_live_bar_if_missing(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
     return df
 
 
+def _compute_short_term_trend(df, lookback=5):
+    """5-bar slope + recent-close direction. Returns dict with:
+        slope_pct: (close[-1] - close[-N]) / close[-N] * 100
+        direction: "UP" | "DOWN" | "SIDEWAYS"
+        consecutive_red: number of red bars at the end
+        last_close_vs_prior: close[-1] - close[-2]
+        bounce_confirmed: True if last bar closed green AND > previous close
+    """
+    if df is None or len(df) < lookback + 1:
+        return None
+    try:
+        c = df["close"].astype(float).values
+        o = df["open"].astype(float).values
+        n = len(c)
+        anchor = c[max(0, n - lookback - 1)]
+        slope_pct = (c[-1] - anchor) / anchor * 100 if anchor else 0
+        direction = ("UP" if slope_pct >= 2 else
+                      "DOWN" if slope_pct <= -2 else
+                      "SIDEWAYS")
+        # Count consecutive red bars at the end
+        consec_red = 0
+        for i in range(n - 1, max(0, n - 8), -1):
+            if c[i] < o[i]:
+                consec_red += 1
+            else:
+                break
+        last_close_vs_prior = float(c[-1] - c[-2]) if n >= 2 else 0
+        bounce_confirmed = bool(c[-1] > o[-1] and c[-1] > c[-2]) if n >= 2 else False
+        return {
+            "slope_pct": round(slope_pct, 2),
+            "direction": direction,
+            "consecutive_red": int(consec_red),
+            "last_close_vs_prior": round(last_close_vs_prior, 2),
+            "bounce_confirmed": bounce_confirmed,
+            "lookback_bars": lookback,
+        }
+    except Exception:
+        return None
+
+
 def find_swings(h, l, n=3):
     """Vectorized via numpy arrays — ~10x faster than per-row .iloc."""
     h_arr = h.values if hasattr(h, "values") else h
@@ -3948,6 +3988,7 @@ def get_smc_chart(symbol: str, days: int = 180, interval: str = "daily"):
         "volatility_imbalances": volatility_imbalances,
         "htf_bias": htf_bias,
         "liquidity_sweeps": liquidity_sweeps,
+        "short_term_trend": _compute_short_term_trend(df),
         "order_flow": order_flow,
         "vsa_events": advanced.get("vsa_events", []),
         "obv": advanced.get("obv"),

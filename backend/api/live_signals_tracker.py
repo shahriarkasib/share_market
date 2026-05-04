@@ -96,6 +96,7 @@ def ensure_schema():
         ("volume_verdict", "VARCHAR(15)"),
         ("htf_bias", "JSONB"),
         ("liquidity_sweep", "VARCHAR(30)"),
+        ("short_term_trend", "JSONB"),
         # Entry zone (range) + technical trigger fields
         ("entry_zone_low", "NUMERIC(12,2)"),
         ("entry_zone_high", "NUMERIC(12,2)"),
@@ -111,7 +112,7 @@ def ensure_schema():
         ("tier2_trigger_date", "DATE"),
         ("tier2_trigger_bars_ago", "INTEGER"),
         ("tier2_max_profit_pct", "NUMERIC(8,2)"),
-        ("bucket", "VARCHAR(15)"),  # IN_ZONE | WATCHING | MISSED | STALE
+        ("bucket", "VARCHAR(25)"),  # IN_ZONE | JUST_BOUNCED | PULLBACK_IN_PROGRESS | WATCHING | MISSED | WRONG_TRIGGER | STALE
     ]:
         try:
             conn.execute(f"ALTER TABLE live_signals ADD COLUMN IF NOT EXISTS {col} {sql_type}")
@@ -138,17 +139,18 @@ def get_active_signal(symbol: str):
 
 def derive_bucket(sig: dict) -> str:
     """Categorise a signal:
-      IN_ZONE        — price is currently inside (or ≤1.5% above) the entry
-                       zone — buy now / market is at the level.
-      JUST_BOUNCED   — price touched the zone in last 5 bars AND has moved up
-                       since (≥1% gain) AND is currently above zone but ≤6%.
-                       Support CONFIRMED, momentum bullish. Higher conviction
-                       than WATCHING. Buy on next pullback or continuation.
-      WATCHING       — price 1.5-8% above zone, has NOT recently touched it —
-                       waiting for first pullback. Lower conviction.
-      MISSED         — triggered ≥2d ago, delivered ≥3% profit, didn't buy.
-      WRONG_TRIGGER  — triggered ≥2d ago, zone broke (price fell below).
-      STALE          — no entry / no recent trigger.
+      IN_ZONE              — price inside (or ≤1.5% above) the entry zone.
+      JUST_BOUNCED         — touched zone in last 5 bars + bounced ≥1% +
+                              short-term trend is UP/SIDEWAYS + last bar
+                              confirms (close > prior close OR green bar).
+                              Support CONFIRMED.
+      PULLBACK_IN_PROGRESS — touched zone recently BUT trend is DOWN
+                              and/or last bars still red. Falling knife —
+                              wait for deeper Tier-2 zone or trend flip.
+      WATCHING             — above zone 1.5-8%, no recent touch.
+      MISSED               — triggered ≥2d, delivered ≥3% profit, didn't buy.
+      WRONG_TRIGGER        — triggered ≥2d, zone broke (>3% drawdown).
+      STALE                — no entry / no recent trigger.
     """
     cp = sig.get("current_price")
     t1l = sig.get("aggressive_entry_zone_low")
@@ -181,6 +183,21 @@ def derive_bucket(sig: dict) -> str:
     # Recent bounce: zone hit in last 5 bars AND price moved up since
     recent_touch = 0 <= bars_ago <= 5
     bounced_up = max_profit >= 1.0
+    # Short-term trend gate — don't call it a bounce if price is still falling
+    st_trend = sig.get("short_term_trend") or {}
+    if isinstance(st_trend, str):
+        try:
+            import json as _json
+            st_trend = _json.loads(st_trend) or {}
+        except Exception:
+            st_trend = {}
+    trend_dir = st_trend.get("direction") or "SIDEWAYS"
+    consec_red = int(st_trend.get("consecutive_red") or 0)
+    bounce_confirmed = bool(st_trend.get("bounce_confirmed"))
+    # Real bounce: trend not DOWN AND not multiple consecutive red OR bounce confirmed today
+    is_real_bounce = (trend_dir != "DOWN" and consec_red <= 1) or bounce_confirmed
+    # Falling knife: trend DOWN and last bar didn't confirm a bounce
+    is_falling_knife = trend_dir == "DOWN" and not bounce_confirmed
 
     in_t1 = t1l is not None and t1h is not None and t1l <= cp <= t1h
     in_t2 = t2l is not None and t2h is not None and t2l <= cp <= t2h
@@ -202,8 +219,14 @@ def derive_bucket(sig: dict) -> str:
     closest_high = max(candidates_high)
     pct_above = (cp - closest_high) / closest_high * 100 if closest_high > 0 else 999
 
-    # JUST_BOUNCED: just touched zone, bounced up, currently 0-6% above
+    # JUST_BOUNCED only if the bounce is REAL (trend not falling, close confirms)
     if recent_touch and bounced_up and pct_above <= 6.0 and not zone_broke:
+        if is_real_bounce:
+            return "JUST_BOUNCED"
+        if is_falling_knife:
+            return "PULLBACK_IN_PROGRESS"
+        # Ambiguous (sideways, mixed signals) — treat as JUST_BOUNCED
+        # but with the user-warning baked into the bucket-tab description
         return "JUST_BOUNCED"
 
     if triggered_in_past and delivered_profit:
@@ -291,6 +314,7 @@ def insert_signal(sig: dict):
             volume_verdict = %s,
             htf_bias = %s,
             liquidity_sweep = %s,
+            short_term_trend = %s,
             entry_zone_low = %s, entry_zone_high = %s,
             aggressive_entry_zone_low = %s, aggressive_entry_zone_high = %s,
             primary_trigger_date = %s, primary_trigger_bars_ago = %s,
@@ -315,6 +339,7 @@ def insert_signal(sig: dict):
             sig.get("volume_verdict"),
             json.dumps(sig.get("htf_bias")) if sig.get("htf_bias") else None,
             sig.get("liquidity_sweep"),
+            json.dumps(sig.get("short_term_trend")) if sig.get("short_term_trend") else None,
             tf["entry_zone_low"], tf["entry_zone_high"],
             tf["aggressive_entry_zone_low"], tf["aggressive_entry_zone_high"],
             tf["primary_trigger_date"], tf["primary_trigger_bars_ago"],
@@ -407,7 +432,7 @@ def update_signal_state(active_row: dict, sig: dict, last_high: float, last_low:
                aggressive_entry_distance_pct = %s,
                confidence = %s, hedge_fund_verdict = %s,
                structure_verdict = %s, order_flow_verdict = %s, volume_verdict = %s,
-               htf_bias = %s, liquidity_sweep = %s,
+               htf_bias = %s, liquidity_sweep = %s, short_term_trend = %s,
                entry_zone_low = %s, entry_zone_high = %s,
                aggressive_entry_zone_low = %s, aggressive_entry_zone_high = %s,
                primary_trigger_date = %s, primary_trigger_bars_ago = %s,
@@ -444,6 +469,7 @@ def update_signal_state(active_row: dict, sig: dict, last_high: float, last_low:
             sig.get("volume_verdict"),
             json.dumps(sig.get("htf_bias")) if sig.get("htf_bias") else None,
             sig.get("liquidity_sweep"),
+            json.dumps(sig.get("short_term_trend")) if sig.get("short_term_trend") else None,
             tf["entry_zone_low"], tf["entry_zone_high"],
             tf["aggressive_entry_zone_low"], tf["aggressive_entry_zone_high"],
             tf["primary_trigger_date"], tf["primary_trigger_bars_ago"],

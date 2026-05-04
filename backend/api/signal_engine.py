@@ -979,6 +979,7 @@ def compute_composite_signal(chart_data: dict, conn=None) -> dict:
         "volume_verdict": analysis.get("volume_verdict"),
         "htf_bias": htf_summary,
         "liquidity_sweep": ls_latest,
+        "short_term_trend": chart_data.get("short_term_trend"),
         "entry_class": entry_class,
         "action_type": state_info["state"],  # use lifecycle state as action_type
         "state_label": state_info["label"],

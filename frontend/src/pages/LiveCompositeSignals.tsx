@@ -85,7 +85,7 @@ export default function LiveCompositeSignals({ market = "dse" }: Props = {}) {
     return () => window.clearInterval(id);
   }, [filter, minScore]);
 
-  const [bucket, setBucket] = useState<"IN_ZONE" | "JUST_BOUNCED" | "WATCHING" | "MISSED" | "WRONG_TRIGGER" | "ALL">("IN_ZONE");
+  const [bucket, setBucket] = useState<"IN_ZONE" | "JUST_BOUNCED" | "PULLBACK_IN_PROGRESS" | "WATCHING" | "MISSED" | "WRONG_TRIGGER" | "ALL">("IN_ZONE");
 
   const filteredAll = useMemo(() => signals.filter((s) => {
     if (tPlusTwoOnly && !s.t_plus_2_friendly) return false;
@@ -93,7 +93,7 @@ export default function LiveCompositeSignals({ market = "dse" }: Props = {}) {
     return true;
   }), [signals, tPlusTwoOnly, minAgreement]);
 
-  const deriveBucket = (s: LiveCompositeSignal): "IN_ZONE" | "JUST_BOUNCED" | "WATCHING" | "MISSED" | "WRONG_TRIGGER" | "STALE" => {
+  const deriveBucket = (s: LiveCompositeSignal): "IN_ZONE" | "JUST_BOUNCED" | "PULLBACK_IN_PROGRESS" | "WATCHING" | "MISSED" | "WRONG_TRIGGER" | "STALE" => {
     if (s.bucket) return s.bucket;
     const cp = s.current_price;
     if (cp == null) return "STALE";
@@ -107,6 +107,12 @@ export default function LiveCompositeSignals({ market = "dse" }: Props = {}) {
     const zoneBroke = maxDrawdown < -3.0;
     const recentTouch = barsAgo >= 0 && barsAgo <= 5;
     const bouncedUp = maxProfit >= 1.0;
+    const st = s.short_term_trend;
+    const trendDir = st?.direction ?? "SIDEWAYS";
+    const consecRed = st?.consecutive_red ?? 0;
+    const bounceConfirmed = st?.bounce_confirmed ?? false;
+    const isRealBounce = (trendDir !== "DOWN" && consecRed <= 1) || bounceConfirmed;
+    const isFallingKnife = trendDir === "DOWN" && !bounceConfirmed;
 
     if ((t1l != null && t1h != null && cp >= t1l && cp <= t1h)
       || (t2l != null && t2h != null && cp >= t2l && cp <= t2h)) return "IN_ZONE";
@@ -121,7 +127,11 @@ export default function LiveCompositeSignals({ market = "dse" }: Props = {}) {
     }
     const closest = Math.max(...highs);
     const pctAbove = ((cp - closest) / closest) * 100;
-    if (recentTouch && bouncedUp && pctAbove <= 6.0 && !zoneBroke) return "JUST_BOUNCED";
+    if (recentTouch && bouncedUp && pctAbove <= 6.0 && !zoneBroke) {
+      if (isRealBounce) return "JUST_BOUNCED";
+      if (isFallingKnife) return "PULLBACK_IN_PROGRESS";
+      return "JUST_BOUNCED";
+    }
     if (triggeredInPast && deliveredProfit) return "MISSED";
     if (pctAbove <= 1.5) return "IN_ZONE";
     if (pctAbove <= 8) return "WATCHING";
@@ -130,7 +140,7 @@ export default function LiveCompositeSignals({ market = "dse" }: Props = {}) {
 
   const bucketed = useMemo(() => {
     const byBucket: Record<string, LiveCompositeSignal[]> = {
-      IN_ZONE: [], JUST_BOUNCED: [], WATCHING: [], MISSED: [], WRONG_TRIGGER: [], STALE: [],
+      IN_ZONE: [], JUST_BOUNCED: [], PULLBACK_IN_PROGRESS: [], WATCHING: [], MISSED: [], WRONG_TRIGGER: [], STALE: [],
     };
     filteredAll.forEach((s) => {
       const b = deriveBucket(s);
@@ -267,8 +277,10 @@ export default function LiveCompositeSignals({ market = "dse" }: Props = {}) {
         {([
           { key: "IN_ZONE", label: "🟢 BUY ZONE", desc: "price IN entry range — actionable now",
             cls: "bg-emerald-500/15 border-emerald-500/50 text-emerald-500" },
-          { key: "JUST_BOUNCED", label: "🚀 JUST BOUNCED", desc: "touched zone in last 5 bars + bounced ≥1% — support CONFIRMED, momentum bullish",
+          { key: "JUST_BOUNCED", label: "🚀 JUST BOUNCED", desc: "touched zone in last 5 bars + bounced ≥1% + trend not falling — support CONFIRMED",
             cls: "bg-cyan-500/15 border-cyan-500/50 text-cyan-400" },
+          { key: "PULLBACK_IN_PROGRESS", label: "📉 STILL FALLING", desc: "touched zone but trend down + consecutive red bars — falling knife, wait for deeper Tier-2 zone",
+            cls: "bg-orange-500/15 border-orange-500/50 text-orange-400" },
           { key: "WATCHING", label: "👀 WATCHING", desc: "above zone, no recent touch — wait for first pullback",
             cls: "bg-amber-500/15 border-amber-500/50 text-amber-500" },
           { key: "MISSED", label: "❌ MISSED", desc: "triggered ≥2d ago, delivered ≥3% profit, didn't buy",

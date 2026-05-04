@@ -596,11 +596,12 @@ async def get_live_signals(
                     d[k] = _json.loads(v)
                 except Exception:
                     d[k] = [] if k != "votes" else {}
-        # htf_bias is a single dict
-        v = d.get("htf_bias")
-        if isinstance(v, str):
-            try: d["htf_bias"] = _json.loads(v)
-            except Exception: d["htf_bias"] = None
+        # JSONB single-dict columns
+        for k_dict in ("htf_bias", "short_term_trend"):
+            v = d.get(k_dict)
+            if isinstance(v, str):
+                try: d[k_dict] = _json.loads(v)
+                except Exception: d[k_dict] = None
         # Convert datetimes/numerics for JSON
         for k, v in d.items():
             if hasattr(v, "isoformat"):

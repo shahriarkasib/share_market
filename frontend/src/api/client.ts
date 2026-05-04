@@ -343,7 +343,15 @@ export interface LiveCompositeSignal {
   tier2_trigger_date?: string | null;
   tier2_trigger_bars_ago?: number | null;
   tier2_max_profit_pct?: number | null;
-  bucket?: "IN_ZONE" | "JUST_BOUNCED" | "WATCHING" | "MISSED" | "WRONG_TRIGGER" | "STALE" | null;
+  bucket?: "IN_ZONE" | "JUST_BOUNCED" | "PULLBACK_IN_PROGRESS" | "WATCHING" | "MISSED" | "WRONG_TRIGGER" | "STALE" | null;
+  short_term_trend?: {
+    slope_pct?: number | null;
+    direction?: "UP" | "DOWN" | "SIDEWAYS" | null;
+    consecutive_red?: number | null;
+    last_close_vs_prior?: number | null;
+    bounce_confirmed?: boolean | null;
+    lookback_bars?: number | null;
+  } | null;
 }
 
 export async function fetchLiveCompositeSignals(
