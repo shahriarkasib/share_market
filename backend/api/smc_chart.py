@@ -103,6 +103,24 @@ def _append_live_bar_if_missing(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
     return df
 
 
+def _has_buyable_support_below(support_resistance, current_price, max_dist_pct=12.0,
+                                min_touches=3):
+    """True if there's a multi-touch support within max_dist_pct% below current."""
+    if not support_resistance or current_price is None:
+        return False
+    for r in support_resistance:
+        rp = float(r.get("price", 0) or 0)
+        if rp <= 0 or rp >= current_price:
+            continue
+        if r.get("role") != "support":
+            continue
+        if int(r.get("touches", 0)) < min_touches:
+            continue
+        if (current_price - rp) / current_price * 100 <= max_dist_pct:
+            return True
+    return False
+
+
 def _compute_short_term_trend(df, lookback=5):
     """5-bar slope + recent-close direction. Returns dict with:
         slope_pct: (close[-1] - close[-N]) / close[-N] * 100
@@ -2269,13 +2287,30 @@ def generate_analysis(structure_events, fvgs, order_blocks, key_levels, current_
         action = "AVOID / EXIT"
         action_color = "red"
         summary = "Latest structure is bearish. Don't catch falling knives — wait for reversal signal."
-    elif bias == "BULLISH" and not is_trendy_market:
+    elif bias == "BULLISH" and not is_trendy_market and confluence_zone is None \
+            and not fresh_bull_fvgs_below \
+            and not _has_buyable_support_below(support_resistance, current_price):
+        # Only fully reject if we have NO structure (no confluence, no FVG, no
+        # multi-touch support nearby). Otherwise fall through to BUY logic with
+        # LOW confidence — a stock at multi-touch support is still tradeable
+        # even in a non-trendy market (range trade).
         action = "WAIT — NO TREND"
         action_color = "gray"
         summary = (
             f"Bullish bias but market lacks trend strength "
-            f"(ADX {adx_value if adx_value else 'N/A'}, need ≥25). "
-            "FVG strategies fail in flat/choppy tape. Wait for trend confirmation."
+            f"(ADX {adx_value if adx_value else 'N/A'}, need ≥25) "
+            f"and no clear demand zone. Wait for setup."
+        )
+    elif bias == "BULLISH" and not is_trendy_market and \
+            _has_buyable_support_below(support_resistance, current_price):
+        # Range/swing trade at multi-touch support — confidence stays LOW
+        # but we DO offer entry levels.
+        action = "RANGE BUY — multi-touch support"
+        action_color = "yellow"
+        summary = (
+            f"ADX {adx_value if adx_value else 'N/A'} < 25 (no strong trend) "
+            f"but price is testing a multi-touch support. Range-trade only — "
+            f"size down. Buy at support, sell at next resistance."
         )
     elif bias == "BULLISH" and confluence_zone is not None:
         action = "BUY ON DIP — CONFLUENCE"
@@ -2410,7 +2445,7 @@ def generate_analysis(structure_events, fvgs, order_blocks, key_levels, current_
 
     entry_zone_low = None
     entry_zone_high = None
-    if action.startswith("BUY"):
+    if action.startswith("BUY") or action.startswith("RANGE BUY"):
         # Tier-2 PATIENT (high-edge): pick the strongest available below
         # current — the chart formulas decide the level, no artificial cap.
         # Priority: CONFLUENCE (FVG + support overlap) > strongest support cluster > deepest FVG
@@ -2510,7 +2545,7 @@ def generate_analysis(structure_events, fvgs, order_blocks, key_levels, current_
     aggressive_entry_distance_pct = None
     aggressive_entry_zone_low = None
     aggressive_entry_zone_high = None
-    if entry and current_price and action.startswith(("BUY", "WAIT — ENTRY")):
+    if entry and current_price and action.startswith(("BUY", "RANGE BUY", "WAIT — ENTRY")):
         # Build candidate aggressive entries: (price, label, source, zone_low, zone_high)
         # Strategy: prefer RECENT (5-7 bar) support over deeper historical lows.
         # For trending stocks, the buyable pullback support lives in the last
@@ -2676,12 +2711,19 @@ def generate_analysis(structure_events, fvgs, order_blocks, key_levels, current_
 
     if entry and current_price:
         entry_distance_pct = round((current_price - entry) / current_price * 100, 1)
-        # AT_ENTRY = price is INSIDE one of the zones (broader than ±2% — uses real zone bounds)
+        # Use the CLOSER tier for status — Tier-1 (aggressive) is often closer
+        # to current than Tier-2 (deep). Status should reflect "is there
+        # ANY actionable entry near current?" not just "is the deepest entry near?".
+        closest_dist = entry_distance_pct
+        if aggressive_entry_distance_pct is not None:
+            if abs(aggressive_entry_distance_pct) < abs(entry_distance_pct):
+                closest_dist = aggressive_entry_distance_pct
+        # AT_ENTRY = price is INSIDE one of the zones OR within ±2% of closest tier
         if in_any_zone:
             entry_status = "AT_ENTRY"
-        elif entry_distance_pct <= 2.0 and entry_distance_pct >= -2.0:
+        elif closest_dist <= 2.0 and closest_dist >= -2.0:
             entry_status = "AT_ENTRY"
-        elif entry_distance_pct > 2.0 and entry_distance_pct <= 8.0:
+        elif closest_dist > 2.0 and closest_dist <= 8.0:
             entry_status = "WAIT_PULLBACK"
             if aggressive_entry:
                 chase_warning = (
@@ -2694,7 +2736,7 @@ def generate_analysis(structure_events, fvgs, order_blocks, key_levels, current_
                     f"⚠ Don't chase at ৳{current_price} — entry is ৳{entry} "
                     f"({entry_distance_pct:.1f}% below). Place a buy limit; wait for pullback."
                 )
-        elif entry_distance_pct > 8.0:
+        elif closest_dist > 8.0:
             entry_status = "TOO_FAR"
             if aggressive_entry:
                 chase_warning = (
@@ -2710,19 +2752,19 @@ def generate_analysis(structure_events, fvgs, order_blocks, key_levels, current_
                     f"({entry_distance_pct:.1f}% below). Wait for pullback or skip this setup. "
                     f"Buying here = chasing premium (smart money is selling)."
                 )
-        elif entry_distance_pct < -2.0:
+        elif closest_dist < -2.0:
             # Price already below entry — entry was the planned limit, now it's a discount
             entry_status = "DISCOUNT_TRIGGERED"
 
         # Update action label based on status — SMC clarity rule
-        if entry_status == "TOO_FAR" and action.startswith("BUY"):
+        if entry_status == "TOO_FAR" and (action.startswith("BUY") or action.startswith("RANGE BUY")):
             action = action.replace("BUY ON DIP", "WAIT — ENTRY FAR BELOW").replace("BUY", "WAIT — ENTRY FAR BELOW")
             action_color = "orange"
-        elif entry_status == "WAIT_PULLBACK" and action.startswith("BUY"):
+        elif entry_status == "WAIT_PULLBACK" and (action.startswith("BUY") or action.startswith("RANGE BUY")):
             action_color = "yellow"  # downgrade green → yellow to signal "patience"
-        elif entry_status == "AT_ENTRY" and action.startswith("BUY"):
+        elif entry_status == "AT_ENTRY" and (action.startswith("BUY") or action.startswith("RANGE BUY")):
             action_color = "green"
-        elif entry_status == "DISCOUNT_TRIGGERED" and action.startswith("BUY"):
+        elif entry_status == "DISCOUNT_TRIGGERED" and (action.startswith("BUY") or action.startswith("RANGE BUY")):
             action_color = "green"
 
     # === Tomorrow's triggers ===
