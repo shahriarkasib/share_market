@@ -2333,14 +2333,15 @@ def generate_analysis(structure_events, fvgs, order_blocks, key_levels, current_
     target2 = None
     rr = None
 
-    # Entry zone = a RANGE, not a single price. Above zone_high → don't enter (chase).
-    # KEY RULE: zones MUST be within reachable distance (≤8% below current).
-    # A "high-edge" confluence at 14% below is theoretically nice but if price
-    # never gets there, it's not tradeable. Prefer NEAREST tested support.
-    MAX_ZONE_DIST_PCT = 8.0
-
-    def _nearest_tested_support_below(min_touches=2, max_dist_pct=8.0):
-        """Find the closest multi-touch support within max_dist_pct of current."""
+    # Entry zone = a RANGE, not a single price.
+    # Tier-2 is the HIGH-EDGE setup determined by chart structure (FVG +
+    # multi-touch support confluence, deepest tested support). Whatever the
+    # formulas find — that's the level. The bucket logic (entry_status) tells
+    # the user whether it's at-entry, wait-pullback, or too-far.
+    # The Tier-1 "aggressive_entry" computed later picks a CLOSER support
+    # so the user has a realistic near-term option alongside the deeper one.
+    def _nearest_tested_support_below(min_touches=2):
+        """Find the closest multi-touch support below current — no distance cap."""
         if not support_resistance:
             return None
         candidates = [
@@ -2348,19 +2349,32 @@ def generate_analysis(structure_events, fvgs, order_blocks, key_levels, current_
             if r.get("role") == "support"
             and r.get("touches", 0) >= min_touches
             and float(r.get("price", 0)) < current_price
-            and (current_price - float(r.get("price", 0))) / current_price * 100 <= max_dist_pct
         ]
         if not candidates:
             return None
-        # Closest to current first
         return sorted(candidates, key=lambda r: -float(r.get("price", 0)))[0]
+
+    def _deepest_strong_support_below(min_touches=3):
+        """Find the DEEPEST strong support below current (high-edge level)."""
+        if not support_resistance:
+            return None
+        candidates = [
+            r for r in support_resistance
+            if r.get("role") == "support"
+            and r.get("touches", 0) >= min_touches
+            and float(r.get("price", 0)) < current_price
+        ]
+        if not candidates:
+            return None
+        return sorted(candidates, key=lambda r: float(r.get("price", 0)))[0]
 
     entry_zone_low = None
     entry_zone_high = None
     if action.startswith("BUY"):
-        # Try CONFLUENCE first ONLY if it's reachable (within 8%)
-        if "CONFLUENCE" in action and confluence_zone is not None and \
-                (current_price - confluence_zone["top"]) / current_price * 100 <= MAX_ZONE_DIST_PCT:
+        # Tier-2 PATIENT (high-edge): pick the strongest available below
+        # current — the chart formulas decide the level, no artificial cap.
+        # Priority: CONFLUENCE (FVG + support overlap) > strongest support cluster > deepest FVG
+        if "CONFLUENCE" in action and confluence_zone is not None:
             entry = round(confluence_zone["top"], 2)
             entry_zone_low = round(confluence_zone["bottom"], 2)
             entry_zone_high = round(confluence_zone["top"], 2)
@@ -2369,37 +2383,30 @@ def generate_analysis(structure_events, fvgs, order_blocks, key_levels, current_
                 f"(FVG retest at {confluence_zone['support_touches']}-touch "
                 f"support — confluence)"
             )
-        # Otherwise prefer NEAREST multi-touch support (≥3 touches = strong)
-        elif (sup := _nearest_tested_support_below(min_touches=3, max_dist_pct=MAX_ZONE_DIST_PCT)):
+        elif (sup := _deepest_strong_support_below(min_touches=3)):
             sup_px = float(sup["price"])
             touches = int(sup["touches"])
             entry = round(sup_px, 2)
             entry_zone_low = round(sup_px * 0.99, 2)
             entry_zone_high = round(sup_px * 1.01, 2)
-            entry_label = f"Limit ৳{entry_zone_low}-{entry_zone_high} ({touches}-touch tested support)"
-        # Fall back to nearest 2-touch support
-        elif (sup := _nearest_tested_support_below(min_touches=2, max_dist_pct=MAX_ZONE_DIST_PCT)):
+            entry_label = (
+                f"Limit ৳{entry_zone_low}-{entry_zone_high} "
+                f"(deepest {touches}-touch tested support)"
+            )
+        elif "DIP" in action and fresh_bull_fvgs_below:
+            # Deepest fresh FVG (high-edge)
+            f = sorted(fresh_bull_fvgs_below, key=lambda x: float(x["top"]))[0]
+            entry = round(f["top"], 2)
+            entry_zone_low = round(f["bottom"], 2)
+            entry_zone_high = round(f["top"], 2)
+            entry_label = f"Limit ৳{entry_zone_low}-{entry_zone_high} (FVG retest)"
+        elif (sup := _nearest_tested_support_below(min_touches=2)):
             sup_px = float(sup["price"])
             touches = int(sup["touches"])
             entry = round(sup_px, 2)
             entry_zone_low = round(sup_px * 0.99, 2)
             entry_zone_high = round(sup_px * 1.01, 2)
             entry_label = f"Limit ৳{entry_zone_low}-{entry_zone_high} ({touches}-touch support)"
-        # Fall back to fresh FVG within reach
-        elif "DIP" in action and fresh_bull_fvgs_below:
-            reachable = [f for f in fresh_bull_fvgs_below
-                          if (current_price - float(f["top"])) / current_price * 100 <= MAX_ZONE_DIST_PCT]
-            if reachable:
-                f = reachable[0]
-                entry = round(f["top"], 2)
-                entry_zone_low = round(f["bottom"], 2)
-                entry_zone_high = round(f["top"], 2)
-                entry_label = f"Limit ৳{entry_zone_low}-{entry_zone_high} (FVG retest)"
-            else:
-                entry = round(current_price, 2)
-                entry_zone_low = round(current_price * 0.99, 2)
-                entry_zone_high = round(current_price * 1.01, 2)
-                entry_label = f"Market ৳{entry} (no reachable FVG)"
         elif "BREAKOUT" in action and current_price >= breakout_trigger:
             entry = round(current_price, 2)
             entry_zone_low = round(current_price * 0.995, 2)
