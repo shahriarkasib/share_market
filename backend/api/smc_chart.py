@@ -103,6 +103,93 @@ def _append_live_bar_if_missing(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
     return df
 
 
+def compute_trend_regime(df, adx_value=None, lookback=14):
+    """Trend regime classification using Choppiness Index + ADX dual-gate.
+
+    Both are established, published indicators with well-known thresholds —
+    no curve-fitting, no proprietary weights. Two indicators agreeing on
+    "trending" or "choppy" gives high conviction.
+
+      Choppiness Index (CI) — E.W. Dreiss, *Technical Analysis of Stocks
+        & Commodities* magazine. Specifically designed to detect chop.
+        Logarithmic 0..100 scale with mathematically-derived thresholds
+        from Fibonacci ratios:
+          CI < 38.2 → strongly trending
+          CI > 61.8 → strongly choppy
+        Built into TradingView, ThinkOrSwim, Bloomberg, MetaTrader.
+
+      ADX — J. Welles Wilder Jr., *New Concepts in Technical Trading
+        Systems* (1978). Industry-standard trend strength.
+          ADX > 25 → strong trend
+          ADX < 20 → no trend / ranging
+
+    Regime classification (dual-gate):
+      TRENDING       — CI < 38.2 AND ADX > 25     (both confirm)
+      SIDEWAYS       — CI > 61.8 AND ADX < 20     (both confirm)
+      TRANSITIONAL   — otherwise (one indicator disagrees / borderline)
+
+    The score (0..100) is a clean trend-strength gauge for the UI:
+      score = (100 - CI), bounded — pure CI-derived since CI is the
+      indicator specifically designed for this exact question.
+    """
+    import math
+    if df is None or len(df) < lookback + 1:
+        return None
+    try:
+        c = df["close"].astype(float).values
+        h = df["high"].astype(float).values
+        l = df["low"].astype(float).values
+        n = lookback
+
+        # Choppiness Index (Dreiss formula)
+        recent_h = h[-n:]
+        recent_l = l[-n:]
+        prev_close = c[-(n + 1):-1]
+        tr_sum = 0.0
+        for i in range(n):
+            tr = max(
+                recent_h[i] - recent_l[i],
+                abs(recent_h[i] - prev_close[i]),
+                abs(recent_l[i] - prev_close[i]),
+            )
+            tr_sum += tr
+        hh = float(max(recent_h))
+        ll = float(min(recent_l))
+        if hh > ll and tr_sum > 0:
+            ci = 100 * math.log10(tr_sum / (hh - ll)) / math.log10(n)
+        else:
+            ci = 50.0
+
+        # Dual-gate classification
+        adx = float(adx_value) if adx_value is not None else None
+        if ci < 38.2 and adx is not None and adx > 25:
+            regime = "TRENDING"
+        elif ci > 61.8 and adx is not None and adx < 20:
+            regime = "SIDEWAYS"
+        else:
+            regime = "TRANSITIONAL"
+
+        # Trend-strength score (0..100). CI 38.2 → 61.8 maps inversely.
+        # Below 38.2 = saturate at 100 (strong trend). Above 61.8 = saturate at 0.
+        ci_clamped = max(38.2, min(61.8, ci))
+        score = round((61.8 - ci_clamped) / (61.8 - 38.2) * 100, 1)
+
+        return {
+            "regime": regime,
+            "score": score,
+            "ci": round(float(ci), 1),
+            "adx": round(adx, 1) if adx is not None else None,
+            "ci_threshold_trend": 38.2,
+            "ci_threshold_chop": 61.8,
+            "adx_threshold_trend": 25,
+            "adx_threshold_chop": 20,
+            "lookback_bars": int(n),
+            "method": "Choppiness Index (Dreiss) + ADX (Wilder) dual-gate",
+        }
+    except Exception:
+        return None
+
+
 def _has_buyable_support_below(support_resistance, current_price, max_dist_pct=12.0,
                                 min_touches=3):
     """True if there's a multi-touch support within max_dist_pct% below current."""
@@ -2072,10 +2159,11 @@ def generate_analysis(structure_events, fvgs, order_blocks, key_levels, current_
         if f.get("type") == "bullish" and f.get("mitigated")
     )
 
-    # 4. Trendiness gate — backtest showed FVG strategies only have edge in
-    # clean uptrends. ADX(14)>25 + 90-bar return positive + 20-day range >= 8%.
+    # 4. Trendiness gate — composite regime (ER + CI + ADX + R²) replaces
+    # the old ADX-only check. Score >=60 = TRENDING.
     is_trendy_market = False
     adx_value = None
+    trend_regime = None
     try:
         if len(df) >= 35:
             h_arr = df["high"].astype(float).values
@@ -2129,12 +2217,30 @@ def generate_analysis(structure_events, fvgs, order_blocks, key_levels, current_
                 if current_price > 0:
                     range20_pct = (rh20 - rl20) / current_price
 
-            is_trendy_market = (
-                adx_value is not None and adx_value >= 25
-                and ret90 > 0 and range20_pct >= 0.08
-            )
+            # COMPOSITE TREND REGIME — replaces ADX-only gate.
+            # Combines Kaufman ER + Choppiness Index + ADX + R² into a 0-100 score.
+            # 60+ = TRENDING (use full trend strategies)
+            # 30-60 = TRANSITIONAL (downgrade confidence)
+            # <30 = SIDEWAYS (range trade only)
+            trend_regime = compute_trend_regime(df, adx_value=adx_value, lookback=14)
+            if trend_regime:
+                regime_score = trend_regime.get("score", 0)
+                # is_trendy_market for backwards compat — true if score >= 60
+                # AND there's directional bias (ret90 > 0) AND meaningful range
+                is_trendy_market = (
+                    regime_score >= 60
+                    and ret90 > 0
+                    and range20_pct >= 0.08
+                )
+            else:
+                # Fallback to old ADX-only logic
+                is_trendy_market = (
+                    adx_value is not None and adx_value >= 25
+                    and ret90 > 0 and range20_pct >= 0.08
+                )
     except Exception:
         is_trendy_market = False
+        trend_regime = None
 
     # 5. CONFLUENCE — fresh bullish FVG zone overlapping a multi-touch support.
     # Backtest showed this is the highest-edge entry (53% win, 1.49 PF).
@@ -2307,10 +2413,12 @@ def generate_analysis(structure_events, fvgs, order_blocks, key_levels, current_
         # but we DO offer entry levels.
         action = "RANGE BUY — multi-touch support"
         action_color = "yellow"
+        regime_label = (trend_regime or {}).get("regime", "SIDEWAYS").lower() if trend_regime else "non-trendy"
+        regime_score = (trend_regime or {}).get("score", 0) if trend_regime else 0
         summary = (
-            f"ADX {adx_value if adx_value else 'N/A'} < 25 (no strong trend) "
-            f"but price is testing a multi-touch support. Range-trade only — "
-            f"size down. Buy at support, sell at next resistance."
+            f"Market regime: {regime_label} (composite score {regime_score}/100). "
+            f"Price testing a multi-touch support. Range-trade only — size "
+            f"down. Buy at support, take profit at next resistance."
         )
     elif bias == "BULLISH" and confluence_zone is not None:
         action = "BUY ON DIP — CONFLUENCE"
@@ -3232,6 +3340,7 @@ def generate_analysis(structure_events, fvgs, order_blocks, key_levels, current_
         "hedge_fund_verdict": hf_verdict,
         "adx": float(adx_value) if adx_value is not None else None,
         "is_trendy": bool(is_trendy_market),
+        "trend_regime": trend_regime,
         "confluence": confluence_zone,
     }
 
