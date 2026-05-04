@@ -257,8 +257,9 @@ async def get_stock_smc_chart(symbol: str, period: str = "6m", interval: str = "
     close instead of today's intraday OHLC.
     """
     from api.smc_chart import get_smc_chart
-    period_days = {"1m": 30, "3m": 90, "6m": 180, "1y": 365, "2y": 730}
-    days = period_days.get(period, 180)
+    period_days = {"1m": 30, "3m": 90, "6m": 180, "1y": 365, "2y": 730,
+                    "3y": 1095, "5y": 1825}
+    days = period_days.get(period, 1825)  # default 5y per user request
     if interval not in ("daily", "weekly"):
         interval = "daily"
 

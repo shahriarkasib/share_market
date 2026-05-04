@@ -104,12 +104,20 @@ def _append_live_bar_if_missing(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
 
 
 def find_swings(h, l, n=3):
+    """Vectorized via numpy arrays — ~10x faster than per-row .iloc."""
+    h_arr = h.values if hasattr(h, "values") else h
+    l_arr = l.values if hasattr(l, "values") else l
+    N = len(h_arr)
     swings = []
-    for i in range(n, len(h) - n):
-        if float(h.iloc[i]) == float(h.iloc[max(0, i-n):i+n+1].max()):
-            swings.append({"idx": i, "type": "high", "price": float(h.iloc[i])})
-        if float(l.iloc[i]) == float(l.iloc[max(0, i-n):i+n+1].min()):
-            swings.append({"idx": i, "type": "low", "price": float(l.iloc[i])})
+    for i in range(n, N - n):
+        win_h = h_arr[max(0, i - n):i + n + 1]
+        win_l = l_arr[max(0, i - n):i + n + 1]
+        hi = h_arr[i]
+        lo = l_arr[i]
+        if hi == win_h.max():
+            swings.append({"idx": i, "type": "high", "price": float(hi)})
+        if lo == win_l.min():
+            swings.append({"idx": i, "type": "low", "price": float(lo)})
     return swings
 
 
@@ -860,60 +868,54 @@ def detect_order_blocks(o, h, l, c, structure_events, df):
       - "mitigated": price closed beyond the OB (zone is exhausted)
     """
     obs = []
+    # Numpy arrays for fast scalar access (avoids pandas .iloc overhead)
+    o_arr = o.values if hasattr(o, "values") else o
+    h_arr = h.values if hasattr(h, "values") else h
+    l_arr = l.values if hasattr(l, "values") else l
+    c_arr = c.values if hasattr(c, "values") else c
+
     for ev in structure_events:
         ev_idx = ev["idx"]
         is_bullish_break = ev["type"] in ("bullish_BOS", "bullish_ChoCh")
         is_bearish_break = ev["type"] in ("bearish_BOS", "bearish_ChoCh")
 
-        # Scan backward up to 15 bars for the last opposing candle
         for j in range(ev_idx - 1, max(ev_idx - 16, 0), -1):
-            candle_red = float(c.iloc[j]) < float(o.iloc[j])
-            candle_green = float(c.iloc[j]) > float(o.iloc[j])
+            cj = float(c_arr[j]); oj = float(o_arr[j])
+            candle_red = cj < oj
+            candle_green = cj > oj
 
             if is_bullish_break and candle_red:
-                ob_top = float(h.iloc[j])
-                ob_bottom = float(l.iloc[j])
-                # Validate: must have a meaningful body
+                ob_top = float(h_arr[j])
+                ob_bottom = float(l_arr[j])
                 if ob_top <= ob_bottom or (ob_top - ob_bottom) / ob_bottom < 0.005:
                     break
                 obs.append({
-                    "type": "bullish",
-                    "candle_idx": j,
-                    "break_idx": ev_idx,
-                    "break_type": ev["type"],
-                    "top": ob_top,
-                    "bottom": ob_bottom,
+                    "type": "bullish", "candle_idx": j, "break_idx": ev_idx,
+                    "break_type": ev["type"], "top": ob_top, "bottom": ob_bottom,
                 })
                 break
 
             if is_bearish_break and candle_green:
-                ob_top = float(h.iloc[j])
-                ob_bottom = float(l.iloc[j])
+                ob_top = float(h_arr[j])
+                ob_bottom = float(l_arr[j])
                 if ob_top <= ob_bottom or (ob_top - ob_bottom) / ob_bottom < 0.005:
                     break
                 obs.append({
-                    "type": "bearish",
-                    "candle_idx": j,
-                    "break_idx": ev_idx,
-                    "break_type": ev["type"],
-                    "top": ob_top,
-                    "bottom": ob_bottom,
+                    "type": "bearish", "candle_idx": j, "break_idx": ev_idx,
+                    "break_type": ev["type"], "top": ob_top, "bottom": ob_bottom,
                 })
                 break
 
-    # Tag mitigation status by scanning forward from break_idx
+    # Tag mitigation status by scanning forward from break_idx (numpy)
+    n = len(df)
     for ob in obs:
         ob["status"] = "fresh"
-        for k in range(ob["break_idx"] + 1, len(df)):
-            row_high = float(h.iloc[k])
-            row_low = float(l.iloc[k])
-            row_close = float(c.iloc[k])
+        for k in range(ob["break_idx"] + 1, n):
+            row_high = float(h_arr[k]); row_low = float(l_arr[k]); row_close = float(c_arr[k])
             if ob["type"] == "bullish":
-                # Touched if low pierces the OB top (entered the zone)
                 if row_low <= ob["top"] and row_close > ob["bottom"]:
                     if ob["status"] == "fresh":
                         ob["status"] = "tested"
-                # Mitigated if close is below the bottom (zone broken)
                 if row_close < ob["bottom"]:
                     ob["status"] = "mitigated"
                     break
@@ -1623,10 +1625,14 @@ def detect_harmonic_patterns(swings, df, tolerance=0.05):
     return patterns[-3:]  # cap to most recent 3
 
 
-def detect_double_top(swings, df, tolerance_pct=2.0, min_separation=5):
-    """Two highs within tolerance% of each other, with a valley between."""
+def detect_double_top(swings, df, tolerance_pct=2.0, min_separation=5, max_swings=40):
+    """Two highs within tolerance% of each other, with a valley between.
+    Uses numpy arrays + lookback cap for performance on long histories."""
     patterns = []
-    highs = [s for s in swings if s["type"] == "high"]
+    highs = [s for s in swings if s["type"] == "high"][-max_swings:]
+    if not highs:
+        return patterns
+    low_arr = df["low"].values  # avoid pandas .iloc per call
     for i in range(len(highs)):
         for j in range(i + 1, len(highs)):
             h1, h2 = highs[i], highs[j]
@@ -1636,12 +1642,11 @@ def detect_double_top(swings, df, tolerance_pct=2.0, min_separation=5):
             avg = (h1["price"] + h2["price"]) / 2
             if abs(h1["price"] - h2["price"]) / avg * 100 > tolerance_pct:
                 continue
-            # Valley between them
-            valley_low = float(df["low"].iloc[h1["idx"]:h2["idx"]].min())
+            valley_low = float(low_arr[h1["idx"]:h2["idx"]].min()) if h2["idx"] > h1["idx"] else avg
             if valley_low > min(h1["price"], h2["price"]) * 0.97:
-                continue  # not enough valley depth
+                continue
             neckline = valley_low
-            target = neckline - (avg - neckline)  # measured move
+            target = neckline - (avg - neckline)
             patterns.append({
                 "type": "double_top",
                 "p1_idx": h1["idx"], "p1_price": round(h1["price"], 2),
@@ -1653,10 +1658,13 @@ def detect_double_top(swings, df, tolerance_pct=2.0, min_separation=5):
     return patterns
 
 
-def detect_double_bottom(swings, df, tolerance_pct=2.0, min_separation=5):
+def detect_double_bottom(swings, df, tolerance_pct=2.0, min_separation=5, max_swings=40):
     """Two lows within tolerance% of each other, with a peak between."""
     patterns = []
-    lows = [s for s in swings if s["type"] == "low"]
+    lows = [s for s in swings if s["type"] == "low"][-max_swings:]
+    if not lows:
+        return patterns
+    high_arr = df["high"].values
     for i in range(len(lows)):
         for j in range(i + 1, len(lows)):
             l1, l2 = lows[i], lows[j]
@@ -1666,7 +1674,7 @@ def detect_double_bottom(swings, df, tolerance_pct=2.0, min_separation=5):
             avg = (l1["price"] + l2["price"]) / 2
             if abs(l1["price"] - l2["price"]) / avg * 100 > tolerance_pct:
                 continue
-            peak_high = float(df["high"].iloc[l1["idx"]:l2["idx"]].max())
+            peak_high = float(high_arr[l1["idx"]:l2["idx"]].max()) if l2["idx"] > l1["idx"] else avg
             if peak_high < max(l1["price"], l2["price"]) * 1.03:
                 continue
             neckline = peak_high
@@ -1770,17 +1778,17 @@ def detect_flag(df, swings, lookback=20):
     return patterns
 
 
-def detect_cup_and_handle(df, swings, min_cup_bars=15, max_cup_bars=120):
-    """Cup & handle: U-shape recovery to previous high + small handle pullback."""
+def detect_cup_and_handle(df, swings, min_cup_bars=15, max_cup_bars=120, max_swings=30):
+    """Cup & handle: U-shape recovery to previous high + small handle pullback.
+    Capped to last `max_swings` swings; uses numpy arrays for speed."""
     patterns = []
     if len(df) < min_cup_bars + 5:
         return patterns
 
-    c = df["close"]; h = df["high"]; l = df["low"]
-    highs = [s for s in swings if s["type"] == "high"]
-    lows = [s for s in swings if s["type"] == "low"]
+    low_arr = df["low"].values
+    n = len(df)
+    highs = [s for s in swings if s["type"] == "high"][-max_swings:]
 
-    # Look for: high → low (cup bottom) → high near first → small dip (handle)
     for i in range(len(highs) - 1):
         for j in range(i + 1, len(highs)):
             left_rim = highs[i]
@@ -1788,19 +1796,21 @@ def detect_cup_and_handle(df, swings, min_cup_bars=15, max_cup_bars=120):
             cup_bars = right_rim["idx"] - left_rim["idx"]
             if cup_bars < min_cup_bars or cup_bars > max_cup_bars:
                 continue
-            # Rims should be similar height
             avg_rim = (left_rim["price"] + right_rim["price"]) / 2
             if abs(left_rim["price"] - right_rim["price"]) / avg_rim > 0.05:
                 continue
-            # Cup bottom — find lowest low between rims
-            cup_low_idx = int(l.iloc[left_rim["idx"]:right_rim["idx"]].idxmin())
-            cup_bottom = float(l.iloc[cup_low_idx])
-            cup_depth = (avg_rim - cup_bottom) / avg_rim
-            if cup_depth < 0.10 or cup_depth > 0.50:  # 10-50% depth
+            seg = low_arr[left_rim["idx"]:right_rim["idx"]]
+            if len(seg) == 0:
                 continue
-            # Handle: small pullback after right rim, max 20% of cup depth
-            handle_end_idx = min(right_rim["idx"] + 15, len(df) - 1)
-            handle_low = float(l.iloc[right_rim["idx"]:handle_end_idx + 1].min())
+            cup_low_local = int(seg.argmin())
+            cup_low_idx = left_rim["idx"] + cup_low_local
+            cup_bottom = float(seg.min())
+            cup_depth = (avg_rim - cup_bottom) / avg_rim
+            if cup_depth < 0.10 or cup_depth > 0.50:
+                continue
+            handle_end_idx = min(right_rim["idx"] + 15, n - 1)
+            handle_seg = low_arr[right_rim["idx"]:handle_end_idx + 1]
+            handle_low = float(handle_seg.min()) if len(handle_seg) else avg_rim
             handle_pullback = (avg_rim - handle_low) / avg_rim
             if handle_pullback < 0.02 or handle_pullback > cup_depth * 0.5:
                 continue
@@ -1815,7 +1825,6 @@ def detect_cup_and_handle(df, swings, min_cup_bars=15, max_cup_bars=120):
                 "target": round(target, 2),
                 "bias": "bullish",
             })
-    # Return only the most recent
     return patterns[-2:] if patterns else []
 
 
@@ -2323,25 +2332,40 @@ def generate_analysis(structure_events, fvgs, order_blocks, key_levels, current_
     target2 = None
     rr = None
 
+    # Entry zone = a RANGE, not a single price. Above zone_high → don't enter (chase).
+    entry_zone_low = None
+    entry_zone_high = None
     if action.startswith("BUY"):
         # Pick entry — CONFLUENCE zone wins (highest-edge setup, matches summary)
         if "CONFLUENCE" in action and confluence_zone is not None:
             entry = round(confluence_zone["top"], 2)
+            entry_zone_low = round(confluence_zone["bottom"], 2)
+            entry_zone_high = round(confluence_zone["top"], 2)
             entry_label = (
-                f"Limit ৳{entry} (FVG retest at {confluence_zone['support_touches']}-touch "
+                f"Limit ৳{entry_zone_low}-{entry_zone_high} "
+                f"(FVG retest at {confluence_zone['support_touches']}-touch "
                 f"support — confluence)"
             )
         elif "DIP" in action and fresh_bull_fvgs_below:
-            entry = round(fresh_bull_fvgs_below[0]["top"], 2)
-            entry_label = f"Limit ৳{entry} (FVG retest)"
+            f = fresh_bull_fvgs_below[0]
+            entry = round(f["top"], 2)
+            entry_zone_low = round(f["bottom"], 2)
+            entry_zone_high = round(f["top"], 2)
+            entry_label = f"Limit ৳{entry_zone_low}-{entry_zone_high} (FVG retest)"
         elif "BREAKOUT" in action and current_price >= breakout_trigger:
             entry = round(current_price, 2)
+            entry_zone_low = round(current_price * 0.995, 2)
+            entry_zone_high = round(current_price * 1.005, 2)
             entry_label = f"Market ৳{entry} (chase ok, in breakout)"
         elif "ABOVE TRIGGER" in action:
             entry = round(breakout_trigger, 2)
+            entry_zone_low = round(breakout_trigger * 0.998, 2)
+            entry_zone_high = round(breakout_trigger * 1.005, 2)
             entry_label = f"Stop-buy at ৳{entry} (only fires above trigger)"
         else:
             entry = round(current_price, 2)
+            entry_zone_low = round(current_price * 0.99, 2)
+            entry_zone_high = round(current_price * 1.01, 2)
             entry_label = f"Market ৳{entry}"
 
         # Stop loss: pick CLOSEST structural support — keep stops tight (≤5%).
@@ -2389,16 +2413,21 @@ def generate_analysis(structure_events, fvgs, order_blocks, key_levels, current_
     aggressive_entry = None
     aggressive_entry_label = None
     aggressive_entry_distance_pct = None
+    aggressive_entry_zone_low = None
+    aggressive_entry_zone_high = None
     if entry and current_price and action.startswith(("BUY", "WAIT — ENTRY")):
-        # Build candidate aggressive entries
-        candidates = []  # list of (price, label, source)
+        # Build candidate aggressive entries: (price, label, source, zone_low, zone_high)
+        candidates = []
 
         # 1. Recent swing low (last 12 bars) — clearest support
         try:
             n = len(df)
             recent_low = float(df["low"].iloc[max(0, n-12):n].min())
             if recent_low and recent_low < current_price:
-                candidates.append((round(recent_low, 2), "recent swing low", "swing_low_12"))
+                # Zone = swing low ± 0.7% (tight, since this is a tested support)
+                zlow = round(recent_low * 0.993, 2)
+                zhigh = round(recent_low * 1.007, 2)
+                candidates.append((round(recent_low, 2), "recent swing low", "swing_low_12", zlow, zhigh))
         except Exception:
             pass
 
@@ -2406,14 +2435,22 @@ def generate_analysis(structure_events, fvgs, order_blocks, key_levels, current_
         if premium_discount and premium_discount.get("equilibrium"):
             eq = float(premium_discount["equilibrium"])
             if eq and eq < current_price:
-                candidates.append((round(eq, 2), "range equilibrium (50%)", "equilibrium"))
+                # Zone = equilibrium ± 1.5% (broader, since EQ is conceptual)
+                zlow = round(eq * 0.985, 2)
+                zhigh = round(eq * 1.015, 2)
+                candidates.append((round(eq, 2), "range equilibrium (50%)", "equilibrium", zlow, zhigh))
 
         # 3. Shallow fresh bull FVG (one above the deep confluence, if any)
         if fresh_bull_fvgs_below:
             for f in fresh_bull_fvgs_below:
                 ftop = float(f.get("top", 0))
+                fbot = float(f.get("bottom", 0))
                 if ftop and ftop < current_price and ftop != entry:
-                    candidates.append((round(ftop, 2), "shallow FVG retest", "shallow_fvg"))
+                    # Zone = the FVG itself (bottom to top)
+                    candidates.append((
+                        round(ftop, 2), "shallow FVG retest", "shallow_fvg",
+                        round(fbot, 2), round(ftop, 2),
+                    ))
                     break
 
         # 4. 38.2% Fib retracement of the most recent impulse leg
@@ -2424,31 +2461,41 @@ def generate_analysis(structure_events, fvgs, order_blocks, key_levels, current_
             if leg_high > leg_low > 0:
                 fib_382 = leg_high - (leg_high - leg_low) * 0.382
                 fib_500 = leg_high - (leg_high - leg_low) * 0.500
+                fib_618 = leg_high - (leg_high - leg_low) * 0.618
                 if fib_382 < current_price:
-                    candidates.append((round(fib_382, 2), "38.2% Fib of recent leg", "fib_382"))
+                    # Zone = 38.2 → 50% retracement (light pullback band)
+                    candidates.append((
+                        round(fib_382, 2), "38.2% Fib of recent leg", "fib_382",
+                        round(fib_500, 2), round(fib_382, 2),
+                    ))
                 if fib_500 < current_price:
-                    candidates.append((round(fib_500, 2), "50% Fib (golden mid)", "fib_500"))
+                    # Golden Pocket = 50 → 61.8 (mid Fib zone)
+                    candidates.append((
+                        round(fib_500, 2), "50% Fib (golden mid)", "fib_500",
+                        round(fib_618, 2), round(fib_500, 2),
+                    ))
         except Exception:
             pass
 
         # Filter: must be within 8% of current AND above the deep entry
-        # (we want a level CLOSER to current than the patient entry)
         valid = [
-            (px, lbl, src) for (px, lbl, src) in candidates
-            if px > entry  # closer to current than deep entry
-            and (current_price - px) / current_price * 100 <= 8.0  # within 8%
-            and px < current_price * 0.99  # at least 1% below current
+            c for c in candidates
+            if c[0] > entry  # closer to current than deep entry
+            and (current_price - c[0]) / current_price * 100 <= 8.0  # within 8%
+            and c[0] < current_price * 0.99  # at least 1% below current
         ]
 
         if valid:
-            # Pick the one with the BEST edge — prefer recent swing low, then equilibrium,
-            # then shallow FVG, then Fib. Among equal sources, pick deepest (best R/R).
             priority = {"swing_low_12": 1, "equilibrium": 2, "shallow_fvg": 3,
                         "fib_500": 4, "fib_382": 5}
             valid.sort(key=lambda x: (priority.get(x[2], 99), -x[0]))
-            agg_px, agg_lbl, _ = valid[0]
+            agg_px, agg_lbl, _src, agg_zlow, agg_zhigh = valid[0]
             aggressive_entry = agg_px
-            aggressive_entry_label = f"Tier-1 aggressive: ৳{agg_px} ({agg_lbl})"
+            aggressive_entry_zone_low = agg_zlow
+            aggressive_entry_zone_high = agg_zhigh
+            aggressive_entry_label = (
+                f"Tier-1 aggressive: ৳{agg_zlow}-{agg_zhigh} ({agg_lbl})"
+            )
             aggressive_entry_distance_pct = round((current_price - agg_px) / current_price * 100, 1)
 
     # === Entry status — distinguish "buy now" vs "wait for pullback" vs "too far" ===
@@ -2457,9 +2504,21 @@ def generate_analysis(structure_events, fvgs, order_blocks, key_levels, current_
     entry_status = None
     entry_distance_pct = None
     chase_warning = None
+    # "In zone" = price is currently INSIDE either the Tier-1 or Tier-2 zone.
+    # The user defines this as: above zone_high → don't enter (chase territory).
+    in_any_zone = False
+    if entry_zone_low and entry_zone_high and entry_zone_low <= current_price <= entry_zone_high:
+        in_any_zone = True
+    if (aggressive_entry_zone_low and aggressive_entry_zone_high and
+        aggressive_entry_zone_low <= current_price <= aggressive_entry_zone_high):
+        in_any_zone = True
+
     if entry and current_price:
         entry_distance_pct = round((current_price - entry) / current_price * 100, 1)
-        if entry_distance_pct <= 2.0 and entry_distance_pct >= -2.0:
+        # AT_ENTRY = price is INSIDE one of the zones (broader than ±2% — uses real zone bounds)
+        if in_any_zone:
+            entry_status = "AT_ENTRY"
+        elif entry_distance_pct <= 2.0 and entry_distance_pct >= -2.0:
             entry_status = "AT_ENTRY"
         elif entry_distance_pct > 2.0 and entry_distance_pct <= 8.0:
             entry_status = "WAIT_PULLBACK"
@@ -2942,12 +3001,16 @@ def generate_analysis(structure_events, fvgs, order_blocks, key_levels, current_
         "reasons": reasons,
         "entry": entry,
         "entry_label": entry_label,
+        "entry_zone_low": entry_zone_low,
+        "entry_zone_high": entry_zone_high,
         "entry_status": entry_status,
         "entry_distance_pct": entry_distance_pct,
         "chase_warning": chase_warning,
         "aggressive_entry": aggressive_entry,
         "aggressive_entry_label": aggressive_entry_label,
         "aggressive_entry_distance_pct": aggressive_entry_distance_pct,
+        "aggressive_entry_zone_low": aggressive_entry_zone_low,
+        "aggressive_entry_zone_high": aggressive_entry_zone_high,
         "stop_loss": stop_loss,
         "target1": target1,
         "target2": target2,
@@ -3357,11 +3420,15 @@ def get_smc_chart(symbol: str, days: int = 180, interval: str = "daily"):
     except Exception:
         pass
 
-    # Add MA values aligned to candle times
+    # Add MA values aligned to candle times — vectorized via numpy
     ma_lines = {}
+    date_strs = [
+        d.strftime("%Y-%m-%d") if hasattr(d, "strftime") else str(d)
+        for d in df["date"].values
+    ]
     for key, vals in mas.items():
         ma_lines[key] = [
-            {"time": df.iloc[i]["date"].strftime("%Y-%m-%d"), "value": vals[i]}
+            {"time": date_strs[i], "value": vals[i]}
             for i in range(len(vals))
             if vals[i] is not None
         ]
@@ -3389,6 +3456,70 @@ def get_smc_chart(symbol: str, days: int = 180, interval: str = "daily"):
         htf_bias=htf_bias,
         liquidity_sweeps=liquidity_sweeps,
     )
+
+    # ─── ACTUAL TECHNICAL TRIGGER DATE ───────────────────────────────────
+    # Walk back through candle history to find when price LAST entered each
+    # entry zone (low ≤ zone_high). This is the REAL trigger date — not when
+    # our scheduler first ran. Plus compute would-be max profit since trigger.
+    def _scan_zone_trigger(zone_low, zone_high, df_local, lookback=120):
+        """Return dict with last_hit_date, days_since_hit, max_high_since_hit,
+        max_profit_pct_if_bought_at_zone_high, max_drawdown_pct."""
+        if zone_low is None or zone_high is None or df_local is None or len(df_local) == 0:
+            return None
+        try:
+            n = len(df_local)
+            start = max(0, n - lookback)
+            hit_idx = None
+            # Walk forward from `start` to find FIRST hit, then keep updating to LATEST hit.
+            # Actually we want the MOST RECENT hit (latest), so walk backward from end.
+            for i in range(n - 1, start - 1, -1):
+                lo = float(df_local["low"].iloc[i])
+                if lo <= zone_high:
+                    hit_idx = i
+                    break
+            if hit_idx is None:
+                return None
+            hit_date = df_local["date"].iloc[hit_idx]
+            hit_str = hit_date.strftime("%Y-%m-%d") if hasattr(hit_date, "strftime") else str(hit_date)
+            today_idx = n - 1
+            bars_since = today_idx - hit_idx
+            # Max high since hit (would-be profit)
+            slice_after = df_local.iloc[hit_idx:n]
+            max_high = float(slice_after["high"].max()) if len(slice_after) else float(df_local["close"].iloc[-1])
+            min_low = float(slice_after["low"].min()) if len(slice_after) else float(df_local["close"].iloc[-1])
+            # If bought at zone_high (worst entry case), what's max profit?
+            mid = (zone_low + zone_high) / 2
+            max_profit_pct = round((max_high - zone_high) / zone_high * 100, 1) if zone_high > 0 else 0
+            best_profit_pct = round((max_high - mid) / mid * 100, 1) if mid > 0 else 0
+            max_drawdown_pct = round((min_low - zone_high) / zone_high * 100, 1) if zone_high > 0 else 0
+            return {
+                "last_hit_date": hit_str,
+                "bars_since_hit": int(bars_since),
+                "max_high_since_hit": round(max_high, 2),
+                "min_low_since_hit": round(min_low, 2),
+                "max_profit_pct_worst_entry": max_profit_pct,  # bought at zone_high
+                "max_profit_pct_mid_entry": best_profit_pct,   # bought at zone midpoint
+                "max_drawdown_pct": max_drawdown_pct,
+            }
+        except Exception:
+            return None
+
+    if isinstance(analysis, dict):
+        t1_zlow = analysis.get("aggressive_entry_zone_low")
+        t1_zhigh = analysis.get("aggressive_entry_zone_high")
+        t2_zlow = analysis.get("entry_zone_low")
+        t2_zhigh = analysis.get("entry_zone_high")
+        analysis["tier1_trigger"] = _scan_zone_trigger(t1_zlow, t1_zhigh, df)
+        analysis["tier2_trigger"] = _scan_zone_trigger(t2_zlow, t2_zhigh, df)
+        # Pick the most recent hit between Tier-1 and Tier-2 as the "primary trigger"
+        t1 = analysis.get("tier1_trigger")
+        t2 = analysis.get("tier2_trigger")
+        primary = None
+        if t1 and t2:
+            primary = t1 if t1["bars_since_hit"] <= t2["bars_since_hit"] else t2
+        else:
+            primary = t1 or t2
+        analysis["primary_trigger"] = primary
 
     # Advanced indicators — VSA, OBV, MFI, Ichimoku, Wyckoff Spring/SOS
     try:

@@ -696,7 +696,7 @@ export interface FetchSMCChartOptions {
 
 export async function fetchSMCChart(
   symbol: string,
-  period: "1m" | "3m" | "6m" | "1y" | "2y" = "6m",
+  period: "1m" | "3m" | "6m" | "1y" | "2y" | "3y" | "5y" = "5y",
   timeframe: "daily" | "weekly" = "daily",
   options: FetchSMCChartOptions = {},
 ): Promise<SMCChartData> {

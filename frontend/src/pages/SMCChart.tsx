@@ -39,7 +39,7 @@ interface SMCChartProps {
   market?: "dse" | "nasdaq";
 }
 
-type Period = "1m" | "3m" | "6m" | "1y" | "2y";
+type Period = "1m" | "3m" | "6m" | "1y" | "2y" | "3y" | "5y";
 type Timeframe = "daily" | "weekly";
 
 interface Toggles {
@@ -132,6 +132,7 @@ export default function SMCChart({ market = "dse" }: SMCChartProps = {}) {
     if (!isNasdaq) return p;
     const map: Record<string, string> = {
       "1m": "1mo", "3m": "3mo", "6m": "6mo", "1y": "1y", "2y": "2y",
+      "3y": "5y", "5y": "5y",
     };
     return map[p] ?? "1y";
   };
@@ -143,7 +144,7 @@ export default function SMCChart({ market = "dse" }: SMCChartProps = {}) {
   ) =>
     isNasdaq
       ? fetchNasdaqChart(sym, periodForApi(period)) as unknown as Promise<SMCChartData>
-      : fetchSMCChart(sym, period as "1m" | "3m" | "6m" | "1y" | "2y", tf, opts);
+      : fetchSMCChart(sym, period as Period, tf, opts);
 
   // Refs — chart skeleton
   const containerRef = useRef<HTMLDivElement>(null);
@@ -182,7 +183,7 @@ export default function SMCChart({ market = "dse" }: SMCChartProps = {}) {
   // State
   const [data, setData] = useState<SMCChartData | null>(null);
   const [stocks, setStocks] = useState<StockPrice[]>([]);
-  const [period, setPeriod] = useState<Period>("2y");
+  const [period, setPeriod] = useState<Period>("5y");
   const [timeframe, setTimeframe] = useState<Timeframe>("daily");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -1412,7 +1413,7 @@ export default function SMCChart({ market = "dse" }: SMCChartProps = {}) {
         </div>
 
         <div className="flex items-center gap-1 bg-gray-100 dark:bg-gray-800/50 rounded p-1">
-          {(["1m", "3m", "6m", "1y", "2y"] as const).map((p) => (
+          {(["6m", "1y", "2y", "3y", "5y"] as const).map((p) => (
             <button
               key={p}
               onClick={() => setPeriod(p)}

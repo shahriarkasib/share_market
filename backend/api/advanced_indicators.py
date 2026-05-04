@@ -393,18 +393,23 @@ def detect_wyckoff_events(df: pd.DataFrame, accumulation: Optional[dict],
 #  Bundle for chart response
 # ─────────────────────────────────────────────────────────────────────────
 
-def compute_advanced_indicators(df: pd.DataFrame, accumulation: Optional[dict] = None) -> dict:
-    """Run everything; safe-fail per indicator."""
+def compute_advanced_indicators(df: pd.DataFrame, accumulation: Optional[dict] = None,
+                                  recent_bars: int = 250) -> dict:
+    """Run everything; safe-fail per indicator. Caps to last `recent_bars`
+    so 5y data doesn't make these O(N) scans slow — these indicators only
+    need a few months of history to be informative."""
     out: dict = {}
-    try: out["vsa_events"] = classify_vsa_bars(df, lookback=60)
+    # Use a tail window for indicators that don't benefit from deep history
+    df_recent = df.tail(recent_bars).reset_index(drop=True) if len(df) > recent_bars else df
+    try: out["vsa_events"] = classify_vsa_bars(df_recent, lookback=60)
     except Exception: out["vsa_events"] = []
-    try: out["obv"] = compute_obv(df)
+    try: out["obv"] = compute_obv(df_recent)
     except Exception: out["obv"] = None
-    try: out["mfi"] = compute_mfi(df)
+    try: out["mfi"] = compute_mfi(df_recent)
     except Exception: out["mfi"] = None
-    try: out["ichimoku"] = compute_ichimoku(df)
+    try: out["ichimoku"] = compute_ichimoku(df_recent)
     except Exception: out["ichimoku"] = None
-    try: out["wyckoff_events"] = detect_wyckoff_events(df, accumulation)
+    try: out["wyckoff_events"] = detect_wyckoff_events(df_recent, accumulation)
     except Exception: out["wyckoff_events"] = []
 
     # JSON-safe conversion

@@ -107,13 +107,13 @@ def compute_volume_profile(df: pd.DataFrame, lookback: int = 60, n_bins: int = 5
     }
 
 
-def compute_vwap(df: pd.DataFrame, anchor_idx: Optional[int] = None) -> Optional[dict]:
+def compute_vwap(df: pd.DataFrame, anchor_idx: Optional[int] = None,
+                  max_series_bars: int = 365) -> Optional[dict]:
     """Volume-Weighted Average Price + 1σ and 2σ bands.
 
-    If `anchor_idx` is None, anchors at the start of df. Otherwise anchors
-    from that bar (e.g. last BOS event for "anchored VWAP").
-
-    Returns last-bar values + the full series for charting.
+    If `anchor_idx` is None, anchors at the start of df.
+    `max_series_bars` caps the returned series to the last N bars (chart only
+    needs recent data; cumulative computation always uses full anchor history).
     """
     if len(df) < 2 or "volume" not in df.columns:
         return None
@@ -124,7 +124,6 @@ def compute_vwap(df: pd.DataFrame, anchor_idx: Optional[int] = None) -> Optional
     cum_v = sub["volume"].astype(float).cumsum().replace(0, 1e-9)
     vwap = cum_pv / cum_v
 
-    # Variance for bands (volume-weighted)
     diff_sq = ((typical - vwap) ** 2) * sub["volume"].astype(float)
     cum_diff = diff_sq.cumsum()
     var = cum_diff / cum_v
@@ -133,24 +132,32 @@ def compute_vwap(df: pd.DataFrame, anchor_idx: Optional[int] = None) -> Optional
     last_vwap = float(vwap.iloc[-1])
     last_std = float(std.iloc[-1])
 
+    # Series — vectorized, capped to last max_series_bars
+    n = len(sub)
+    start = max(0, n - max_series_bars)
+    dates = sub["date"].iloc[start:n]
+    vwap_arr = vwap.values[start:n]
+    std_arr = std.values[start:n]
+    series = [
+        {
+            "time": d.strftime("%Y-%m-%d") if hasattr(d, "strftime") else str(d),
+            "vwap": round(float(v), 2),
+            "upper_1sd": round(float(v + s), 2),
+            "lower_1sd": round(float(v - s), 2),
+            "upper_2sd": round(float(v + 2 * s), 2),
+            "lower_2sd": round(float(v - 2 * s), 2),
+        }
+        for d, v, s in zip(dates, vwap_arr, std_arr)
+    ]
+
     return {
         "value": round(last_vwap, 2),
         "upper_1sd": round(last_vwap + last_std, 2),
         "lower_1sd": round(last_vwap - last_std, 2),
         "upper_2sd": round(last_vwap + 2 * last_std, 2),
         "lower_2sd": round(last_vwap - 2 * last_std, 2),
-        "anchor_time": sub.iloc[0]["date"].strftime("%Y-%m-%d"),
-        "series": [
-            {
-                "time": sub.iloc[i]["date"].strftime("%Y-%m-%d"),
-                "vwap": round(float(vwap.iloc[i]), 2),
-                "upper_1sd": round(float(vwap.iloc[i] + std.iloc[i]), 2),
-                "lower_1sd": round(float(vwap.iloc[i] - std.iloc[i]), 2),
-                "upper_2sd": round(float(vwap.iloc[i] + 2 * std.iloc[i]), 2),
-                "lower_2sd": round(float(vwap.iloc[i] - 2 * std.iloc[i]), 2),
-            }
-            for i in range(len(sub))
-        ],
+        "anchor_time": sub.iloc[0]["date"].strftime("%Y-%m-%d") if hasattr(sub.iloc[0]["date"], "strftime") else str(sub.iloc[0]["date"]),
+        "series": series,
     }
 
 
@@ -186,16 +193,26 @@ def compute_volume_delta(df: pd.DataFrame) -> Optional[dict]:
         "last_cum": round(float(cum.iloc[-1])),
         "delta_5d": round(float(delta.iloc[-5:].sum())) if n >= 5 else round(float(delta.sum())),
         "delta_20d": round(float(delta.iloc[-20:].sum())) if n >= 20 else round(float(delta.sum())),
-        "series": [
-            {
-                "time": df.iloc[i]["date"].strftime("%Y-%m-%d"),
-                "delta": round(float(delta.iloc[i])),
-                "cumulative": round(float(cum.iloc[i])),
-                "color": "#26a69a" if delta.iloc[i] >= 0 else "#ef5350",
-            }
-            for i in range(n)
-        ],
+        # Vectorized series build, capped to last 365 bars (chart only needs recent)
+        "series": _build_delta_series(df, delta, cum, max_bars=365),
     }
+
+
+def _build_delta_series(df, delta, cum, max_bars=365):
+    n = len(df)
+    start = max(0, n - max_bars)
+    dates = df["date"].values[start:n]
+    delta_arr = delta.values[start:n]
+    cum_arr = cum.values[start:n]
+    return [
+        {
+            "time": d.strftime("%Y-%m-%d") if hasattr(d, "strftime") else str(d),
+            "delta": round(float(dv)),
+            "cumulative": round(float(cv)),
+            "color": "#26a69a" if dv >= 0 else "#ef5350",
+        }
+        for d, dv, cv in zip(dates, delta_arr, cum_arr)
+    ]
 
 
 def detect_absorption(df: pd.DataFrame) -> Optional[dict]:
