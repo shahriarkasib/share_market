@@ -85,7 +85,7 @@ export default function LiveCompositeSignals({ market = "dse" }: Props = {}) {
     return () => window.clearInterval(id);
   }, [filter, minScore]);
 
-  const [bucket, setBucket] = useState<"IN_ZONE" | "WATCHING" | "MISSED" | "ALL">("IN_ZONE");
+  const [bucket, setBucket] = useState<"IN_ZONE" | "WATCHING" | "MISSED" | "WRONG_TRIGGER" | "ALL">("IN_ZONE");
 
   const filteredAll = useMemo(() => signals.filter((s) => {
     if (tPlusTwoOnly && !s.t_plus_2_friendly) return false;
@@ -93,23 +93,34 @@ export default function LiveCompositeSignals({ market = "dse" }: Props = {}) {
     return true;
   }), [signals, tPlusTwoOnly, minAgreement]);
 
-  // Derive bucket if backend hasn't yet — mirror backend logic (1.5% tolerance above zone)
-  const deriveBucket = (s: LiveCompositeSignal): "IN_ZONE" | "WATCHING" | "MISSED" | "STALE" => {
+  // Derive bucket if backend hasn't — mirror backend with WRONG_TRIGGER awareness
+  const deriveBucket = (s: LiveCompositeSignal): "IN_ZONE" | "WATCHING" | "MISSED" | "WRONG_TRIGGER" | "STALE" => {
     if (s.bucket) return s.bucket;
     const cp = s.current_price;
     if (cp == null) return "STALE";
     const t1l = s.aggressive_entry_zone_low; const t1h = s.aggressive_entry_zone_high;
     const t2l = s.entry_zone_low; const t2h = s.entry_zone_high;
-    // Strictly inside any zone
+    const barsAgo = s.primary_trigger_bars_ago ?? 0;
+    const maxProfit = s.primary_trigger_max_profit_pct ?? 0;
+    const maxDrawdown = s.primary_trigger_max_drawdown_pct ?? 0;
+    const triggeredInPast = barsAgo >= 2;
+    const deliveredProfit = maxProfit >= 3.0;
+    const zoneBroke = maxDrawdown < -3.0;
+
     if ((t1l != null && t1h != null && cp >= t1l && cp <= t1h)
       || (t2l != null && t2h != null && cp >= t2l && cp <= t2h)) return "IN_ZONE";
-    // Below all zones = discount triggered (still actionable)
-    if ((t1l != null && cp < t1l) || (t2l != null && cp < t2l)) return "IN_ZONE";
-    // Above zones — distance from closest top
+    if ((t1l != null && cp < t1l) || (t2l != null && cp < t2l)) {
+      if (triggeredInPast && zoneBroke) return "WRONG_TRIGGER";
+      return "IN_ZONE";
+    }
     const highs = [t1h, t2h].filter((x): x is number => x != null);
-    if (!highs.length) return "STALE";
+    if (!highs.length) {
+      if (triggeredInPast && deliveredProfit) return "MISSED";
+      return "STALE";
+    }
     const closest = Math.max(...highs);
     const pctAbove = ((cp - closest) / closest) * 100;
+    if (triggeredInPast && deliveredProfit) return "MISSED";
     if (pctAbove <= 1.5) return "IN_ZONE";
     if (pctAbove <= 8) return "WATCHING";
     return "MISSED";
@@ -117,7 +128,7 @@ export default function LiveCompositeSignals({ market = "dse" }: Props = {}) {
 
   const bucketed = useMemo(() => {
     const byBucket: Record<string, LiveCompositeSignal[]> = {
-      IN_ZONE: [], WATCHING: [], MISSED: [], STALE: [],
+      IN_ZONE: [], WATCHING: [], MISSED: [], WRONG_TRIGGER: [], STALE: [],
     };
     filteredAll.forEach((s) => {
       const b = deriveBucket(s);
@@ -256,8 +267,10 @@ export default function LiveCompositeSignals({ market = "dse" }: Props = {}) {
             cls: "bg-emerald-500/15 border-emerald-500/50 text-emerald-500" },
           { key: "WATCHING", label: "👀 WATCHING", desc: "approaching from above — set buy limit",
             cls: "bg-amber-500/15 border-amber-500/50 text-amber-500" },
-          { key: "MISSED", label: "❌ MISSED", desc: "was at zone, price moved up",
+          { key: "MISSED", label: "❌ MISSED", desc: "we triggered ≥2d ago, price delivered ≥3% profit but we didn't buy",
             cls: "bg-red-500/15 border-red-500/50 text-red-500" },
+          { key: "WRONG_TRIGGER", label: "💥 WRONG TRIGGER", desc: "we triggered, but price went BELOW the zone — our zone was wrong",
+            cls: "bg-rose-500/15 border-rose-500/50 text-rose-400" },
           { key: "ALL", label: "📊 ALL", desc: "all signals",
             cls: "bg-blue-500/15 border-blue-500/50 text-blue-500" },
         ] as const).map((b) => {
@@ -515,8 +528,8 @@ export default function LiveCompositeSignals({ market = "dse" }: Props = {}) {
                         </td>
                       </tr>
                     )}
-                    {/* Trigger info — shown for MISSED bucket so user sees "triggered on X, would have been +N%" */}
-                    {(s.primary_trigger_date || s.tier1_trigger_date || s.tier2_trigger_date) && bucket === "MISSED" && (
+                    {/* Trigger info — shown for MISSED + WRONG_TRIGGER buckets so user sees the history */}
+                    {(s.primary_trigger_date || s.tier1_trigger_date || s.tier2_trigger_date) && (bucket === "MISSED" || bucket === "WRONG_TRIGGER") && (
                       <tr className="border-t border-[var(--border)]/30">
                         <td colSpan={9} className="px-3 py-1.5 text-[11px] bg-blue-500/5">
                           <span className="text-blue-400 font-semibold">📅 Triggered: </span>

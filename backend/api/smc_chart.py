@@ -2417,17 +2417,41 @@ def generate_analysis(structure_events, fvgs, order_blocks, key_levels, current_
     aggressive_entry_zone_high = None
     if entry and current_price and action.startswith(("BUY", "WAIT — ENTRY")):
         # Build candidate aggressive entries: (price, label, source, zone_low, zone_high)
+        # Strategy: prefer RECENT (5-7 bar) support over deeper historical lows.
+        # For trending stocks, the buyable pullback support lives in the last
+        # 1-2 weeks, not in the multi-week swing low.
         candidates = []
+        n = len(df)
+        low_arr = df["low"].astype(float).values
+        high_arr = df["high"].astype(float).values
 
-        # 1. Recent swing low (last 12 bars) — clearest support
+        # 1a. Last 5-bar swing low — TIGHTEST recent support
         try:
-            n = len(df)
-            recent_low = float(df["low"].iloc[max(0, n-12):n].min())
-            if recent_low and recent_low < current_price:
-                # Zone = swing low ± 0.7% (tight, since this is a tested support)
-                zlow = round(recent_low * 0.993, 2)
-                zhigh = round(recent_low * 1.007, 2)
-                candidates.append((round(recent_low, 2), "recent swing low", "swing_low_12", zlow, zhigh))
+            sl_5 = float(low_arr[max(0, n-5):n].min())
+            if sl_5 and sl_5 < current_price:
+                zlow = round(sl_5 * 0.995, 2)
+                zhigh = round(sl_5 * 1.005, 2)
+                candidates.append((round(sl_5, 2), "last 5-bar swing low", "swing_low_5", zlow, zhigh))
+        except Exception:
+            pass
+
+        # 1b. Last 7-bar swing low — recent consolidation
+        try:
+            sl_7 = float(low_arr[max(0, n-7):n].min())
+            if sl_7 and sl_7 < current_price:
+                zlow = round(sl_7 * 0.995, 2)
+                zhigh = round(sl_7 * 1.005, 2)
+                candidates.append((round(sl_7, 2), "last 7-bar swing low", "swing_low_7", zlow, zhigh))
+        except Exception:
+            pass
+
+        # 1c. Last 12-bar swing low — broader recent (was original)
+        try:
+            sl_12 = float(low_arr[max(0, n-12):n].min())
+            if sl_12 and sl_12 < current_price:
+                zlow = round(sl_12 * 0.993, 2)
+                zhigh = round(sl_12 * 1.007, 2)
+                candidates.append((round(sl_12, 2), "last 12-bar swing low", "swing_low_12", zlow, zhigh))
         except Exception:
             pass
 
@@ -2435,59 +2459,81 @@ def generate_analysis(structure_events, fvgs, order_blocks, key_levels, current_
         if premium_discount and premium_discount.get("equilibrium"):
             eq = float(premium_discount["equilibrium"])
             if eq and eq < current_price:
-                # Zone = equilibrium ± 1.5% (broader, since EQ is conceptual)
                 zlow = round(eq * 0.985, 2)
                 zhigh = round(eq * 1.015, 2)
                 candidates.append((round(eq, 2), "range equilibrium (50%)", "equilibrium", zlow, zhigh))
 
-        # 3. Shallow fresh bull FVG (one above the deep confluence, if any)
+        # 3. Shallow fresh bull FVG
         if fresh_bull_fvgs_below:
             for f in fresh_bull_fvgs_below:
                 ftop = float(f.get("top", 0))
                 fbot = float(f.get("bottom", 0))
                 if ftop and ftop < current_price and ftop != entry:
-                    # Zone = the FVG itself (bottom to top)
                     candidates.append((
                         round(ftop, 2), "shallow FVG retest", "shallow_fvg",
                         round(fbot, 2), round(ftop, 2),
                     ))
                     break
 
-        # 4. 38.2% Fib retracement of the most recent impulse leg
+        # 4. Fib retracement of recent leg (15 bars). For TRENDING stocks the
+        # high-retrace Fibs (78.6%, 88.6%) are the realistic light-pullback
+        # entries — much closer to current than the 38/50% levels.
         try:
-            n = len(df)
-            leg_low = float(df["low"].iloc[max(0, n-15):n].min())
-            leg_high = float(df["high"].iloc[max(0, n-15):n].max())
+            leg_low = float(low_arr[max(0, n-15):n].min())
+            leg_high = float(high_arr[max(0, n-15):n].max())
             if leg_high > leg_low > 0:
-                fib_382 = leg_high - (leg_high - leg_low) * 0.382
-                fib_500 = leg_high - (leg_high - leg_low) * 0.500
-                fib_618 = leg_high - (leg_high - leg_low) * 0.618
-                if fib_382 < current_price:
-                    # Zone = 38.2 → 50% retracement (light pullback band)
-                    candidates.append((
-                        round(fib_382, 2), "38.2% Fib of recent leg", "fib_382",
-                        round(fib_500, 2), round(fib_382, 2),
-                    ))
+                rng = leg_high - leg_low
+                fib_786 = leg_high - rng * 0.786  # closest light retrace
+                fib_618 = leg_high - rng * 0.618
+                fib_500 = leg_high - rng * 0.500
+                fib_382 = leg_high - rng * 0.382
+                # 78.6% Fib = light pullback (closest to current in trending stocks)
+                if fib_786 < current_price:
+                    zlow = round(fib_786 * 0.993, 2)
+                    zhigh = round(fib_786 * 1.007, 2)
+                    candidates.append((round(fib_786, 2), "78.6% Fib (light retrace)", "fib_786", zlow, zhigh))
+                if fib_618 < current_price:
+                    zlow = round(fib_618 * 0.993, 2)
+                    zhigh = round(fib_618 * 1.007, 2)
+                    candidates.append((round(fib_618, 2), "61.8% Fib (golden pocket)", "fib_618", zlow, zhigh))
                 if fib_500 < current_price:
-                    # Golden Pocket = 50 → 61.8 (mid Fib zone)
                     candidates.append((
-                        round(fib_500, 2), "50% Fib (golden mid)", "fib_500",
+                        round(fib_500, 2), "50% Fib (mid)", "fib_500",
                         round(fib_618, 2), round(fib_500, 2),
+                    ))
+                if fib_382 < current_price:
+                    candidates.append((
+                        round(fib_382, 2), "38.2% Fib (deep retrace)", "fib_382",
+                        round(fib_500, 2), round(fib_382, 2),
                     ))
         except Exception:
             pass
 
-        # Filter: must be within 8% of current AND above the deep entry
+        # Filter: must be within 6% of current (was 8%) AND above the deep entry
+        # AND at least 0.5% below current. Tighter band = more realistic entries.
         valid = [
             c for c in candidates
-            if c[0] > entry  # closer to current than deep entry
-            and (current_price - c[0]) / current_price * 100 <= 8.0  # within 8%
-            and c[0] < current_price * 0.99  # at least 1% below current
+            if c[0] > entry
+            and (current_price - c[0]) / current_price * 100 <= 6.0
+            and c[0] < current_price * 0.995
         ]
 
         if valid:
-            priority = {"swing_low_12": 1, "equilibrium": 2, "shallow_fvg": 3,
-                        "fib_500": 4, "fib_382": 5}
+            # Priority: closest realistic levels first.
+            # 5-7 bar swing lows + 78.6% Fib are the "small pullback" entries.
+            # Older swing lows + Fib 38-50% are deeper retracements.
+            priority = {
+                "swing_low_5": 1,        # tightest recent
+                "fib_786": 2,            # light retrace
+                "swing_low_7": 3,
+                "shallow_fvg": 4,
+                "fib_618": 5,            # golden pocket
+                "swing_low_12": 6,
+                "equilibrium": 7,
+                "fib_500": 8,
+                "fib_382": 9,
+            }
+            # Pick best by priority, breaking ties by HIGHEST price (closer to current)
             valid.sort(key=lambda x: (priority.get(x[2], 99), -x[0]))
             agg_px, agg_lbl, _src, agg_zlow, agg_zhigh = valid[0]
             aggressive_entry = agg_px

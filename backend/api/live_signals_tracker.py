@@ -138,11 +138,13 @@ def get_active_signal(symbol: str):
 
 def derive_bucket(sig: dict) -> str:
     """Categorise a signal:
-      IN_ZONE   — price is STRICTLY inside an entry zone OR below the lowest
-                  zone (discount triggered = still safe). Above zone = NOT in zone.
-      WATCHING  — price 0-8% above the closest zone_high (approaching).
-      MISSED    — price >8% above the closest zone_high (chase territory).
-      STALE     — no entry / no zone defined.
+      IN_ZONE       — price is inside (or barely above) an entry zone — buy now.
+      WATCHING      — price 1.5-8% above zone — set a buy limit.
+      MISSED        — we triggered ≥2 days ago AND max profit since ≥3% but we
+                      didn't buy. The opportunity was real and is now past.
+      WRONG_TRIGGER — we triggered ≥2 days ago BUT price went below the zone /
+                      max profit < 0%. Our zone was wrong; learn from it.
+      STALE         — no entry / no recent trigger.
     """
     cp = sig.get("current_price")
     t1l = sig.get("aggressive_entry_zone_low")
@@ -153,30 +155,50 @@ def derive_bucket(sig: dict) -> str:
     if cp is None:
         return "STALE"
 
-    # Strictly inside a zone
+    # Past trigger info — used to classify MISSED vs WRONG_TRIGGER
+    bars_ago = sig.get("primary_trigger_bars_ago") or 0
+    max_profit = sig.get("primary_trigger_max_profit_pct") or 0
+    max_drawdown = sig.get("primary_trigger_max_drawdown_pct") or 0
+    triggered_in_past = bars_ago >= 2  # at least 2 trading days old
+    delivered_profit = max_profit >= 3.0
+    zone_broke = max_drawdown < -3.0  # price dropped >3% below zone after trigger
+
+    # Strictly inside a zone (current actionable buy)
     in_t1 = t1l is not None and t1h is not None and t1l <= cp <= t1h
     in_t2 = t2l is not None and t2h is not None and t2l <= cp <= t2h
     if in_t1 or in_t2:
         return "IN_ZONE"
 
-    # Below all zones = discount triggered
+    # Below all zones — could be DISCOUNT (still actionable) OR WRONG_TRIGGER
+    # (zone broke). Use the bars_ago + drawdown heuristic.
     below_t1 = t1l is not None and cp < t1l
     below_t2 = t2l is not None and cp < t2l
     if below_t1 or below_t2:
-        return "IN_ZONE"  # cheaper than expected — still actionable
+        if triggered_in_past and zone_broke:
+            return "WRONG_TRIGGER"  # triggered, then price fell BELOW zone
+        return "IN_ZONE"  # below zone but stable = discount
 
-    # Above zone(s): how far above the CLOSEST zone_high?
+    # Above zones: distance from closest zone_high
     candidates_high = [h for h in (t1h, t2h) if h is not None]
     if not candidates_high:
+        # No zone at all but might still have past trigger
+        if triggered_in_past and delivered_profit:
+            return "MISSED"
         return "STALE"
     closest_high = max(candidates_high)
     pct_above = (cp - closest_high) / closest_high * 100 if closest_high > 0 else 999
-    # Tolerance: within 1.5% above zone_high still counts as IN_ZONE
-    # (zone is the IDEAL — slight overshoot is fine and still profitable).
+
+    # Past meaningful trigger always wins — that's a real missed opportunity
+    # even if currently still close to zone.
+    if triggered_in_past and delivered_profit:
+        return "MISSED"
+
+    # Slight overshoot (≤1.5%) still counts as actionable
     if pct_above <= 1.5:
         return "IN_ZONE"
     if pct_above <= 8.0:
         return "WATCHING"
+    # >8% above with no past meaningful trigger = setup is stale (price ran away)
     return "MISSED"
 
 
