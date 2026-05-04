@@ -1,6 +1,7 @@
 """SMC chart data — OHLCV + FVG zones + BOS/ChoCh events for DSE stocks."""
 
 import pandas as pd
+import numpy as np
 from datetime import datetime, timedelta
 from data.repository import read_historical_for_symbol
 from database import get_connection
@@ -246,6 +247,196 @@ def detect_demand_supply_zones(df, lookback=60):
                            key=lambda x: x["bottom"])[:3]
     return {"demand": fresh_demand, "supply": fresh_supply,
             "demand_all": demand[-10:], "supply_all": supply[-10:]}
+
+
+def detect_htf_bias(df, weeks_lookback=12):
+    """Higher-Timeframe (weekly) bias — per Annaly Trader Step 1 + #9.4.
+
+    Resamples daily OHLC to weekly, then scans the last `weeks_lookback`
+    weekly bars for HH/HL (bullish) or LH/LL (bearish) pattern. Used to
+    gate daily-timeframe BUY signals: a daily BUY without weekly alignment
+    is a "good entry in wrong context" = high-risk.
+
+    Returns dict with bias, direction, weekly_swing_high, weekly_swing_low,
+    and a narrative.
+    """
+    if df is None or len(df) < 30:
+        return None
+    try:
+        d = df.copy()
+        if "date" not in d.columns:
+            return None
+        d["date"] = pd.to_datetime(d["date"])
+        d = d.set_index("date")
+        wk = pd.DataFrame({
+            "open": d["open"].resample("W").first(),
+            "high": d["high"].resample("W").max(),
+            "low": d["low"].resample("W").min(),
+            "close": d["close"].resample("W").last(),
+        }).dropna()
+        if len(wk) < 4:
+            return None
+
+        recent = wk.tail(min(weeks_lookback, len(wk)))
+        highs = recent["high"].values
+        lows = recent["low"].values
+        closes = recent["close"].values
+
+        # Compare last 4 weeks pivots: HH/HL vs LH/LL
+        n = len(recent)
+        last_high = highs[-1]
+        last_low = lows[-1]
+        prev_high = max(highs[max(0, n - 4):n - 1]) if n >= 2 else last_high
+        prev_low = min(lows[max(0, n - 4):n - 1]) if n >= 2 else last_low
+
+        # Long-trend slope: close trend over the lookback
+        slope_pct = ((closes[-1] - closes[0]) / closes[0] * 100) if closes[0] else 0
+
+        bullish = last_high >= prev_high * 0.99 and last_low > prev_low * 0.97 and slope_pct > 2
+        bearish = last_low <= prev_low * 1.01 and last_high < prev_high * 1.03 and slope_pct < -2
+
+        if bullish:
+            bias = "BULLISH"
+            narrative = (
+                f"Weekly: making higher highs (৳{last_high:.1f} ≥ ৳{prev_high:.1f}) and higher lows "
+                f"(৳{last_low:.1f} > ৳{prev_low:.1f}). Trend +{slope_pct:.0f}% over {n}w."
+            )
+        elif bearish:
+            bias = "BEARISH"
+            narrative = (
+                f"Weekly: lower highs (৳{last_high:.1f} < ৳{prev_high:.1f}) and lower lows "
+                f"(৳{last_low:.1f} ≤ ৳{prev_low:.1f}). Trend {slope_pct:.0f}% over {n}w."
+            )
+        else:
+            bias = "RANGE"
+            narrative = (
+                f"Weekly: ranging — HH/LL pattern unclear. Trend {slope_pct:+.0f}% over {n}w. "
+                f"Range ৳{lows.min():.1f}-৳{highs.max():.1f}."
+            )
+
+        return {
+            "bias": bias,
+            "narrative": narrative,
+            "weekly_swing_high": round(float(highs.max()), 2),
+            "weekly_swing_low": round(float(lows.min()), 2),
+            "trend_pct": round(slope_pct, 1),
+            "weeks_analysed": int(n),
+        }
+    except Exception:
+        return None
+
+
+def detect_liquidity_sweep(df, swings, lookback=20):
+    """Liquidity sweep vs real breakout — per Annaly Trader #9.3.
+
+    A liquidity sweep = price wicks above a recent swing high (or below a
+    swing low) but CLOSES BACK INSIDE the prior range within 1-2 bars. This
+    is institutions hunting retail stop orders, NOT a breakout.
+
+    A real breakout = price closes above the swing high WITH displacement
+    (large body) and continues higher on the next bar.
+
+    Returns dict with recent sweeps + a "latest event" classification.
+    """
+    if df is None or len(df) < 10 or not swings:
+        return None
+    try:
+        h = df["high"].astype(float).values
+        l = df["low"].astype(float).values
+        c = df["close"].astype(float).values
+        o = df["open"].astype(float).values
+        n = len(df)
+
+        # ATR proxy for displacement
+        rng = h - l
+        avg_rng = pd.Series(rng).rolling(14).mean().fillna(method="ffill").values
+
+        # Recent swing pivots (last lookback bars)
+        recent_swings = [s for s in swings if s.get("idx", 0) >= n - lookback]
+        if not recent_swings:
+            return {"events": [], "latest": None}
+
+        events = []
+        for s in recent_swings:
+            sidx = s.get("idx", 0)
+            spx = float(s.get("price", 0))
+            stype = s.get("type")  # "high" or "low"
+            if stype not in ("high", "low") or sidx >= n - 1 or spx <= 0:
+                continue
+
+            # Look for piercing within 1-3 bars after the swing
+            for j in range(sidx + 1, min(sidx + 4, n)):
+                if stype == "high":
+                    pierced = h[j] > spx
+                    closed_inside = c[j] < spx
+                    body = abs(c[j] - o[j])
+                    is_displacement = body > avg_rng[j] * 0.6 if avg_rng[j] else False
+                    is_green = c[j] > o[j]
+                    if pierced and closed_inside:
+                        events.append({
+                            "type": "bull_sweep",  # bullish-side sweep = swept high, reversed
+                            "idx": int(j),
+                            "date": df.iloc[j]["date"].strftime("%Y-%m-%d") if hasattr(df.iloc[j]["date"], "strftime") else str(df.iloc[j]["date"]),
+                            "swing_price": round(spx, 2),
+                            "wick_high": round(float(h[j]), 2),
+                            "close": round(float(c[j]), 2),
+                            "interpretation": (
+                                f"Wicked above ৳{round(spx,2)} but closed inside at ৳{round(float(c[j]),2)} "
+                                f"= liquidity sweep, NOT breakout. Stops above were hunted."
+                            ),
+                        })
+                        break
+                    elif pierced and not closed_inside and is_displacement and is_green:
+                        events.append({
+                            "type": "real_breakout_up",
+                            "idx": int(j),
+                            "date": df.iloc[j]["date"].strftime("%Y-%m-%d") if hasattr(df.iloc[j]["date"], "strftime") else str(df.iloc[j]["date"]),
+                            "swing_price": round(spx, 2),
+                            "close": round(float(c[j]), 2),
+                            "interpretation": (
+                                f"Closed above ৳{round(spx,2)} at ৳{round(float(c[j]),2)} with "
+                                f"displacement (body > 0.6× ATR) = real bullish breakout."
+                            ),
+                        })
+                        break
+                else:  # swing low
+                    pierced = l[j] < spx
+                    closed_inside = c[j] > spx
+                    body = abs(c[j] - o[j])
+                    is_displacement = body > avg_rng[j] * 0.6 if avg_rng[j] else False
+                    is_red = c[j] < o[j]
+                    if pierced and closed_inside:
+                        events.append({
+                            "type": "bear_sweep",  # swept low, reversed
+                            "idx": int(j),
+                            "date": df.iloc[j]["date"].strftime("%Y-%m-%d") if hasattr(df.iloc[j]["date"], "strftime") else str(df.iloc[j]["date"]),
+                            "swing_price": round(spx, 2),
+                            "wick_low": round(float(l[j]), 2),
+                            "close": round(float(c[j]), 2),
+                            "interpretation": (
+                                f"Wicked below ৳{round(spx,2)} but closed inside at ৳{round(float(c[j]),2)} "
+                                f"= liquidity sweep, NOT breakdown. Stops below were hunted (often a bottom)."
+                            ),
+                        })
+                        break
+                    elif pierced and not closed_inside and is_displacement and is_red:
+                        events.append({
+                            "type": "real_breakdown",
+                            "idx": int(j),
+                            "date": df.iloc[j]["date"].strftime("%Y-%m-%d") if hasattr(df.iloc[j]["date"], "strftime") else str(df.iloc[j]["date"]),
+                            "swing_price": round(spx, 2),
+                            "close": round(float(c[j]), 2),
+                            "interpretation": (
+                                f"Closed below ৳{round(spx,2)} at ৳{round(float(c[j]),2)} with "
+                                f"displacement = real bearish breakdown."
+                            ),
+                        })
+                        break
+
+        latest = events[-1] if events else None
+        return {"events": events[-10:], "latest": latest}
+    except Exception:
+        return None
 
 
 def detect_volatility_imbalance(df, lookback=40):
@@ -1708,7 +1899,9 @@ def calc_fib_circles(df, pivot_idx, pivot_price, ref_idx, ref_price):
     }
 
 
-def generate_analysis(structure_events, fvgs, order_blocks, key_levels, current_price, df):
+def generate_analysis(structure_events, fvgs, order_blocks, key_levels, current_price, df,
+                      premium_discount=None, bos_zones=None, fib_dealing_range=None,
+                      htf_bias=None, liquidity_sweeps=None):
     """
     Translate structural data into a plain-language trade card:
     bias, confidence, recommended action, entry/stop/targets, tomorrow's triggers.
@@ -1973,6 +2166,25 @@ def generate_analysis(structure_events, fvgs, order_blocks, key_levels, current_
         except Exception:
             pass
 
+        # HTF (weekly) bias gate — Annaly Trader Step 1 / #9.4.
+        # A daily BUY without weekly alignment is "good entry in wrong context".
+        if htf_bias and htf_bias.get("bias"):
+            htf_b = htf_bias["bias"]
+            if htf_b == "BEARISH" and confidence in ("HIGH", "MEDIUM"):
+                confidence = "LOW"  # weekly bearish, daily bullish = counter-trend
+            elif htf_b == "RANGE" and confidence == "HIGH":
+                confidence = "MEDIUM"  # weekly ranging, daily can chop too
+
+        # Liquidity sweep penalty — if recent BOS was actually a sweep (not a
+        # real breakout), the bullish bias is suspect.
+        if liquidity_sweeps and liquidity_sweeps.get("latest"):
+            lt = liquidity_sweeps["latest"].get("type", "")
+            if lt == "bull_sweep" and confidence == "HIGH":
+                confidence = "MEDIUM"  # latest event swept highs (bearish-leaning)
+            elif lt == "real_breakout_up":
+                if confidence == "LOW":
+                    confidence = "MEDIUM"  # real breakout = supports bullish
+
     # === Action ===
     action = "WAIT"
     action_color = "gray"
@@ -2112,8 +2324,14 @@ def generate_analysis(structure_events, fvgs, order_blocks, key_levels, current_
     rr = None
 
     if action.startswith("BUY"):
-        # Pick entry
-        if "DIP" in action and fresh_bull_fvgs_below:
+        # Pick entry — CONFLUENCE zone wins (highest-edge setup, matches summary)
+        if "CONFLUENCE" in action and confluence_zone is not None:
+            entry = round(confluence_zone["top"], 2)
+            entry_label = (
+                f"Limit ৳{entry} (FVG retest at {confluence_zone['support_touches']}-touch "
+                f"support — confluence)"
+            )
+        elif "DIP" in action and fresh_bull_fvgs_below:
             entry = round(fresh_bull_fvgs_below[0]["top"], 2)
             entry_label = f"Limit ৳{entry} (FVG retest)"
         elif "BREAKOUT" in action and current_price >= breakout_trigger:
@@ -2129,10 +2347,14 @@ def generate_analysis(structure_events, fvgs, order_blocks, key_levels, current_
         # Stop loss: pick CLOSEST structural support — keep stops tight (≤5%).
         # Wider stops are not tradeable for retail T+2 holders.
         candidate_stops = []
+        if "CONFLUENCE" in action and confluence_zone is not None:
+            # Stop just below the support that confluence sits on
+            sup_px = confluence_zone.get("support_price", confluence_zone["bottom"])
+            candidate_stops.append(round(sup_px * 0.98, 2))
+            candidate_stops.append(round(confluence_zone["bottom"] * 0.99, 2))
         if fresh_bull_obs:
             candidate_stops.append(round(fresh_bull_obs[0]["bottom"] * 0.99, 2))
         if fresh_bull_fvgs_below:
-            # Use the SHALLOWEST (closest) FVG, not the deepest
             shallowest_fvg = fresh_bull_fvgs_below[0]
             candidate_stops.append(round(shallowest_fvg["bottom"] * 0.99, 2))
         candidate_stops.append(round(swing_low * 0.99, 2))
@@ -2159,6 +2381,129 @@ def generate_analysis(structure_events, fvgs, order_blocks, key_levels, current_
         reward = target1 - entry
         if risk > 0:
             rr = round(reward / risk, 2)
+
+    # === Tiered entries — aggressive (Tier 1) + patient (Tier 2 = the deep entry above) ===
+    # Many setups have a deep CONFLUENCE zone (high-edge, may never fill) AND a
+    # closer support (recent swing low, equilibrium, shallow FVG, Fib retrace) that
+    # is realistically tradeable. Provide both so retail can choose.
+    aggressive_entry = None
+    aggressive_entry_label = None
+    aggressive_entry_distance_pct = None
+    if entry and current_price and action.startswith(("BUY", "WAIT — ENTRY")):
+        # Build candidate aggressive entries
+        candidates = []  # list of (price, label, source)
+
+        # 1. Recent swing low (last 12 bars) — clearest support
+        try:
+            n = len(df)
+            recent_low = float(df["low"].iloc[max(0, n-12):n].min())
+            if recent_low and recent_low < current_price:
+                candidates.append((round(recent_low, 2), "recent swing low", "swing_low_12"))
+        except Exception:
+            pass
+
+        # 2. Range equilibrium (50% of full range) — SMC mid-zone
+        if premium_discount and premium_discount.get("equilibrium"):
+            eq = float(premium_discount["equilibrium"])
+            if eq and eq < current_price:
+                candidates.append((round(eq, 2), "range equilibrium (50%)", "equilibrium"))
+
+        # 3. Shallow fresh bull FVG (one above the deep confluence, if any)
+        if fresh_bull_fvgs_below:
+            for f in fresh_bull_fvgs_below:
+                ftop = float(f.get("top", 0))
+                if ftop and ftop < current_price and ftop != entry:
+                    candidates.append((round(ftop, 2), "shallow FVG retest", "shallow_fvg"))
+                    break
+
+        # 4. 38.2% Fib retracement of the most recent impulse leg
+        try:
+            n = len(df)
+            leg_low = float(df["low"].iloc[max(0, n-15):n].min())
+            leg_high = float(df["high"].iloc[max(0, n-15):n].max())
+            if leg_high > leg_low > 0:
+                fib_382 = leg_high - (leg_high - leg_low) * 0.382
+                fib_500 = leg_high - (leg_high - leg_low) * 0.500
+                if fib_382 < current_price:
+                    candidates.append((round(fib_382, 2), "38.2% Fib of recent leg", "fib_382"))
+                if fib_500 < current_price:
+                    candidates.append((round(fib_500, 2), "50% Fib (golden mid)", "fib_500"))
+        except Exception:
+            pass
+
+        # Filter: must be within 8% of current AND above the deep entry
+        # (we want a level CLOSER to current than the patient entry)
+        valid = [
+            (px, lbl, src) for (px, lbl, src) in candidates
+            if px > entry  # closer to current than deep entry
+            and (current_price - px) / current_price * 100 <= 8.0  # within 8%
+            and px < current_price * 0.99  # at least 1% below current
+        ]
+
+        if valid:
+            # Pick the one with the BEST edge — prefer recent swing low, then equilibrium,
+            # then shallow FVG, then Fib. Among equal sources, pick deepest (best R/R).
+            priority = {"swing_low_12": 1, "equilibrium": 2, "shallow_fvg": 3,
+                        "fib_500": 4, "fib_382": 5}
+            valid.sort(key=lambda x: (priority.get(x[2], 99), -x[0]))
+            agg_px, agg_lbl, _ = valid[0]
+            aggressive_entry = agg_px
+            aggressive_entry_label = f"Tier-1 aggressive: ৳{agg_px} ({agg_lbl})"
+            aggressive_entry_distance_pct = round((current_price - agg_px) / current_price * 100, 1)
+
+    # === Entry status — distinguish "buy now" vs "wait for pullback" vs "too far" ===
+    # Per SMC rule (Image 2): in trending up, buy in DISCOUNT zone, not premium.
+    # Per SMC rule (Image 1 #9.5): don't justify emotional buys.
+    entry_status = None
+    entry_distance_pct = None
+    chase_warning = None
+    if entry and current_price:
+        entry_distance_pct = round((current_price - entry) / current_price * 100, 1)
+        if entry_distance_pct <= 2.0 and entry_distance_pct >= -2.0:
+            entry_status = "AT_ENTRY"
+        elif entry_distance_pct > 2.0 and entry_distance_pct <= 8.0:
+            entry_status = "WAIT_PULLBACK"
+            if aggressive_entry:
+                chase_warning = (
+                    f"⚠ Don't chase at ৳{current_price}. Use limits: "
+                    f"Tier-1 ৳{aggressive_entry} ({aggressive_entry_distance_pct:.1f}% below); "
+                    f"Tier-2 ৳{entry} ({entry_distance_pct:.1f}% below, confluence)."
+                )
+            else:
+                chase_warning = (
+                    f"⚠ Don't chase at ৳{current_price} — entry is ৳{entry} "
+                    f"({entry_distance_pct:.1f}% below). Place a buy limit; wait for pullback."
+                )
+        elif entry_distance_pct > 8.0:
+            entry_status = "TOO_FAR"
+            if aggressive_entry:
+                chase_warning = (
+                    f"🚫 DO NOT BUY at ৳{current_price}. Two valid limit orders: "
+                    f"Tier-1 (aggressive) ৳{aggressive_entry} = {aggressive_entry_distance_pct:.1f}% below "
+                    f"({aggressive_entry_label.split(': ')[-1] if aggressive_entry_label else 'closer support'}); "
+                    f"Tier-2 (patient, high-edge) ৳{entry} = {entry_distance_pct:.1f}% below (confluence). "
+                    f"Buying at ৳{current_price} = chasing premium."
+                )
+            else:
+                chase_warning = (
+                    f"🚫 DO NOT BUY at ৳{current_price} — high-edge entry is ৳{entry} "
+                    f"({entry_distance_pct:.1f}% below). Wait for pullback or skip this setup. "
+                    f"Buying here = chasing premium (smart money is selling)."
+                )
+        elif entry_distance_pct < -2.0:
+            # Price already below entry — entry was the planned limit, now it's a discount
+            entry_status = "DISCOUNT_TRIGGERED"
+
+        # Update action label based on status — SMC clarity rule
+        if entry_status == "TOO_FAR" and action.startswith("BUY"):
+            action = action.replace("BUY ON DIP", "WAIT — ENTRY FAR BELOW").replace("BUY", "WAIT — ENTRY FAR BELOW")
+            action_color = "orange"
+        elif entry_status == "WAIT_PULLBACK" and action.startswith("BUY"):
+            action_color = "yellow"  # downgrade green → yellow to signal "patience"
+        elif entry_status == "AT_ENTRY" and action.startswith("BUY"):
+            action_color = "green"
+        elif entry_status == "DISCOUNT_TRIGGERED" and action.startswith("BUY"):
+            action_color = "green"
 
     # === Tomorrow's triggers ===
     triggers = []
@@ -2272,18 +2617,47 @@ def generate_analysis(structure_events, fvgs, order_blocks, key_levels, current_
         )
     if bos_zones and bos_zones.get("bullish_trigger"):
         bt = bos_zones["bullish_trigger"]
-        up_dist = (bt["price"] - current_price) / current_price * 100
+        up_dist = (bt["price"] - current_price) / current_price * 100 if current_price else 0
         structure_lines.append(
             f"BOS↑ trigger at ৳{bt['price']} (+{up_dist:.1f}%) — break confirms continuation."
         )
     if bos_zones and bos_zones.get("bearish_trigger"):
         br = bos_zones["bearish_trigger"]
-        dn_dist = (current_price - br["price"]) / current_price * 100
+        dn_dist = (current_price - br["price"]) / current_price * 100 if current_price else 0
         structure_lines.append(
             f"BOS↓ trigger at ৳{br['price']} (-{dn_dist:.1f}%) — break invalidates bull case."
         )
     if bias == "WHIPSAW":
         structure_lines.append("⚠ Whipsaw — multiple alternating reversals, no clean institutional setup.")
+
+    # HTF (weekly) bias context — Annaly Trader Step 1 / #9.4
+    if htf_bias and htf_bias.get("narrative"):
+        htf_b = htf_bias.get("bias")
+        prefix = ""
+        if htf_b == "BULLISH" and bias == "BULLISH":
+            prefix = "✅ HTF aligned: "
+        elif htf_b == "BEARISH" and bias == "BULLISH":
+            prefix = "⚠ HTF conflict (weekly bearish, daily bullish — high-risk counter-trend): "
+        elif htf_b == "BULLISH" and bias == "BEARISH":
+            prefix = "⚠ HTF conflict (weekly bullish, daily bearish — likely just a pullback): "
+        elif htf_b == "RANGE":
+            prefix = "⚠ HTF ranging: "
+        else:
+            prefix = "HTF: "
+        structure_lines.append(prefix + htf_bias["narrative"])
+
+    # Liquidity sweep vs real breakout — Annaly Trader #9.3
+    if liquidity_sweeps and liquidity_sweeps.get("latest"):
+        latest_evt = liquidity_sweeps["latest"]
+        et = latest_evt.get("type", "")
+        if "sweep" in et:
+            structure_lines.append(
+                f"⚠ Recent {latest_evt.get('date','')}: {latest_evt.get('interpretation','')}"
+            )
+        elif "real_breakout" in et or "real_breakdown" in et:
+            structure_lines.append(
+                f"✅ Recent {latest_evt.get('date','')}: {latest_evt.get('interpretation','')}"
+            )
 
     structure_narrative = " ".join(structure_lines) if structure_lines else \
         "No clear institutional structure yet. Wait for first BOS or ChoCh."
@@ -2335,6 +2709,39 @@ def generate_analysis(structure_events, fvgs, order_blocks, key_levels, current_
         _add_align("SMC Structure", "WAIT", "Multiple alternating reversals = no edge")
     else:
         _add_align("SMC Structure", "WAIT", "No clear bias yet")
+
+    # HTF (weekly) bias — multi-timeframe alignment
+    if htf_bias:
+        htf_b = htf_bias.get("bias")
+        if htf_b == "BULLISH" and bias == "BULLISH":
+            _add_align("HTF (Weekly)", "BUY",
+                       f"Weekly aligned bullish ({htf_bias.get('trend_pct',0):+.0f}% over {htf_bias.get('weeks_analysed',0)}w) — daily entries supported")
+        elif htf_b == "BEARISH" and bias == "BULLISH":
+            _add_align("HTF (Weekly)", "AVOID",
+                       f"Weekly bearish ({htf_bias.get('trend_pct',0):+.0f}% over {htf_bias.get('weeks_analysed',0)}w) — daily BUY is counter-trend, high risk")
+        elif htf_b == "BEARISH":
+            _add_align("HTF (Weekly)", "AVOID",
+                       f"Weekly bearish ({htf_bias.get('trend_pct',0):+.0f}% over {htf_bias.get('weeks_analysed',0)}w)")
+        elif htf_b == "RANGE":
+            _add_align("HTF (Weekly)", "WAIT",
+                       f"Weekly ranging ({htf_bias.get('trend_pct',0):+.0f}%) — wait for HTF clarity")
+
+    # Liquidity sweep vs real breakout
+    if liquidity_sweeps and liquidity_sweeps.get("latest"):
+        latest_evt = liquidity_sweeps["latest"]
+        et = latest_evt.get("type", "")
+        if et == "bull_sweep":
+            _add_align("Liquidity Sweep", "AVOID",
+                       f"Last event: high swept then closed inside = stops hunted, NOT breakout")
+        elif et == "bear_sweep":
+            _add_align("Liquidity Sweep", "BUY",
+                       f"Last event: low swept then closed back inside = often a bottom (institutions absorbed)")
+        elif et == "real_breakout_up":
+            _add_align("Liquidity Sweep", "BUY",
+                       f"Last event: real breakout with displacement candle (not a sweep)")
+        elif et == "real_breakdown":
+            _add_align("Liquidity Sweep", "AVOID",
+                       f"Last event: real breakdown with displacement (genuine bearish)")
 
     # Premium / Discount
     if premium_discount:
@@ -2487,6 +2894,38 @@ def generate_analysis(structure_events, fvgs, order_blocks, key_levels, current_
                 f"❌ **DON'T buy at extreme premium ({round(range_pct or 0)}% of range)** — "
                 f"smart money sells here. Wait for price to come back to discount zone."
             )
+        if in_premium and not in_extreme_premium:
+            no_buy_lines.append(
+                f"⚠ **CAUTION at premium** ({round(range_pct or 0)}% of range) — high-edge "
+                f"entries are in DISCOUNT zone (below {round((swing_low + (swing_high - swing_low)*0.382), 2) if swing_high else 'EQ'}). "
+                f"Buying here means buying retail-side liquidity."
+            )
+        if entry_status == "TOO_FAR":
+            if aggressive_entry:
+                no_buy_lines.append(
+                    f"❌ **DON'T buy at ৳{current_price}.** Two limit orders are valid: "
+                    f"**Tier-1** ৳{aggressive_entry} ({aggressive_entry_distance_pct:.1f}% below — "
+                    f"closer support, lower edge) OR **Tier-2** ৳{entry} ({entry_distance_pct:.1f}% "
+                    f"below — confluence, high edge). Buying at ৳{current_price} = chasing premium."
+                )
+            else:
+                no_buy_lines.append(
+                    f"❌ **DON'T buy at ৳{current_price} — entry is {entry_distance_pct:.1f}% below.** "
+                    f"This is the #1 SMC mistake (Annaly Trader 9.5): using SMC labels to justify "
+                    f"emotional buys. Wait for pullback to ৳{entry} or skip."
+                )
+        elif entry_status == "WAIT_PULLBACK":
+            if aggressive_entry:
+                no_buy_lines.append(
+                    f"⚠ **Use limits, not market.** Tier-1 ৳{aggressive_entry} "
+                    f"({aggressive_entry_distance_pct:.1f}% below); Tier-2 ৳{entry} "
+                    f"({entry_distance_pct:.1f}% below, confluence). Don't market-buy at ৳{current_price}."
+                )
+            else:
+                no_buy_lines.append(
+                    f"⚠ **Place buy LIMIT at ৳{entry}, don't market-buy at ৳{current_price}** "
+                    f"(entry is {entry_distance_pct:.1f}% below). Patience = better R/R."
+                )
         if overhead_bear_fvg is not None:
             no_buy_lines.append(
                 f"❌ **DON'T buy with overhead supply** — fresh bearish FVG ৳{overhead_bear_fvg['bottom']}-"
@@ -2503,6 +2942,12 @@ def generate_analysis(structure_events, fvgs, order_blocks, key_levels, current_
         "reasons": reasons,
         "entry": entry,
         "entry_label": entry_label,
+        "entry_status": entry_status,
+        "entry_distance_pct": entry_distance_pct,
+        "chase_warning": chase_warning,
+        "aggressive_entry": aggressive_entry,
+        "aggressive_entry_label": aggressive_entry_label,
+        "aggressive_entry_distance_pct": aggressive_entry_distance_pct,
         "stop_loss": stop_loss,
         "target1": target1,
         "target2": target2,
@@ -2921,6 +3366,16 @@ def get_smc_chart(symbol: str, days: int = 180, interval: str = "daily"):
             if vals[i] is not None
         ]
 
+    # Compute extended detectors BEFORE generate_analysis so they can be passed in
+    premium_discount = detect_premium_discount(swings, df, lookback=60)
+    bos_zones = detect_bos_zones(swings, structure_events, df)
+    fib_dealing_range = detect_fib_dealing_range(swings, df, lookback=60)
+    elliott_triangle = detect_elliott_triangle(swings, df, lookback=80)
+    demand_supply = detect_demand_supply_zones(df, lookback=60)
+    volatility_imbalances = detect_volatility_imbalance(df, lookback=40)
+    htf_bias = detect_htf_bias(df, weeks_lookback=12)
+    liquidity_sweeps = detect_liquidity_sweep(df, swings, lookback=20)
+
     analysis = generate_analysis(
         structure_events,
         fvg_zones,
@@ -2928,14 +3383,12 @@ def get_smc_chart(symbol: str, days: int = 180, interval: str = "daily"):
         key_levels,
         round(float(c.iloc[-1]), 2),
         df,
+        premium_discount=premium_discount,
+        bos_zones=bos_zones,
+        fib_dealing_range=fib_dealing_range,
+        htf_bias=htf_bias,
+        liquidity_sweeps=liquidity_sweeps,
     )
-
-    premium_discount = detect_premium_discount(swings, df, lookback=60)
-    bos_zones = detect_bos_zones(swings, structure_events, df)
-    fib_dealing_range = detect_fib_dealing_range(swings, df, lookback=60)
-    elliott_triangle = detect_elliott_triangle(swings, df, lookback=80)
-    demand_supply = detect_demand_supply_zones(df, lookback=60)
-    volatility_imbalances = detect_volatility_imbalance(df, lookback=40)
 
     # Advanced indicators — VSA, OBV, MFI, Ichimoku, Wyckoff Spring/SOS
     try:
@@ -3257,6 +3710,8 @@ def get_smc_chart(symbol: str, days: int = 180, interval: str = "daily"):
         "demand_zones": demand_supply.get("demand", []),
         "supply_zones": demand_supply.get("supply", []),
         "volatility_imbalances": volatility_imbalances,
+        "htf_bias": htf_bias,
+        "liquidity_sweeps": liquidity_sweeps,
         "order_flow": order_flow,
         "vsa_events": advanced.get("vsa_events", []),
         "obv": advanced.get("obv"),

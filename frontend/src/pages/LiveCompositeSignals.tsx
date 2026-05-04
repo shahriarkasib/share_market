@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { RefreshCw, TrendingUp, AlertTriangle, Clock } from "lucide-react";
 import {
@@ -222,18 +222,40 @@ export default function LiveCompositeSignals({ market = "dse" }: Props = {}) {
                     <th className="text-left px-3 py-2 font-medium">Symbol</th>
                     <th className="text-right px-3 py-2 font-medium">Score</th>
                     <th className="text-left px-3 py-2 font-medium">Status</th>
-                    <th className="text-left px-3 py-2 font-medium">Triggered</th>
-                    <th className="text-right px-3 py-2 font-medium">Entry</th>
+                    <th className="text-right px-3 py-2 font-medium" title="Tier-1 = closer support (recent swing low / equilibrium / Fib). Lower edge but realistic fill.">Tier-1 (agg.)</th>
+                    <th className="text-right px-3 py-2 font-medium" title="Tier-2 = high-edge confluence (FVG + multi-touch support). May not fill.">Tier-2 (patient)</th>
                     <th className="text-right px-3 py-2 font-medium">Stop</th>
                     <th className="text-right px-3 py-2 font-medium">T1</th>
                     <th className="text-right px-3 py-2 font-medium">Risk</th>
-                    <th className="text-left px-3 py-2 font-medium">Action</th>
+                    <th className="text-left px-3 py-2 font-medium">Status / Verdict</th>
                     <th className="text-left px-3 py-2 font-medium">Strategies (vote)</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {list.map((s) => (
-                    <tr key={s.id} className="border-t border-[var(--border)] hover:bg-[var(--hover)]">
+                  {list.map((s) => {
+                    const eStatus = s.entry_status;
+                    const tier1 = s.aggressive_entry;
+                    const tier1Dist = s.aggressive_entry_distance_pct;
+                    const tier2 = s.entry;
+                    const tier2Dist = s.entry_distance_pct;
+                    // Color logic: AT_ENTRY/DISCOUNT_TRIGGERED → green; WAIT_PULLBACK → amber; TOO_FAR → red
+                    const tierColor = (dist: number | null | undefined) => {
+                      if (dist === null || dist === undefined) return "text-[var(--text-muted)]";
+                      if (dist <= 2 && dist >= -2) return "text-emerald-500 font-semibold";
+                      if (dist > 2 && dist <= 8) return "text-amber-500";
+                      if (dist > 8) return "text-red-500";
+                      if (dist < -2) return "text-emerald-400 font-semibold"; // discount triggered
+                      return "text-[var(--text-muted)]";
+                    };
+                    const statusBadge =
+                      eStatus === "AT_ENTRY" ? { text: "🟢 BUY NOW", cls: "text-emerald-500 font-bold" } :
+                      eStatus === "DISCOUNT_TRIGGERED" ? { text: "🟢 DISCOUNT", cls: "text-emerald-400 font-bold" } :
+                      eStatus === "WAIT_PULLBACK" ? { text: "🟡 BUY LIMIT", cls: "text-amber-500 font-medium" } :
+                      eStatus === "TOO_FAR" ? { text: "🔴 DON'T CHASE", cls: "text-red-500 font-medium" } :
+                      null;
+                    return (
+                    <Fragment key={s.id}>
+                    <tr className="border-t border-[var(--border)] hover:bg-[var(--hover)]">
                       <td className="px-3 py-2">
                         <Link
                           to={`${chartBase}${s.symbol}`}
@@ -241,6 +263,15 @@ export default function LiveCompositeSignals({ market = "dse" }: Props = {}) {
                         >
                           {s.symbol}
                         </Link>
+                        {s.confidence && (
+                          <div className="text-[10px] text-[var(--text-muted)] mt-0.5">
+                            conf: <span className={
+                              s.confidence === "HIGH" ? "text-emerald-500" :
+                              s.confidence === "MEDIUM" ? "text-amber-500" :
+                              "text-gray-500"
+                            }>{s.confidence}</span>
+                          </div>
+                        )}
                       </td>
                       <td className="px-3 py-2 text-right">
                         <span className={`inline-block px-2 py-0.5 rounded text-xs border ${levelColor(s.signal_level)}`}>
@@ -256,13 +287,38 @@ export default function LiveCompositeSignals({ market = "dse" }: Props = {}) {
                             {s.pl_pct > 0 ? "+" : ""}{s.pl_pct.toFixed(1)}%
                           </span>
                         )}
+                        <div className="text-[10px] text-[var(--text-muted)] mt-0.5">
+                          <Clock className="inline h-3 w-3 mr-0.5" />
+                          {timeAgo(s.first_triggered)}
+                        </div>
                       </td>
-                      <td className="px-3 py-2 text-xs text-[var(--text-muted)]">
-                        <Clock className="inline h-3 w-3 mr-1" />
-                        {timeAgo(s.first_triggered)}
+                      <td className={`px-3 py-2 text-right font-mono text-xs ${tierColor(tier1Dist)}`}>
+                        {tier1 !== null && tier1 !== undefined ? (
+                          <>
+                            {cur}{fmtPrice(tier1)}
+                            {tier1Dist !== null && tier1Dist !== undefined && (
+                              <div className="text-[10px] opacity-80">
+                                {tier1Dist > 0 ? `${tier1Dist.toFixed(1)}% below` :
+                                 tier1Dist < -1 ? `${Math.abs(tier1Dist).toFixed(1)}% triggered` :
+                                 "at entry"}
+                              </div>
+                            )}
+                          </>
+                        ) : "—"}
                       </td>
-                      <td className="px-3 py-2 text-right font-mono text-xs">
-                        {s.entry !== null ? `${cur}${fmtPrice(s.entry)}` : "—"}
+                      <td className={`px-3 py-2 text-right font-mono text-xs ${tierColor(tier2Dist)}`}>
+                        {tier2 !== null && tier2 !== undefined ? (
+                          <>
+                            {cur}{fmtPrice(tier2)}
+                            {tier2Dist !== null && tier2Dist !== undefined && (
+                              <div className="text-[10px] opacity-80">
+                                {tier2Dist > 0 ? `${tier2Dist.toFixed(1)}% below` :
+                                 tier2Dist < -1 ? `${Math.abs(tier2Dist).toFixed(1)}% triggered` :
+                                 "at entry"}
+                              </div>
+                            )}
+                          </>
+                        ) : "—"}
                       </td>
                       <td className="px-3 py-2 text-right font-mono text-xs text-red-500/80">
                         {s.stop_loss !== null ? `${cur}${fmtPrice(s.stop_loss)}` : "—"}
@@ -281,30 +337,42 @@ export default function LiveCompositeSignals({ market = "dse" }: Props = {}) {
                       </td>
                       <td className="px-3 py-2 text-xs">
                         <div className="flex flex-col gap-0.5">
-                          <span className={
-                            s.action_type === "BUY_NOW" ? "text-emerald-500 font-bold" :
-                            s.action_type === "RECENT_TRIGGER" ? "text-emerald-400 font-medium" :
-                            s.action_type === "BUY_LIMIT" ? "text-amber-500" :
-                            s.action_type === "MISSED_ENTRY" ? "text-blue-400" :
-                            s.action_type === "RUNNING" ? "text-purple-400" :
-                            s.action_type === "SETUP_DEEP" ? "text-blue-300/70" :
-                            s.action_type === "STALE" ? "text-gray-500" :
-                            s.action_type === "AVOID" ? "text-red-500" :
-                            "text-[var(--text-muted)]"
-                          }>
-                            {s.action_type?.replace(/_/g, " ")}
-                            {s.days_since_trigger !== null && s.days_since_trigger !== undefined && s.days_since_trigger > 0 && (
-                              <span className="ml-1 opacity-70 text-[10px]">
-                                {s.days_since_trigger}d ago
-                              </span>
-                            )}
-                            {s.fvg_distance_pct !== null && s.fvg_distance_pct !== undefined && s.fvg_distance_pct > 1 && (
-                              <span className="ml-1 opacity-70 text-[10px]">
-                                +{s.fvg_distance_pct.toFixed(1)}% above zone
-                              </span>
-                            )}
-                          </span>
-                          {s.regime && (
+                          {statusBadge ? (
+                            <span className={statusBadge.cls}>{statusBadge.text}</span>
+                          ) : (
+                            <span className={
+                              s.action_type === "BUY_NOW" ? "text-emerald-500 font-bold" :
+                              s.action_type === "RECENT_TRIGGER" ? "text-emerald-400 font-medium" :
+                              s.action_type === "BUY_LIMIT" ? "text-amber-500" :
+                              s.action_type === "MISSED_ENTRY" ? "text-blue-400" :
+                              s.action_type === "RUNNING" ? "text-purple-400" :
+                              s.action_type === "SETUP_DEEP" ? "text-blue-300/70" :
+                              s.action_type === "STALE" ? "text-gray-500" :
+                              s.action_type === "AVOID" ? "text-red-500" :
+                              "text-[var(--text-muted)]"
+                            }>
+                              {s.action_type?.replace(/_/g, " ")}
+                            </span>
+                          )}
+                          {s.hedge_fund_verdict && (
+                            <span className="text-[10px] text-[var(--text-muted)]" title={s.hedge_fund_verdict}>
+                              {s.hedge_fund_verdict.length > 38
+                                ? s.hedge_fund_verdict.slice(0, 38) + "…"
+                                : s.hedge_fund_verdict}
+                            </span>
+                          )}
+                          {s.htf_bias && s.htf_bias.bias && (
+                            <span className={`text-[10px] ${
+                              s.htf_bias.bias === "BULLISH" ? "text-emerald-500" :
+                              s.htf_bias.bias === "BEARISH" ? "text-red-500" :
+                              "text-amber-500"
+                            }`}>
+                              HTF {s.htf_bias.bias.toLowerCase()}
+                              {s.htf_bias.trend_pct !== null && s.htf_bias.trend_pct !== undefined &&
+                                ` (${s.htf_bias.trend_pct >= 0 ? "+" : ""}${s.htf_bias.trend_pct.toFixed(0)}%)`}
+                            </span>
+                          )}
+                          {s.regime && !statusBadge && (
                             <span className="text-[10px] text-[var(--text-muted)]">
                               {s.regime.replace("_", " ").toLowerCase()}
                             </span>
@@ -334,7 +402,16 @@ export default function LiveCompositeSignals({ market = "dse" }: Props = {}) {
                         </div>
                       </td>
                     </tr>
-                  ))}
+                    {s.chase_warning && (
+                      <tr className="border-t border-[var(--border)]/30">
+                        <td colSpan={9} className="px-3 py-1.5 text-[11px] bg-red-500/5 text-red-400/90 italic">
+                          {s.chase_warning}
+                        </td>
+                      </tr>
+                    )}
+                    </Fragment>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>

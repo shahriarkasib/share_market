@@ -582,13 +582,18 @@ async def get_live_signals(status: str = "active", min_score: int = 0):
     out = []
     for r in rows:
         d = dict(r)
-        for k in ("active_signals", "reasons"):
+        for k in ("active_signals", "reasons", "t_plus_2_reasons", "t_plus_2_bonuses", "votes"):
             v = d.get(k)
             if isinstance(v, str):
                 try:
                     d[k] = _json.loads(v)
                 except Exception:
-                    d[k] = []
+                    d[k] = [] if k != "votes" else {}
+        # htf_bias is a single dict
+        v = d.get("htf_bias")
+        if isinstance(v, str):
+            try: d["htf_bias"] = _json.loads(v)
+            except Exception: d["htf_bias"] = None
         # Convert datetimes/numerics for JSON
         for k, v in d.items():
             if hasattr(v, "isoformat"):

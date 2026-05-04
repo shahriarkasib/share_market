@@ -82,6 +82,20 @@ def ensure_schema():
         ("t_plus_2_bonuses", "JSONB"),
         ("buy_votes", "INTEGER"),
         ("weighted_buy_pct", "NUMERIC(6,1)"),
+        # New SMC-aligned fields (Annaly Trader rules + Tier-1 aggressive)
+        ("entry_label", "TEXT"),
+        ("entry_status", "VARCHAR(25)"),
+        ("chase_warning", "TEXT"),
+        ("aggressive_entry", "NUMERIC(12,2)"),
+        ("aggressive_entry_label", "TEXT"),
+        ("aggressive_entry_distance_pct", "NUMERIC(8,2)"),
+        ("confidence", "VARCHAR(15)"),
+        ("hedge_fund_verdict", "TEXT"),
+        ("structure_verdict", "VARCHAR(25)"),
+        ("order_flow_verdict", "VARCHAR(15)"),
+        ("volume_verdict", "VARCHAR(15)"),
+        ("htf_bias", "JSONB"),
+        ("liquidity_sweep", "VARCHAR(30)"),
     ]:
         try:
             conn.execute(f"ALTER TABLE live_signals ADD COLUMN IF NOT EXISTS {col} {sql_type}")
@@ -137,12 +151,44 @@ def insert_signal(sig: dict):
             json.dumps(sig.get("t_plus_2_bonuses", [])),
         ),
     )
-    # patch buy_votes / weighted_buy_pct via separate UPDATE (since INSERT
-    # statement was already finalised — we add agreement columns post-row).
+    # patch buy_votes / weighted_buy_pct + new SMC fields via separate UPDATE
+    # (the INSERT was finalised earlier — we add new fields post-row).
     conn.execute(
-        "UPDATE live_signals SET buy_votes = %s, weighted_buy_pct = %s "
-        "WHERE id = (SELECT MAX(id) FROM live_signals WHERE symbol = %s)",
-        (sig.get("buy_votes"), sig.get("weighted_buy_pct"), sig["symbol"]),
+        """UPDATE live_signals SET
+            buy_votes = %s,
+            weighted_buy_pct = %s,
+            entry_label = %s,
+            entry_status = %s,
+            chase_warning = %s,
+            aggressive_entry = %s,
+            aggressive_entry_label = %s,
+            aggressive_entry_distance_pct = %s,
+            confidence = %s,
+            hedge_fund_verdict = %s,
+            structure_verdict = %s,
+            order_flow_verdict = %s,
+            volume_verdict = %s,
+            htf_bias = %s,
+            liquidity_sweep = %s
+           WHERE id = (SELECT MAX(id) FROM live_signals WHERE symbol = %s)""",
+        (
+            sig.get("buy_votes"),
+            sig.get("weighted_buy_pct"),
+            sig.get("entry_label"),
+            sig.get("entry_status"),
+            sig.get("chase_warning"),
+            sig.get("aggressive_entry"),
+            sig.get("aggressive_entry_label"),
+            sig.get("aggressive_entry_distance_pct"),
+            sig.get("confidence"),
+            sig.get("hedge_fund_verdict"),
+            sig.get("structure_verdict"),
+            sig.get("order_flow_verdict"),
+            sig.get("volume_verdict"),
+            json.dumps(sig.get("htf_bias")) if sig.get("htf_bias") else None,
+            sig.get("liquidity_sweep"),
+            sig["symbol"],
+        ),
     )
     conn.commit()
     conn.close()
@@ -218,6 +264,12 @@ def update_signal_state(active_row: dict, sig: dict, last_high: float, last_low:
                t_plus_2_friendly = %s, t_plus_2_reasons = %s, t_plus_2_bonuses = %s,
                buy_votes = %s, weighted_buy_pct = %s,
                signal_level = %s,
+               entry_label = %s, entry_status = %s, chase_warning = %s,
+               aggressive_entry = %s, aggressive_entry_label = %s,
+               aggressive_entry_distance_pct = %s,
+               confidence = %s, hedge_fund_verdict = %s,
+               structure_verdict = %s, order_flow_verdict = %s, volume_verdict = %s,
+               htf_bias = %s, liquidity_sweep = %s,
                closed_at = COALESCE(closed_at, %s),
                close_price = COALESCE(close_price, %s),
                pl_pct = COALESCE(pl_pct, %s)
@@ -237,6 +289,14 @@ def update_signal_state(active_row: dict, sig: dict, last_high: float, last_low:
             json.dumps(sig.get("t_plus_2_bonuses", [])),
             sig.get("buy_votes"), sig.get("weighted_buy_pct"),
             sig.get("signal_level"),
+            sig.get("entry_label"), sig.get("entry_status"), sig.get("chase_warning"),
+            sig.get("aggressive_entry"), sig.get("aggressive_entry_label"),
+            sig.get("aggressive_entry_distance_pct"),
+            sig.get("confidence"), sig.get("hedge_fund_verdict"),
+            sig.get("structure_verdict"), sig.get("order_flow_verdict"),
+            sig.get("volume_verdict"),
+            json.dumps(sig.get("htf_bias")) if sig.get("htf_bias") else None,
+            sig.get("liquidity_sweep"),
             closed_at, close_price, pl_pct, active_row["id"],
         ),
     )

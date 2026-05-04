@@ -1673,6 +1673,49 @@ export default function SMCChart({ market = "dse" }: SMCChartProps = {}) {
               </div>
             )}
 
+            {/* HTF (weekly) bias + liquidity sweep — Annaly Trader Step 1 / #9.3 / #9.4 */}
+            {(data.htf_bias || data.liquidity_sweeps?.latest) && (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-3">
+                {data.htf_bias && data.htf_bias.bias && (
+                  <div className={`rounded border px-3 py-2 ${
+                    data.htf_bias.bias === "BULLISH" ? "border-emerald-500/40 bg-emerald-500/5 text-emerald-500" :
+                    data.htf_bias.bias === "BEARISH" ? "border-red-500/40 bg-red-500/5 text-red-500" :
+                    "border-amber-500/40 bg-amber-500/5 text-amber-500"
+                  }`}>
+                    <div className="text-[10px] uppercase tracking-wider font-semibold mb-1 flex items-center justify-between">
+                      <span>📅 HTF (Weekly) Bias</span>
+                      <span className="font-bold">{data.htf_bias.bias}</span>
+                    </div>
+                    <p className="text-xs text-[var(--text)]">{data.htf_bias.narrative}</p>
+                    {data.htf_bias.weekly_swing_high && data.htf_bias.weekly_swing_low && (
+                      <p className="text-[11px] mt-1 opacity-70">
+                        Weekly range: {cur}{data.htf_bias.weekly_swing_low} – {cur}{data.htf_bias.weekly_swing_high}
+                      </p>
+                    )}
+                  </div>
+                )}
+                {data.liquidity_sweeps?.latest && (() => {
+                  const evt = data.liquidity_sweeps!.latest!;
+                  const isSweep = evt.type.includes("sweep");
+                  const isReal = evt.type.startsWith("real_");
+                  const palette = isSweep
+                    ? "border-amber-500/40 bg-amber-500/5 text-amber-500"
+                    : isReal && evt.type.endsWith("_up")
+                    ? "border-emerald-500/40 bg-emerald-500/5 text-emerald-500"
+                    : "border-red-500/40 bg-red-500/5 text-red-500";
+                  return (
+                    <div className={`rounded border px-3 py-2 ${palette}`}>
+                      <div className="text-[10px] uppercase tracking-wider font-semibold mb-1 flex items-center justify-between">
+                        <span>💧 Liquidity Sweep / Breakout</span>
+                        <span className="font-bold">{evt.type.replace(/_/g, " ")}</span>
+                      </div>
+                      <p className="text-xs text-[var(--text)]">{evt.interpretation}</p>
+                      <p className="text-[11px] mt-1 opacity-70">{evt.date}</p>
+                    </div>
+                  );
+                })()}
+              </div>
+            )}
             {/* Hedge-fund 3-pillar verdict cards */}
             {data.analysis && (
               <div className="grid grid-cols-1 lg:grid-cols-3 gap-2 mb-3">
@@ -1739,45 +1782,118 @@ export default function SMCChart({ market = "dse" }: SMCChartProps = {}) {
                 ))}
               </ul>
             )}
-            {data.analysis.entry !== null && (
-              <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 text-xs mb-3">
-                <div className="bg-emerald-500/10 border border-emerald-500/30 rounded px-2 py-1.5">
-                  <div className="text-gray-500 text-[10px]">Entry</div>
-                  <div className="font-mono font-bold text-emerald-600 dark:text-emerald-400">
-                    {cur}{data.analysis.entry}
-                  </div>
+            {/* Chase warning banner — Annaly Trader 9.5 (don't justify emotional buys) */}
+            {(() => {
+              const a = data.analysis as unknown as Record<string, unknown>;
+              const cw = a.chase_warning as string | null | undefined;
+              const es = a.entry_status as string | null | undefined;
+              if (!cw) return null;
+              const palette =
+                es === "TOO_FAR" ? "border-red-500/50 bg-red-500/10 text-red-500" :
+                es === "WAIT_PULLBACK" ? "border-amber-500/50 bg-amber-500/10 text-amber-500" :
+                "border-blue-500/40 bg-blue-500/5 text-blue-400";
+              return (
+                <div className={`mb-3 rounded border-2 px-3 py-2 text-sm ${palette}`}>
+                  {cw}
                 </div>
-                <div className="bg-red-500/10 border border-red-500/30 rounded px-2 py-1.5">
-                  <div className="text-gray-500 text-[10px]">Stop Loss</div>
-                  <div className="font-mono font-bold text-red-600 dark:text-red-400">
-                    {cur}{data.analysis.stop_loss}
+              );
+            })()}
+            {/* Tiered entries — Tier-1 aggressive (closer support) + Tier-2 patient (confluence) */}
+            {data.analysis.entry !== null && (() => {
+              const a = data.analysis as unknown as Record<string, unknown>;
+              const tier1 = a.aggressive_entry as number | null | undefined;
+              const tier1Lbl = a.aggressive_entry_label as string | null | undefined;
+              const tier1Dist = a.aggressive_entry_distance_pct as number | null | undefined;
+              const tier2 = data.analysis!.entry;
+              const eDist = a.entry_distance_pct as number | null | undefined;
+              const eStatus = a.entry_status as string | null | undefined;
+              const tierColor = (dist: number | null | undefined) => {
+                if (dist === null || dist === undefined) return "border-gray-500/30 bg-gray-500/5 text-gray-500";
+                if (Math.abs(dist) <= 2) return "border-emerald-500/40 bg-emerald-500/10 text-emerald-500";
+                if (dist > 2 && dist <= 8) return "border-amber-500/40 bg-amber-500/10 text-amber-500";
+                if (dist > 8) return "border-red-500/40 bg-red-500/10 text-red-500";
+                return "border-emerald-400/40 bg-emerald-400/10 text-emerald-400";
+              };
+              return (
+                <>
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-xs mb-2">
+                    {tier1 ? (
+                      <div className={`rounded border px-2 py-1.5 ${tierColor(tier1Dist)}`}>
+                        <div className="text-[10px] uppercase tracking-wide opacity-80">Tier-1 (aggressive)</div>
+                        <div className="font-mono font-bold">{cur}{tier1}</div>
+                        {tier1Dist !== null && tier1Dist !== undefined && (
+                          <div className="text-[10px] opacity-80">
+                            {tier1Dist > 1 ? `${tier1Dist.toFixed(1)}% below` :
+                             tier1Dist < -1 ? `${Math.abs(tier1Dist).toFixed(1)}% triggered` :
+                             "at entry"}
+                          </div>
+                        )}
+                      </div>
+                    ) : null}
+                    <div className={`rounded border px-2 py-1.5 ${tierColor(eDist)}`}>
+                      <div className="text-[10px] uppercase tracking-wide opacity-80">
+                        {tier1 ? "Tier-2 (patient)" : "Entry"}
+                      </div>
+                      <div className="font-mono font-bold">{cur}{tier2}</div>
+                      {eDist !== null && eDist !== undefined && (
+                        <div className="text-[10px] opacity-80">
+                          {eDist > 1 ? `${eDist.toFixed(1)}% below` :
+                           eDist < -1 ? `${Math.abs(eDist).toFixed(1)}% triggered` :
+                           "at entry"}
+                        </div>
+                      )}
+                    </div>
+                    <div className="bg-red-500/10 border border-red-500/30 rounded px-2 py-1.5">
+                      <div className="text-gray-500 text-[10px]">Stop Loss</div>
+                      <div className="font-mono font-bold text-red-600 dark:text-red-400">
+                        {cur}{data.analysis!.stop_loss}
+                      </div>
+                    </div>
                   </div>
-                </div>
-                <div className="bg-blue-500/10 border border-blue-500/30 rounded px-2 py-1.5">
-                  <div className="text-gray-500 text-[10px]">Target 1</div>
-                  <div className="font-mono font-bold text-blue-600 dark:text-blue-400">
-                    {cur}{data.analysis.target1}
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-xs mb-3">
+                    <div className="bg-blue-500/10 border border-blue-500/30 rounded px-2 py-1.5">
+                      <div className="text-gray-500 text-[10px]">Target 1</div>
+                      <div className="font-mono font-bold text-blue-600 dark:text-blue-400">
+                        {cur}{data.analysis!.target1}
+                      </div>
+                    </div>
+                    <div className="bg-purple-500/10 border border-purple-500/30 rounded px-2 py-1.5">
+                      <div className="text-gray-500 text-[10px]">Target 2</div>
+                      <div className="font-mono font-bold text-purple-600 dark:text-purple-400">
+                        {cur}{data.analysis!.target2}
+                      </div>
+                    </div>
+                    <div className="bg-gray-500/10 border border-gray-500/30 rounded px-2 py-1.5">
+                      <div className="text-gray-500 text-[10px]">R/R</div>
+                      <div className="font-mono font-bold">
+                        1 : {data.analysis!.risk_reward}
+                      </div>
+                    </div>
                   </div>
-                </div>
-                <div className="bg-purple-500/10 border border-purple-500/30 rounded px-2 py-1.5">
-                  <div className="text-gray-500 text-[10px]">Target 2</div>
-                  <div className="font-mono font-bold text-purple-600 dark:text-purple-400">
-                    {cur}{data.analysis.target2}
-                  </div>
-                </div>
-                <div className="bg-gray-500/10 border border-gray-500/30 rounded px-2 py-1.5">
-                  <div className="text-gray-500 text-[10px]">R/R</div>
-                  <div className="font-mono font-bold">
-                    1 : {data.analysis.risk_reward}
-                  </div>
-                </div>
-              </div>
-            )}
-            {data.analysis.entry_label && (
-              <p className="text-xs text-gray-500 italic mb-2">
-                {data.analysis.entry_label}
-              </p>
-            )}
+                  {tier1Lbl && (
+                    <p className="text-[11px] text-[var(--text-muted)] italic mb-1">
+                      {tier1Lbl}
+                    </p>
+                  )}
+                  {data.analysis!.entry_label && (
+                    <p className="text-[11px] text-[var(--text-muted)] italic mb-2">
+                      {data.analysis!.entry_label}
+                    </p>
+                  )}
+                  {eStatus && (
+                    <p className="text-[10px] text-[var(--text-muted)] mb-2">
+                      Status: <span className={
+                        eStatus === "AT_ENTRY" ? "text-emerald-500 font-semibold" :
+                        eStatus === "DISCOUNT_TRIGGERED" ? "text-emerald-400 font-semibold" :
+                        eStatus === "WAIT_PULLBACK" ? "text-amber-500" :
+                        eStatus === "TOO_FAR" ? "text-red-500" :
+                        ""
+                      }>{eStatus.replace(/_/g, " ")}</span>
+                    </p>
+                  )}
+                </>
+              );
+            })()}
             {data.analysis.triggers.length > 0 && (
               <div className="border-t border-gray-200 dark:border-gray-700/50 pt-2">
                 <p className="text-[11px] uppercase tracking-wide text-gray-500 mb-1">

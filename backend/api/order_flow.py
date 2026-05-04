@@ -250,14 +250,16 @@ def detect_absorption(df: pd.DataFrame) -> Optional[dict]:
 
 def get_orderbook_imbalance(symbol: str, conn) -> Optional[dict]:
     """DSE-only: rolling 5-snapshot bid/ask imbalance from the
-    `order_book_snapshots` table populated by `orderbook_scraper.py`.
+    `orderbook_snapshots` table populated by the orderbook scheduler job.
 
     Returns None if no data or table missing.
     """
     try:
         rows = conn.execute(
-            "SELECT bid_size, ask_size, snapshot_time FROM order_book_snapshots "
-            "WHERE symbol = ? ORDER BY snapshot_time DESC LIMIT 5",
+            "SELECT total_bid_volume AS bid_size, total_ask_volume AS ask_size, "
+            "ts AS snapshot_time, best_bid, best_ask, spread, bid_ask_ratio "
+            "FROM orderbook_snapshots "
+            "WHERE symbol = ? ORDER BY ts DESC LIMIT 5",
             (symbol.upper(),),
         ).fetchall()
     except Exception:
@@ -283,13 +285,29 @@ def get_orderbook_imbalance(symbol: str, conn) -> Optional[dict]:
     else:
         verdict = "Balanced"
 
+    # Latest bid/ask snapshot (newest row first)
+    latest = rows[0] if rows else None
+    best_bid = float(latest["best_bid"]) if latest and latest.get("best_bid") else None
+    best_ask = float(latest["best_ask"]) if latest and latest.get("best_ask") else None
+    spread = float(latest["spread"]) if latest and latest.get("spread") else None
+
     return {
         "imbalance": round(imb, 3),  # -1..+1
         "imbalance_pct": round(imb * 100, 1),
         "bid_size": round(total_bid),
         "ask_size": round(total_ask),
+        "best_bid": best_bid,
+        "best_ask": best_ask,
+        "spread": spread,
         "verdict": verdict,
         "snapshots": len(rows),
+        "impact": (
+            f"Order book {verdict.lower()} — {round(total_bid):,} buy vs {round(total_ask):,} sell "
+            f"queued (imbalance {round(imb * 100, 1):+.0f}%). FOR THIS STOCK: "
+            + ("buyers stepping up — supports a bounce." if imb > 0.05 else
+               "sellers pressing — supply overhead." if imb < -0.05 else
+               "balanced — no edge from depth alone, watch for absorption.")
+        ),
     }
 
 

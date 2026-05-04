@@ -314,6 +314,20 @@ export interface LiveCompositeSignal {
   t_plus_2_bonuses?: string[];
   buy_votes?: number | null;
   weighted_buy_pct?: number | null;
+  // ── New SMC-aligned fields ──
+  entry_label?: string | null;
+  entry_status?: "AT_ENTRY" | "WAIT_PULLBACK" | "TOO_FAR" | "DISCOUNT_TRIGGERED" | null;
+  chase_warning?: string | null;
+  aggressive_entry?: number | null;
+  aggressive_entry_label?: string | null;
+  aggressive_entry_distance_pct?: number | null;
+  confidence?: "HIGH" | "MEDIUM" | "LOW" | null;
+  hedge_fund_verdict?: string | null;
+  structure_verdict?: string | null;
+  order_flow_verdict?: string | null;
+  volume_verdict?: string | null;
+  htf_bias?: { bias?: string | null; trend_pct?: number | null; weeks_analysed?: number | null } | null;
+  liquidity_sweep?: string | null;
 }
 
 export async function fetchLiveCompositeSignals(
@@ -458,7 +472,34 @@ export interface SMCChartData {
     adx?: number | null;
     is_trendy?: boolean;
     confluence?: { bottom: number; top: number; support_touches: number } | null;
+    // ── New SMC-aligned fields ──
+    entry_status?: "AT_ENTRY" | "WAIT_PULLBACK" | "TOO_FAR" | "DISCOUNT_TRIGGERED" | null;
+    entry_distance_pct?: number | null;
+    chase_warning?: string | null;
+    aggressive_entry?: number | null;
+    aggressive_entry_label?: string | null;
+    aggressive_entry_distance_pct?: number | null;
+    hedge_fund_verdict?: string | null;
+    structure_narrative?: string | null;
+    structure_verdict?: string | null;
+    order_flow_narrative?: string | null;
+    order_flow_verdict?: string | null;
+    volume_narrative?: string | null;
+    volume_verdict?: string | null;
   };
+  htf_bias?: { bias?: string | null; trend_pct?: number | null;
+                weeks_analysed?: number | null; narrative?: string | null;
+                weekly_swing_high?: number | null; weekly_swing_low?: number | null } | null;
+  liquidity_sweeps?: {
+    events?: Array<{
+      type: string; idx: number; date: string; swing_price: number;
+      wick_high?: number; wick_low?: number; close: number; interpretation: string;
+    }>;
+    latest?: {
+      type: string; idx: number; date: string; swing_price: number;
+      wick_high?: number; wick_low?: number; close: number; interpretation: string;
+    } | null;
+  } | null;
   fib_dealing_range?: {
     swing_low: number; swing_high: number; leg_size_pct: number;
     is_uptrend_leg: boolean; current_pct: number;

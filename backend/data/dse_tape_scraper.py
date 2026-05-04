@@ -1,16 +1,21 @@
 """DSE time-and-sales scraper from lankabd.com + Lee-Ready side inference.
 
-Polls `lankabd.com/DataFeed/LatestTrade.aspx?symbol=X` every poll_interval
-seconds during DSE market hours (10:00-14:30 BST, Sun-Thu) and stores each
-print into `dse_ticks`. Side is inferred against the latest order book
-snapshot (Lee-Ready: print at/above best ask = buyer-initiated, at/below
-best bid = seller-initiated, midpoint by majority).
+Polls `lankabd.com/api/Company/MkSecondDataSymbol` (the new API used by
+LankaBD's MinuteChartMatrix page) every poll_interval seconds during DSE
+market hours and stores derived ticks into `dse_ticks`. Side is inferred
+against the latest order book snapshot (Lee-Ready: print at/above best
+ask = buyer-initiated, at/below best bid = seller-initiated, midpoint by
+price-change tick rule).
 
-Run as a systemd service alongside the existing order book scraper. Results
-power true cumulative delta + footprint analytics for DSE.
+The endpoint returns a per-second snapshot of cumulative trade count +
+volume; we diff against the previous snapshot to extract new trades.
+
+Run as a systemd service alongside the order book scraper. Results power
+true cumulative delta + footprint analytics for DSE.
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -19,7 +24,6 @@ from datetime import datetime, timezone
 from typing import Optional
 
 import requests
-from bs4 import BeautifulSoup
 
 import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -30,9 +34,11 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 log = logging.getLogger("dse_tape")
 
 
-LATEST_TRADE_URL = "https://lankabd.com/DataFeed/LatestTrade.aspx"
+LANKABD_BASE = "https://www.lankabd.com"
+TICK_URL = f"{LANKABD_BASE}/api/Company/MkSecondDataSymbol"
+COMPANY_LIST_PAGE = f"{LANKABD_BASE}/Home/MinuteChartMatrix"
 TIMEOUT = 10
-POLL_INTERVAL = int(os.environ.get("DSE_TAPE_POLL_SEC", "20"))
+POLL_INTERVAL = int(os.environ.get("DSE_TAPE_POLL_SEC", "30"))
 
 
 def ensure_schema():
@@ -56,53 +62,149 @@ def ensure_schema():
     log.info("dse_ticks schema ready")
 
 
-def fetch_latest_trades(symbol: str, session: requests.Session) -> list[dict]:
-    """Scrape the latest-trade table for a symbol. Returns list of dicts:
-    [{"ts": datetime, "price": float, "size": int}, ...]"""
+# ─── CID resolution ──────────────────────────────────────────────────────
+# LankaBD's tick API needs a numeric company ID, not the ticker. We scrape
+# the MinuteChartMatrix page once on startup and refresh once per day.
+
+_CID_CACHE: dict[str, int] = {}
+_CID_LAST_REFRESH: float = 0.0
+_CID_TTL_SECONDS = 24 * 3600
+
+
+def refresh_cid_cache(session: requests.Session) -> int:
+    """Scrape the company dropdown to build symbol→cid map."""
+    global _CID_CACHE, _CID_LAST_REFRESH
     try:
-        resp = session.get(LATEST_TRADE_URL, params={"symbol": symbol.upper()},
-                           timeout=TIMEOUT)
+        resp = session.get(COMPANY_LIST_PAGE, timeout=TIMEOUT)
         resp.raise_for_status()
+        # Pattern: <option value="361">KDSALTD</option>
+        matches = re.findall(r'value="(\d+)">([A-Z0-9]+)<', resp.text)
+        cache = {sym: int(cid) for cid, sym in matches}
+        if cache:
+            _CID_CACHE = cache
+            _CID_LAST_REFRESH = time.time()
+            log.info(f"cid cache refreshed: {len(cache)} symbols")
+        return len(cache)
     except Exception as e:
-        log.warning(f"fetch {symbol}: {e}")
+        log.warning(f"cid refresh failed: {e}")
+        return 0
+
+
+def get_csrf_token(session: requests.Session) -> Optional[str]:
+    """Fetch a fresh anti-forgery token from the company list page."""
+    try:
+        resp = session.get(COMPANY_LIST_PAGE, timeout=TIMEOUT)
+        m = re.search(r'__RequestVerificationToken[^>]*value="([^"]+)"', resp.text)
+        return m.group(1) if m else None
+    except Exception:
+        return None
+
+
+# ─── Tick fetch + diff ──────────────────────────────────────────────────
+# We store the LAST cumulative count + volume seen per symbol so that we
+# only emit ticks that are NEW since the previous poll.
+
+_LAST_CUM: dict[str, dict] = {}  # symbol → {"count": float, "volume": float, "ts_ms": float}
+
+
+def fetch_latest_trades(
+    symbol: str, session: requests.Session, token: Optional[str], trade_counts: int = 200
+) -> list[dict]:
+    """Fetch recent per-second snapshots, diff against last seen, emit new ticks.
+
+    LankaBD returns a list of [ts_ms, price, cum_count, cum_volume, cum_value_lakhs, ltp]
+    rows. We compute deltas between consecutive rows AFTER our last-seen
+    cumulative count to extract individual trade groups.
+    """
+    cid = _CID_CACHE.get(symbol.upper())
+    if not cid:
+        return []
+    headers = {"X-Requested-With": "XMLHttpRequest", "Accept": "application/json"}
+    if token:
+        headers["RequestVerificationToken"] = token
+    try:
+        resp = session.get(
+            TICK_URL,
+            params={"cid": cid, "tradeCounts": trade_counts},
+            headers=headers,
+            timeout=TIMEOUT,
+        )
+        resp.raise_for_status()
+        payload = resp.json()
+    except Exception as e:
+        log.warning(f"fetch {symbol} (cid {cid}): {e}")
         return []
 
-    soup = BeautifulSoup(resp.text, "lxml")
-    table = soup.find("table")
-    if not table:
+    rows = payload.get("data") or []
+    if not rows:
         return []
 
-    out = []
-    today = datetime.now(timezone.utc).date()
-    for tr in table.find_all("tr")[1:]:
-        tds = [td.get_text(strip=True) for td in tr.find_all("td")]
-        if len(tds) < 3:
-            continue
+    last_seen = _LAST_CUM.get(symbol.upper(), {})
+    last_count = last_seen.get("count", 0)
+    last_volume = last_seen.get("volume", 0)
+
+    # Sort by timestamp ascending so diffs are forward-moving
+    try:
+        rows = sorted(rows, key=lambda r: r[0])
+    except Exception:
+        pass
+
+    out: list[dict] = []
+    prev_count = last_count
+    prev_volume = last_volume
+    for r in rows:
         try:
-            time_str = tds[0]
-            price_str = tds[1].replace(",", "")
-            qty_str = tds[2].replace(",", "")
-            # time is HH:MM:SS in BST
-            tm = datetime.strptime(time_str, "%H:%M:%S").time()
-            ts = datetime.combine(today, tm, tzinfo=timezone.utc)
-            price = float(price_str)
-            size = int(qty_str)
-            if price <= 0 or size <= 0:
-                continue
-            out.append({"ts": ts, "price": price, "size": size})
+            ts_ms = float(r[0])
+            price = float(r[1])
+            cum_count = float(r[2])
+            cum_volume = float(r[3])
         except Exception:
             continue
+        if cum_count <= last_count:  # already-seen window
+            continue
+        new_count = int(cum_count - prev_count)
+        new_volume = int(cum_volume - prev_volume)
+        if new_count > 0 and new_volume > 0:
+            avg_size = max(1, new_volume // max(1, new_count))
+            ts = datetime.fromtimestamp(ts_ms / 1000.0, tz=timezone.utc)
+            # Emit ONE aggregate tick per second-snapshot (price is the
+            # representative print). This collapses N micro-trades into one
+            # row, which is fine for delta/VWAP analytics.
+            out.append({
+                "ts": ts,
+                "price": round(price, 2),
+                "size": int(new_volume),
+                "trade_count": new_count,
+                "avg_size": avg_size,
+            })
+        prev_count = cum_count
+        prev_volume = cum_volume
+
+    # Update cache with the latest cumulative values seen
+    if rows:
+        try:
+            latest = rows[-1]
+            _LAST_CUM[symbol.upper()] = {
+                "count": float(latest[2]),
+                "volume": float(latest[3]),
+                "ts_ms": float(latest[0]),
+            }
+        except Exception:
+            pass
     return out
 
 
+# ─── Side inference (Lee-Ready) ─────────────────────────────────────────
+
+
 def get_best_bid_ask(symbol: str) -> tuple[Optional[float], Optional[float]]:
-    """Lookup latest best bid/ask from order_book_snapshots populated by the
-    existing orderbook_scraper.py."""
+    """Lookup latest best bid/ask from orderbook_snapshots populated by the
+    orderbook scheduler job."""
     try:
         conn = get_connection()
         row = conn.execute(
-            """SELECT best_bid, best_ask FROM order_book_snapshots
-               WHERE symbol = ? ORDER BY snapshot_time DESC LIMIT 1""",
+            """SELECT best_bid, best_ask FROM orderbook_snapshots
+               WHERE symbol = ? ORDER BY ts DESC LIMIT 1""",
             (symbol.upper(),),
         ).fetchone()
         conn.close()
@@ -132,7 +234,7 @@ def classify_side(price: float, bid: Optional[float], ask: Optional[float]) -> s
     return "?"
 
 
-def insert_ticks(symbol: str, ticks: list[dict]):
+def insert_ticks(symbol: str, ticks: list[dict]) -> int:
     if not ticks:
         return 0
     bid, ask = get_best_bid_ask(symbol)
@@ -155,28 +257,31 @@ def insert_ticks(symbol: str, ticks: list[dict]):
     return inserted
 
 
+# ─── Market hours + watchlist ──────────────────────────────────────────
+
+
 def is_market_open() -> bool:
     """DSE: Sun-Thu, 10:00-14:30 BST (UTC+6)."""
     now_utc = datetime.now(timezone.utc)
     bst_minutes = (now_utc.hour * 60 + now_utc.minute + 6 * 60) % (24 * 60)
     bst_hour = bst_minutes // 60
-    bst_day = (now_utc.weekday() + (1 if now_utc.hour + 6 >= 24 else 0)) % 7  # Mon=0
-    # Sun=6, Mon=0, Tue=1, Wed=2, Thu=3 → trading days
+    bst_day = (now_utc.weekday() + (1 if now_utc.hour + 6 >= 24 else 0)) % 7
     if bst_day not in (6, 0, 1, 2, 3):
         return False
-    return 10 <= bst_hour < 15  # 10:00-14:59 BST captures 14:30 close
+    return 10 <= bst_hour < 15
 
 
 def get_watchlist() -> list[str]:
-    """Stocks we actively trade — pull from `fundamentals` A-category + portfolio."""
+    """Stocks we actively trade — A-category symbols that have a CID."""
     try:
         conn = get_connection()
         rows = conn.execute(
             "SELECT DISTINCT symbol FROM fundamentals WHERE category = 'A' "
-            "ORDER BY symbol LIMIT 80"
+            "ORDER BY symbol LIMIT 120"
         ).fetchall()
         conn.close()
-        return [r[0] for r in rows]
+        # Filter to symbols we actually have a CID for
+        return [r[0] for r in rows if r[0] in _CID_CACHE]
     except Exception:
         return []
 
@@ -184,13 +289,28 @@ def get_watchlist() -> list[str]:
 def main():
     ensure_schema()
     session = requests.Session()
-    session.headers.update({"User-Agent": "DSEAnalysisBot/1.0"})
+    session.headers.update({
+        "User-Agent": "Mozilla/5.0 (DSEAnalysisBot/2.0)",
+        "Referer": COMPANY_LIST_PAGE,
+    })
+
+    refresh_cid_cache(session)
+    if not _CID_CACHE:
+        log.error("no CIDs available — cannot poll. Sleeping 5 min and retrying.")
+
+    token = get_csrf_token(session)
+    log.info(f"csrf token: {'OK' if token else 'MISSING'}")
 
     while True:
         if not is_market_open():
             log.info("market closed — sleeping 5 min")
             time.sleep(300)
             continue
+
+        # Refresh CID cache once a day
+        if (time.time() - _CID_LAST_REFRESH) > _CID_TTL_SECONDS:
+            refresh_cid_cache(session)
+            token = get_csrf_token(session)
 
         watchlist = get_watchlist()
         if not watchlist:
@@ -199,18 +319,23 @@ def main():
             continue
 
         log.info(f"polling {len(watchlist)} symbols")
-        total = 0
+        total_inserted = 0
+        token_failures = 0
         for sym in watchlist:
             try:
-                ticks = fetch_latest_trades(sym, session)
+                ticks = fetch_latest_trades(sym, session, token, trade_counts=200)
                 n = insert_ticks(sym, ticks)
-                total += n
+                total_inserted += n
             except Exception as e:
                 log.warning(f"{sym}: {e}")
-            # gentle pacing — don't hammer lankabd
-            time.sleep(0.4)
+                token_failures += 1
+                if token_failures > 5:
+                    # Token likely expired — refresh
+                    token = get_csrf_token(session)
+                    token_failures = 0
+            time.sleep(0.3)
 
-        log.info(f"polled {len(watchlist)}, inserted ~{total} new ticks")
+        log.info(f"polled {len(watchlist)}, inserted {total_inserted} new ticks")
         time.sleep(POLL_INTERVAL)
 
 

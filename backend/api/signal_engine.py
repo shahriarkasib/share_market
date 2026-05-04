@@ -875,6 +875,23 @@ def compute_composite_signal(chart_data: dict, conn=None) -> dict:
 
     risk = compute_risk_score(analysis, vp_pos, order_flow.get("vwap"), current_price)
 
+    # Derive premium-zone + overhead-supply flags from chart_data (these were
+    # historically inlined but the variables aren't in scope here)
+    pd_dict = chart_data.get("premium_discount") or {}
+    range_pct = pd_dict.get("current_pct") or 0
+    in_extreme_premium = range_pct >= 79
+    # Overhead bearish FVG within 3% of current price = institutional supply ceiling
+    overhead_bear_fvg = None
+    try:
+        for f in (chart_data.get("fvg_zones") or []):
+            if f.get("type") == "bearish" and not f.get("mitigated"):
+                fbot = float(f.get("bottom", 0) or 0)
+                if fbot > current_price and (fbot - current_price) / current_price <= 0.03:
+                    overhead_bear_fvg = f
+                    break
+    except Exception:
+        overhead_bear_fvg = None
+
     # ─── T+2 friendliness: is this trade likely to resolve in 1-3 days?
     # For DSE retail with T+2 settlement, only certain setups are tradeable.
     state = state_info["state"]
@@ -912,6 +929,18 @@ def compute_composite_signal(chart_data: dict, conn=None) -> dict:
     if order_flow.get("absorption", {}).get("absorbed"):
         t2_bonus.append("buyer absorption")
 
+    # Pull HTF bias summary (top-level chart field, not analysis)
+    htf = chart_data.get("htf_bias") or {}
+    htf_summary = {
+        "bias": htf.get("bias"),
+        "trend_pct": htf.get("trend_pct"),
+        "weeks_analysed": htf.get("weeks_analysed"),
+    } if htf else None
+
+    # Pull latest liquidity sweep type
+    ls = chart_data.get("liquidity_sweeps") or {}
+    ls_latest = (ls.get("latest") or {}).get("type") if ls else None
+
     return {
         "symbol": symbol,
         "current_price": current_price,
@@ -924,11 +953,24 @@ def compute_composite_signal(chart_data: dict, conn=None) -> dict:
         "active_signals": active,
         "reasons": reasons[:6],
         "entry": analysis.get("entry"),
+        "entry_label": analysis.get("entry_label"),
+        "entry_status": analysis.get("entry_status"),
+        "chase_warning": analysis.get("chase_warning"),
+        "aggressive_entry": analysis.get("aggressive_entry"),
+        "aggressive_entry_label": analysis.get("aggressive_entry_label"),
+        "aggressive_entry_distance_pct": analysis.get("aggressive_entry_distance_pct"),
         "stop_loss": analysis.get("stop_loss"),
         "target1": analysis.get("target1"),
         "target2": analysis.get("target2"),
         "risk_reward": analysis.get("risk_reward"),
         "bias": analysis.get("bias"),
+        "confidence": analysis.get("confidence"),
+        "hedge_fund_verdict": analysis.get("hedge_fund_verdict"),
+        "structure_verdict": analysis.get("structure_verdict"),
+        "order_flow_verdict": analysis.get("order_flow_verdict"),
+        "volume_verdict": analysis.get("volume_verdict"),
+        "htf_bias": htf_summary,
+        "liquidity_sweep": ls_latest,
         "entry_class": entry_class,
         "action_type": state_info["state"],  # use lifecycle state as action_type
         "state_label": state_info["label"],
