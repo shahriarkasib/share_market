@@ -538,7 +538,11 @@ async def get_signal_accuracy():
 
 
 @router.get("/live-signals")
-async def get_live_signals(status: str = "active", min_score: int = 0):
+async def get_live_signals(
+    status: str = "active",
+    min_score: int = 0,
+    bucket: str | None = None,  # IN_ZONE | WATCHING | MISSED | STALE
+):
     """
     Return live composite signals from the live_signals table.
 
@@ -578,6 +582,9 @@ async def get_live_signals(status: str = "active", min_score: int = 0):
             "ORDER BY composite_score DESC, last_seen DESC LIMIT 100",
             (status, min_score),
         ).fetchall()
+    # Optional bucket filter (IN_ZONE | WATCHING | MISSED | STALE)
+    if bucket:
+        rows = [r for r in rows if (dict(r).get("bucket") or "").upper() == bucket.upper()]
     conn.close()
     out = []
     for r in rows:

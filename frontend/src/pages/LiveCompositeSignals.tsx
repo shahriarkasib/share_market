@@ -85,17 +85,73 @@ export default function LiveCompositeSignals({ market = "dse" }: Props = {}) {
     return () => window.clearInterval(id);
   }, [filter, minScore]);
 
-  const grouped = useMemo(() => {
-    const filtered = signals.filter((s) => {
-      if (tPlusTwoOnly && !s.t_plus_2_friendly) return false;
-      if (minAgreement > 0 && (s.buy_votes ?? 0) < minAgreement) return false;
-      return true;
+  const [bucket, setBucket] = useState<"IN_ZONE" | "WATCHING" | "MISSED" | "ALL">("IN_ZONE");
+
+  const filteredAll = useMemo(() => signals.filter((s) => {
+    if (tPlusTwoOnly && !s.t_plus_2_friendly) return false;
+    if (minAgreement > 0 && (s.buy_votes ?? 0) < minAgreement) return false;
+    return true;
+  }), [signals, tPlusTwoOnly, minAgreement]);
+
+  // Derive bucket if backend hasn't yet (fallback to entry_distance_pct logic)
+  const deriveBucket = (s: LiveCompositeSignal): "IN_ZONE" | "WATCHING" | "MISSED" | "STALE" => {
+    if (s.bucket) return s.bucket;
+    const cp = s.current_price;
+    const t1l = s.aggressive_entry_zone_low; const t1h = s.aggressive_entry_zone_high;
+    const t2l = s.entry_zone_low; const t2h = s.entry_zone_high;
+    if (cp != null) {
+      if (t1l != null && t1h != null && cp >= t1l && cp <= t1h) return "IN_ZONE";
+      if (t2l != null && t2h != null && cp >= t2l && cp <= t2h) return "IN_ZONE";
+    }
+    if (s.entry_status === "AT_ENTRY" || s.entry_status === "DISCOUNT_TRIGGERED") return "IN_ZONE";
+    if (s.entry_status === "WAIT_PULLBACK") return "WATCHING";
+    if (s.entry_status === "TOO_FAR") return "MISSED";
+    return "STALE";
+  };
+
+  const bucketed = useMemo(() => {
+    const byBucket: Record<string, LiveCompositeSignal[]> = {
+      IN_ZONE: [], WATCHING: [], MISSED: [], STALE: [],
+    };
+    filteredAll.forEach((s) => {
+      const b = deriveBucket(s);
+      byBucket[b].push(s);
     });
-    const strong = filtered.filter((s) => s.signal_level === "STRONG_BUY");
-    const buy = filtered.filter((s) => s.signal_level === "BUY");
-    const watch = filtered.filter((s) => s.signal_level === "WATCH");
+    return byBucket;
+  }, [filteredAll]);
+
+  // Accuracy stats — for past triggers (>T+2 = 2 trading days), avg max-profit
+  const accuracy = useMemo(() => {
+    const triggered = filteredAll.filter(
+      (s) => (s.primary_trigger_bars_ago ?? 0) >= 2
+        && s.primary_trigger_max_profit_pct != null
+    );
+    if (!triggered.length) return null;
+    const profits = triggered.map((s) => s.primary_trigger_max_profit_pct as number);
+    const avgProfit = profits.reduce((a, b) => a + b, 0) / profits.length;
+    const hits = profits.filter((p) => p >= 5).length;  // ≥5% gain = hit
+    const hitRate = (hits / profits.length) * 100;
+    return {
+      total: triggered.length,
+      avgProfit: Math.round(avgProfit * 10) / 10,
+      hitRate: Math.round(hitRate),
+      best: Math.round(Math.max(...profits) * 10) / 10,
+      worst: Math.round(Math.min(...profits) * 10) / 10,
+    };
+  }, [filteredAll]);
+
+  // For the active bucket, group by signal_level for finer ranking
+  const list = useMemo(() => {
+    if (bucket === "ALL") return filteredAll;
+    return bucketed[bucket] || [];
+  }, [bucket, bucketed, filteredAll]);
+
+  const grouped = useMemo(() => {
+    const strong = list.filter((s) => s.signal_level === "STRONG_BUY");
+    const buy = list.filter((s) => s.signal_level === "BUY");
+    const watch = list.filter((s) => s.signal_level === "WATCH");
     return { strong, buy, watch };
-  }, [signals, tPlusTwoOnly, minAgreement]);
+  }, [list]);
 
   return (
     <div className="max-w-[1440px] mx-auto px-3 sm:px-4 lg:px-8 py-6">
@@ -184,6 +240,50 @@ export default function LiveCompositeSignals({ market = "dse" }: Props = {}) {
       {error && (
         <div className="rounded border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-500 mb-3">
           {error}
+        </div>
+      )}
+
+      {/* BUCKET TABS — 3 sections: BUY ZONE / WATCHING / MISSED */}
+      <div className="mb-3 flex flex-wrap gap-2">
+        {([
+          { key: "IN_ZONE", label: "🟢 BUY ZONE", desc: "price IN entry range — actionable now",
+            cls: "bg-emerald-500/15 border-emerald-500/50 text-emerald-500" },
+          { key: "WATCHING", label: "👀 WATCHING", desc: "approaching from above — set buy limit",
+            cls: "bg-amber-500/15 border-amber-500/50 text-amber-500" },
+          { key: "MISSED", label: "❌ MISSED", desc: "was at zone, price moved up",
+            cls: "bg-red-500/15 border-red-500/50 text-red-500" },
+          { key: "ALL", label: "📊 ALL", desc: "all signals",
+            cls: "bg-blue-500/15 border-blue-500/50 text-blue-500" },
+        ] as const).map((b) => {
+          const count = b.key === "ALL" ? filteredAll.length : (bucketed[b.key]?.length ?? 0);
+          return (
+            <button
+              key={b.key}
+              onClick={() => setBucket(b.key as typeof bucket)}
+              title={b.desc}
+              className={`px-3 py-1.5 rounded text-xs border transition flex items-center gap-2 ${
+                bucket === b.key
+                  ? b.cls
+                  : "border-[var(--border)] text-[var(--text-muted)] hover:bg-[var(--hover)]"
+              }`}
+            >
+              <span className="font-semibold">{b.label}</span>
+              <span className="opacity-80">({count})</span>
+            </button>
+          );
+        })}
+      </div>
+
+      {/* ACCURACY BANNER — what past triggers actually delivered */}
+      {accuracy && (
+        <div className="mb-4 rounded border border-purple-500/30 bg-purple-500/5 px-3 py-2 text-xs">
+          <span className="font-semibold text-purple-400">Past trigger accuracy</span>
+          <span className="text-[var(--text-muted)]"> ({accuracy.total} triggers ≥2d old):</span>
+          {" "}
+          hit rate (≥5% gain) <strong className="text-emerald-500">{accuracy.hitRate}%</strong>
+          {" · "}avg max profit <strong className="text-emerald-500">+{accuracy.avgProfit}%</strong>
+          {" · "}best <strong className="text-emerald-500">+{accuracy.best}%</strong>
+          {" · "}worst drawdown <strong className="text-red-500">{accuracy.worst}%</strong>
         </div>
       )}
 
@@ -406,6 +506,40 @@ export default function LiveCompositeSignals({ market = "dse" }: Props = {}) {
                       <tr className="border-t border-[var(--border)]/30">
                         <td colSpan={9} className="px-3 py-1.5 text-[11px] bg-red-500/5 text-red-400/90 italic">
                           {s.chase_warning}
+                        </td>
+                      </tr>
+                    )}
+                    {/* Trigger info — shown for MISSED bucket so user sees "triggered on X, would have been +N%" */}
+                    {(s.primary_trigger_date || s.tier1_trigger_date || s.tier2_trigger_date) && bucket === "MISSED" && (
+                      <tr className="border-t border-[var(--border)]/30">
+                        <td colSpan={9} className="px-3 py-1.5 text-[11px] bg-blue-500/5">
+                          <span className="text-blue-400 font-semibold">📅 Triggered: </span>
+                          {s.tier1_trigger_date && (
+                            <span className="mr-3">
+                              Tier-1 zone hit on <strong>{s.tier1_trigger_date}</strong>
+                              {s.tier1_trigger_bars_ago !== null && s.tier1_trigger_bars_ago !== undefined && (
+                                <> ({s.tier1_trigger_bars_ago}d ago)</>
+                              )}
+                              {s.tier1_max_profit_pct !== null && s.tier1_max_profit_pct !== undefined && (
+                                <> — max profit since: <strong className={
+                                  s.tier1_max_profit_pct >= 0 ? "text-emerald-500" : "text-red-500"
+                                }>{s.tier1_max_profit_pct >= 0 ? "+" : ""}{s.tier1_max_profit_pct.toFixed(1)}%</strong></>
+                              )}
+                            </span>
+                          )}
+                          {s.tier2_trigger_date && (
+                            <span>
+                              Tier-2 zone hit on <strong>{s.tier2_trigger_date}</strong>
+                              {s.tier2_trigger_bars_ago !== null && s.tier2_trigger_bars_ago !== undefined && (
+                                <> ({s.tier2_trigger_bars_ago}d ago)</>
+                              )}
+                              {s.tier2_max_profit_pct !== null && s.tier2_max_profit_pct !== undefined && (
+                                <> — would-be max profit: <strong className={
+                                  s.tier2_max_profit_pct >= 0 ? "text-emerald-500" : "text-red-500"
+                                }>{s.tier2_max_profit_pct >= 0 ? "+" : ""}{s.tier2_max_profit_pct.toFixed(1)}%</strong></>
+                              )}
+                            </span>
+                          )}
                         </td>
                       </tr>
                     )}

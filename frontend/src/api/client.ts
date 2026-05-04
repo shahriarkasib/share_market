@@ -328,6 +328,22 @@ export interface LiveCompositeSignal {
   volume_verdict?: string | null;
   htf_bias?: { bias?: string | null; trend_pct?: number | null; weeks_analysed?: number | null } | null;
   liquidity_sweep?: string | null;
+  // Entry zone (range) + technical trigger fields
+  entry_zone_low?: number | null;
+  entry_zone_high?: number | null;
+  aggressive_entry_zone_low?: number | null;
+  aggressive_entry_zone_high?: number | null;
+  primary_trigger_date?: string | null;
+  primary_trigger_bars_ago?: number | null;
+  primary_trigger_max_profit_pct?: number | null;
+  primary_trigger_max_drawdown_pct?: number | null;
+  tier1_trigger_date?: string | null;
+  tier1_trigger_bars_ago?: number | null;
+  tier1_max_profit_pct?: number | null;
+  tier2_trigger_date?: string | null;
+  tier2_trigger_bars_ago?: number | null;
+  tier2_max_profit_pct?: number | null;
+  bucket?: "IN_ZONE" | "WATCHING" | "MISSED" | "STALE" | null;
 }
 
 export async function fetchLiveCompositeSignals(

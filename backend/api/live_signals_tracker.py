@@ -96,6 +96,22 @@ def ensure_schema():
         ("volume_verdict", "VARCHAR(15)"),
         ("htf_bias", "JSONB"),
         ("liquidity_sweep", "VARCHAR(30)"),
+        # Entry zone (range) + technical trigger fields
+        ("entry_zone_low", "NUMERIC(12,2)"),
+        ("entry_zone_high", "NUMERIC(12,2)"),
+        ("aggressive_entry_zone_low", "NUMERIC(12,2)"),
+        ("aggressive_entry_zone_high", "NUMERIC(12,2)"),
+        ("primary_trigger_date", "DATE"),  # actual technical trigger
+        ("primary_trigger_bars_ago", "INTEGER"),
+        ("primary_trigger_max_profit_pct", "NUMERIC(8,2)"),
+        ("primary_trigger_max_drawdown_pct", "NUMERIC(8,2)"),
+        ("tier1_trigger_date", "DATE"),
+        ("tier1_trigger_bars_ago", "INTEGER"),
+        ("tier1_max_profit_pct", "NUMERIC(8,2)"),
+        ("tier2_trigger_date", "DATE"),
+        ("tier2_trigger_bars_ago", "INTEGER"),
+        ("tier2_max_profit_pct", "NUMERIC(8,2)"),
+        ("bucket", "VARCHAR(15)"),  # IN_ZONE | WATCHING | MISSED | STALE
     ]:
         try:
             conn.execute(f"ALTER TABLE live_signals ADD COLUMN IF NOT EXISTS {col} {sql_type}")
@@ -118,6 +134,72 @@ def get_active_signal(symbol: str):
     ).fetchone()
     conn.close()
     return dict(row) if row else None
+
+
+def derive_bucket(sig: dict) -> str:
+    """Categorise a signal:
+      IN_ZONE   — price is STRICTLY inside an entry zone OR below the lowest
+                  zone (discount triggered = still safe). Above zone = NOT in zone.
+      WATCHING  — price 0-8% above the closest zone_high (approaching).
+      MISSED    — price >8% above the closest zone_high (chase territory).
+      STALE     — no entry / no zone defined.
+    """
+    cp = sig.get("current_price")
+    t1l = sig.get("aggressive_entry_zone_low")
+    t1h = sig.get("aggressive_entry_zone_high")
+    t2l = sig.get("entry_zone_low")
+    t2h = sig.get("entry_zone_high")
+
+    if cp is None:
+        return "STALE"
+
+    # Strictly inside a zone
+    in_t1 = t1l is not None and t1h is not None and t1l <= cp <= t1h
+    in_t2 = t2l is not None and t2h is not None and t2l <= cp <= t2h
+    if in_t1 or in_t2:
+        return "IN_ZONE"
+
+    # Below all zones = discount triggered
+    below_t1 = t1l is not None and cp < t1l
+    below_t2 = t2l is not None and cp < t2l
+    if below_t1 or below_t2:
+        return "IN_ZONE"  # cheaper than expected — still actionable
+
+    # Above zone(s): how far above the CLOSEST zone_high?
+    candidates_high = [h for h in (t1h, t2h) if h is not None]
+    if not candidates_high:
+        return "STALE"
+    closest_high = max(candidates_high)  # the higher (closer to current) zone top
+    pct_above = (cp - closest_high) / closest_high * 100 if closest_high > 0 else 999
+    if pct_above <= 0:
+        return "IN_ZONE"
+    if pct_above <= 8.0:
+        return "WATCHING"
+    return "MISSED"
+
+
+def _trigger_fields(sig: dict) -> dict:
+    """Extract trigger-related sub-objects from sig as flat columns."""
+    pt = sig.get("primary_trigger") or {}
+    t1 = sig.get("tier1_trigger") or {}
+    t2 = sig.get("tier2_trigger") or {}
+    return {
+        "entry_zone_low": sig.get("entry_zone_low"),
+        "entry_zone_high": sig.get("entry_zone_high"),
+        "aggressive_entry_zone_low": sig.get("aggressive_entry_zone_low"),
+        "aggressive_entry_zone_high": sig.get("aggressive_entry_zone_high"),
+        "primary_trigger_date": pt.get("last_hit_date"),
+        "primary_trigger_bars_ago": pt.get("bars_since_hit"),
+        "primary_trigger_max_profit_pct": pt.get("max_profit_pct_mid_entry"),
+        "primary_trigger_max_drawdown_pct": pt.get("max_drawdown_pct"),
+        "tier1_trigger_date": t1.get("last_hit_date"),
+        "tier1_trigger_bars_ago": t1.get("bars_since_hit"),
+        "tier1_max_profit_pct": t1.get("max_profit_pct_mid_entry"),
+        "tier2_trigger_date": t2.get("last_hit_date"),
+        "tier2_trigger_bars_ago": t2.get("bars_since_hit"),
+        "tier2_max_profit_pct": t2.get("max_profit_pct_mid_entry"),
+        "bucket": derive_bucket(sig),
+    }
 
 
 def insert_signal(sig: dict):
@@ -153,6 +235,7 @@ def insert_signal(sig: dict):
     )
     # patch buy_votes / weighted_buy_pct + new SMC fields via separate UPDATE
     # (the INSERT was finalised earlier — we add new fields post-row).
+    tf = _trigger_fields(sig)
     conn.execute(
         """UPDATE live_signals SET
             buy_votes = %s,
@@ -169,7 +252,14 @@ def insert_signal(sig: dict):
             order_flow_verdict = %s,
             volume_verdict = %s,
             htf_bias = %s,
-            liquidity_sweep = %s
+            liquidity_sweep = %s,
+            entry_zone_low = %s, entry_zone_high = %s,
+            aggressive_entry_zone_low = %s, aggressive_entry_zone_high = %s,
+            primary_trigger_date = %s, primary_trigger_bars_ago = %s,
+            primary_trigger_max_profit_pct = %s, primary_trigger_max_drawdown_pct = %s,
+            tier1_trigger_date = %s, tier1_trigger_bars_ago = %s, tier1_max_profit_pct = %s,
+            tier2_trigger_date = %s, tier2_trigger_bars_ago = %s, tier2_max_profit_pct = %s,
+            bucket = %s
            WHERE id = (SELECT MAX(id) FROM live_signals WHERE symbol = %s)""",
         (
             sig.get("buy_votes"),
@@ -187,6 +277,13 @@ def insert_signal(sig: dict):
             sig.get("volume_verdict"),
             json.dumps(sig.get("htf_bias")) if sig.get("htf_bias") else None,
             sig.get("liquidity_sweep"),
+            tf["entry_zone_low"], tf["entry_zone_high"],
+            tf["aggressive_entry_zone_low"], tf["aggressive_entry_zone_high"],
+            tf["primary_trigger_date"], tf["primary_trigger_bars_ago"],
+            tf["primary_trigger_max_profit_pct"], tf["primary_trigger_max_drawdown_pct"],
+            tf["tier1_trigger_date"], tf["tier1_trigger_bars_ago"], tf["tier1_max_profit_pct"],
+            tf["tier2_trigger_date"], tf["tier2_trigger_bars_ago"], tf["tier2_max_profit_pct"],
+            tf["bucket"],
             sig["symbol"],
         ),
     )
@@ -252,6 +349,7 @@ def update_signal_state(active_row: dict, sig: dict, last_high: float, last_low:
                 pl_pct = (cur_price - entry) / entry * 100
 
     conn = get_connection()
+    tf = _trigger_fields(sig)
     conn.execute(
         """UPDATE live_signals
            SET last_seen = NOW(), status = %s, composite_score = %s,
@@ -270,6 +368,13 @@ def update_signal_state(active_row: dict, sig: dict, last_high: float, last_low:
                confidence = %s, hedge_fund_verdict = %s,
                structure_verdict = %s, order_flow_verdict = %s, volume_verdict = %s,
                htf_bias = %s, liquidity_sweep = %s,
+               entry_zone_low = %s, entry_zone_high = %s,
+               aggressive_entry_zone_low = %s, aggressive_entry_zone_high = %s,
+               primary_trigger_date = %s, primary_trigger_bars_ago = %s,
+               primary_trigger_max_profit_pct = %s, primary_trigger_max_drawdown_pct = %s,
+               tier1_trigger_date = %s, tier1_trigger_bars_ago = %s, tier1_max_profit_pct = %s,
+               tier2_trigger_date = %s, tier2_trigger_bars_ago = %s, tier2_max_profit_pct = %s,
+               bucket = %s,
                closed_at = COALESCE(closed_at, %s),
                close_price = COALESCE(close_price, %s),
                pl_pct = COALESCE(pl_pct, %s)
@@ -297,6 +402,13 @@ def update_signal_state(active_row: dict, sig: dict, last_high: float, last_low:
             sig.get("volume_verdict"),
             json.dumps(sig.get("htf_bias")) if sig.get("htf_bias") else None,
             sig.get("liquidity_sweep"),
+            tf["entry_zone_low"], tf["entry_zone_high"],
+            tf["aggressive_entry_zone_low"], tf["aggressive_entry_zone_high"],
+            tf["primary_trigger_date"], tf["primary_trigger_bars_ago"],
+            tf["primary_trigger_max_profit_pct"], tf["primary_trigger_max_drawdown_pct"],
+            tf["tier1_trigger_date"], tf["tier1_trigger_bars_ago"], tf["tier1_max_profit_pct"],
+            tf["tier2_trigger_date"], tf["tier2_trigger_bars_ago"], tf["tier2_max_profit_pct"],
+            tf["bucket"],
             closed_at, close_price, pl_pct, active_row["id"],
         ),
     )
