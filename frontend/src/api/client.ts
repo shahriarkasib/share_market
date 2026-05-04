@@ -356,6 +356,53 @@ export async function fetchLiveCompositeSignals(
   return data;
 }
 
+export type MethodKey =
+  | "SMC" | "ORDER_FLOW" | "VSA" | "WYCKOFF" | "HARMONIC" | "FIBONACCI"
+  | "ELLIOTT" | "ICHIMOKU" | "RSI_MACD" | "BOLLINGER" | "CHART_PATTERN"
+  | "CANDLE_PATTERN" | "MOVING_AVG" | "SUPPORT_RESISTANCE" | "OBV_MFI";
+
+export interface MethodSignal {
+  id: number;
+  symbol: string;
+  method: MethodKey;
+  market: string;
+  last_seen: string;
+  signal: "BUY" | "WATCH" | "AVOID" | "NONE" | null;
+  bucket: "IN_ZONE" | "WATCHING" | "MISSED" | "WRONG_TRIGGER" | "STALE" | null;
+  confidence: "HIGH" | "MEDIUM" | "LOW" | null;
+  entry: number | null;
+  entry_zone_low: number | null;
+  entry_zone_high: number | null;
+  stop_loss: number | null;
+  target1: number | null;
+  current_price: number | null;
+  reason: string | null;
+  trigger_date: string | null;
+  bars_since_trigger: number | null;
+  max_profit_since_pct: number | null;
+  max_drawdown_since_pct: number | null;
+}
+
+export async function fetchMethodSignals(
+  method: MethodKey,
+  bucket?: string,
+): Promise<MethodSignal[]> {
+  const params: Record<string, string> = { method };
+  if (bucket) params.bucket = bucket;
+  const { data } = await api.get<MethodSignal[]>("/market/method-signals", { params });
+  return data;
+}
+
+export interface MethodBucketCounts {
+  method: MethodKey;
+  buckets: Partial<Record<"IN_ZONE" | "WATCHING" | "MISSED" | "WRONG_TRIGGER" | "STALE", number>>;
+}
+
+export async function fetchMethodCounts(): Promise<MethodBucketCounts[]> {
+  const { data } = await api.get<MethodBucketCounts[]>("/market/method-signals/methods");
+  return data;
+}
+
 export interface AccuracyBucket {
   trades: number;
   wins: number;
