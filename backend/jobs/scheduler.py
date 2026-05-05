@@ -899,7 +899,7 @@ def setup_scheduler() -> AsyncIOScheduler:
         fast_pipeline,
         trigger=CronTrigger(
             day_of_week="sun,mon,tue,wed,thu",
-            hour="10-14", minute="*/5",
+            hour="10-14", minute="*/2",
             timezone="Asia/Dhaka",
         ),
         id="fast_pipeline",
@@ -1001,12 +1001,14 @@ def setup_scheduler() -> AsyncIOScheduler:
         replace_existing=True,
     )
 
-    # Composite signal tracker (every 5 min during market hours)
+    # Composite signal tracker (every 3 min during market hours)
+    # Slightly offset from fast_pipeline (*/2) so live_prices is fresh when
+    # the tracker reads it.
     scheduler.add_job(
         run_composite_signal_tracker,
         trigger=CronTrigger(
             day_of_week="sun,mon,tue,wed,thu",
-            hour="10-15", minute="*/5",
+            hour="10-15", minute="1,4,7,10,13,16,19,22,25,28,31,34,37,40,43,46,49,52,55,58",
             timezone="Asia/Dhaka",
         ),
         id="composite_signals",
