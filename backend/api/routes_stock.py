@@ -248,6 +248,41 @@ async def get_stock_peers(symbol: str, limit: int = 8):
     return {"sector": sector, "peers": _clean_nan(result)}
 
 
+@router.get("/{symbol}/time-and-sales")
+async def get_time_and_sales(symbol: str, limit: int = 100, since_minutes: int = 360):
+    """Raw tick-by-tick trade tape from the dse_ticks table.
+
+    Returns the most recent `limit` trades within the last `since_minutes`,
+    newest first. Each row: ts, price, size, side (B/S via Lee-Ready),
+    best_bid, best_ask at trade time.
+    """
+    from database import get_connection
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            """SELECT ts, price, size, side, best_bid, best_ask
+               FROM dse_ticks
+               WHERE symbol = %s
+                 AND ts >= NOW() - INTERVAL %s
+               ORDER BY ts DESC
+               LIMIT %s""",
+            (symbol.upper(), f"{since_minutes} minutes", min(limit, 500)),
+        ).fetchall()
+    finally:
+        conn.close()
+    out = []
+    for r in rows:
+        d = dict(r)
+        for k, v in d.items():
+            if hasattr(v, "isoformat"):
+                d[k] = v.isoformat()
+            elif hasattr(v, "__float__") and k != "size":
+                try: d[k] = float(v)
+                except Exception: pass
+        out.append(d)
+    return {"symbol": symbol.upper(), "count": len(out), "ticks": out}
+
+
 @router.get("/{symbol}/smc-chart")
 async def get_stock_smc_chart(symbol: str, period: str = "6m", interval: str = "daily"):
     """Get OHLCV + FVG + BOS/ChoCh + Fib + Gann + Pivots for SMC-style charting.

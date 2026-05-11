@@ -719,6 +719,34 @@ export interface FetchSMCChartOptions {
   signal?: AbortSignal;
 }
 
+export interface TimeAndSalesTick {
+  ts: string;
+  price: number;
+  size: number;
+  side: "B" | "S" | "?";
+  best_bid: number | null;
+  best_ask: number | null;
+}
+
+export interface TimeAndSalesResponse {
+  symbol: string;
+  count: number;
+  ticks: TimeAndSalesTick[];
+}
+
+export async function fetchTimeAndSales(
+  symbol: string,
+  limit: number = 100,
+  sinceMinutes: number = 240,
+): Promise<TimeAndSalesResponse> {
+  const { data } = await api.get<TimeAndSalesResponse>(
+    `/stock/${symbol.toUpperCase()}/time-and-sales`,
+    { params: { limit, since_minutes: sinceMinutes } },
+  );
+  return data;
+}
+
+
 export async function fetchSMCChart(
   symbol: string,
   period: "1m" | "3m" | "6m" | "1y" | "2y" | "3y" | "5y" = "5y",

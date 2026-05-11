@@ -31,7 +31,9 @@ import {
   fetchAllPrices,
   fetchNasdaqChart,
   fetchNasdaqTickers,
+  fetchTimeAndSales,
   type SMCChartData,
+  type TimeAndSalesTick,
 } from "../api/client";
 import type { StockPrice } from "../types/index";
 
@@ -118,6 +120,140 @@ function saveToggles(t: Toggles) {
   } catch {
     /* ignore */
   }
+}
+
+function TimeAndSalesTape({ symbol }: { symbol: string }) {
+  const [ticks, setTicks] = useState<TimeAndSalesTick[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = async () => {
+    try {
+      const r = await fetchTimeAndSales(symbol, 60, 240);
+      setTicks(r.ticks || []);
+      setError(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to load");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void load();
+  }, [symbol]);
+
+  useEffect(() => {
+    // Auto-refresh every 15s — only during DSE hours (Sun-Thu 10-15 BST)
+    const tick = window.setInterval(() => {
+      const now = new Date();
+      const bstMin = (now.getUTCHours() * 60 + now.getUTCMinutes() + 6 * 60) % (24 * 60);
+      const bstDay = (now.getUTCDay() + (bstMin >= 24 * 60 ? 1 : 0)) % 7;
+      const isMarketHours = bstDay >= 0 && bstDay <= 4 && bstMin >= 10 * 60 && bstMin <= 15 * 60;
+      if (isMarketHours) void load();
+    }, 15_000);
+    return () => window.clearInterval(tick);
+  }, [symbol]);
+
+  if (loading && ticks.length === 0) {
+    return null; // hide on first load — order flow card below handles it
+  }
+  if (error || ticks.length === 0) {
+    return (
+      <div className="mb-3 rounded border border-[var(--border)] px-3 py-2 text-xs">
+        <div className="font-semibold uppercase tracking-wide text-cyan-400 mb-1">
+          🛰️ Time &amp; Sales
+        </div>
+        <p className="text-[var(--text-muted)]">
+          {error
+            ? `No tick data for ${symbol} (${error})`
+            : `No live ticks yet for ${symbol} — only A/B-category stocks are scraped. Returns during DSE market hours (Sun-Thu 10:00-14:30 BST).`}
+        </p>
+      </div>
+    );
+  }
+
+  // Aggregate stats from the visible window
+  let buyVol = 0, sellVol = 0, buyN = 0, sellN = 0;
+  ticks.forEach((t) => {
+    if (t.side === "B") { buyVol += t.size; buyN += 1; }
+    else if (t.side === "S") { sellVol += t.size; sellN += 1; }
+  });
+  const total = buyVol + sellVol;
+  const buyPct = total ? (buyVol / total) * 100 : 0;
+  const ratio = sellVol > 0 ? buyVol / sellVol : (buyVol > 0 ? 99 : 0);
+
+  const fmtBst = (iso: string) => {
+    try {
+      const d = new Date(iso);
+      const bst = new Date(d.getTime() + 6 * 3600 * 1000);
+      return bst.toISOString().substring(11, 19);
+    } catch { return iso.substring(11, 19); }
+  };
+
+  return (
+    <div className="mb-3 rounded border border-[var(--border)] px-3 py-2 text-xs">
+      <div className="flex items-center justify-between mb-2">
+        <div className="font-semibold uppercase tracking-wide text-cyan-400 flex items-center gap-2">
+          🛰️ Time &amp; Sales
+          <span className="text-[10px] font-normal text-[var(--text-muted)] normal-case">
+            ({ticks.length} most recent · auto-refresh 15s · BST)
+          </span>
+        </div>
+        <div className="text-[11px] flex gap-3">
+          <span className="text-emerald-500">BUY {buyVol.toLocaleString()} ({buyN})</span>
+          <span className="text-red-500">SELL {sellVol.toLocaleString()} ({sellN})</span>
+          <span className={ratio >= 2 ? "text-emerald-500 font-bold" : ratio <= 0.5 ? "text-red-500 font-bold" : "text-[var(--text-muted)]"}>
+            ratio {ratio >= 99 ? "∞" : ratio.toFixed(1)}×
+          </span>
+          <span className={`font-semibold ${buyPct >= 60 ? "text-emerald-500" : buyPct <= 40 ? "text-red-500" : "text-amber-500"}`}>
+            {buyPct.toFixed(0)}% buy
+          </span>
+        </div>
+      </div>
+      <div className="overflow-y-auto max-h-72 border border-[var(--border)] rounded">
+        <table className="w-full text-[11px] font-mono">
+          <thead className="sticky top-0 bg-[var(--surface-active)] text-[var(--text-muted)]">
+            <tr>
+              <th className="text-left px-2 py-1 font-medium">Time</th>
+              <th className="text-right px-2 py-1 font-medium">Price</th>
+              <th className="text-right px-2 py-1 font-medium">Size</th>
+              <th className="text-center px-2 py-1 font-medium">Side</th>
+              <th className="text-right px-2 py-1 font-medium">Bid</th>
+              <th className="text-right px-2 py-1 font-medium">Ask</th>
+            </tr>
+          </thead>
+          <tbody>
+            {ticks.map((t, i) => {
+              const isBuy = t.side === "B";
+              const isSell = t.side === "S";
+              return (
+                <tr key={`${t.ts}-${i}`} className="border-t border-[var(--border)]/40 hover:bg-[var(--hover)]">
+                  <td className="px-2 py-0.5">{fmtBst(t.ts)}</td>
+                  <td className={`px-2 py-0.5 text-right ${isBuy ? "text-emerald-500" : isSell ? "text-red-500" : ""}`}>
+                    ৳{t.price?.toFixed(2)}
+                  </td>
+                  <td className="px-2 py-0.5 text-right">{t.size?.toLocaleString()}</td>
+                  <td className={`px-2 py-0.5 text-center font-bold ${isBuy ? "text-emerald-500" : isSell ? "text-red-500" : "text-gray-500"}`}>
+                    {isBuy ? "🟢 B" : isSell ? "🔴 S" : "⚪ ?"}
+                  </td>
+                  <td className="px-2 py-0.5 text-right text-[var(--text-muted)]">
+                    {t.best_bid?.toFixed(2) ?? "—"}
+                  </td>
+                  <td className="px-2 py-0.5 text-right text-[var(--text-muted)]">
+                    {t.best_ask?.toFixed(2) ?? "—"}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      <div className="text-[10px] text-[var(--text-muted)] mt-1">
+        🟢 B = trade at/above ask (buyer-initiated) · 🔴 S = trade at/below bid (seller-initiated, Lee-Ready)
+      </div>
+    </div>
+  );
 }
 
 export default function SMCChart({ market = "dse" }: SMCChartProps = {}) {
@@ -2029,6 +2165,9 @@ export default function SMCChart({ market = "dse" }: SMCChartProps = {}) {
           </div>
         </div>
       )}
+
+      {/* Time & Sales — live tape of recent trades (from dse_ticks) */}
+      <TimeAndSalesTape symbol={symbol} />
 
       {/* Order Flow — each metric has hover tooltip explaining MEANING + HOW TO TRADE */}
       {data?.order_flow && (
