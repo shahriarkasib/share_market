@@ -97,6 +97,11 @@ def ensure_schema():
         ("htf_bias", "JSONB"),
         ("liquidity_sweep", "VARCHAR(30)"),
         ("short_term_trend", "JSONB"),
+        ("analyst_verdict", "JSONB"),
+        ("today_candle_quality", "JSONB"),
+        ("flow_divergence", "JSONB"),
+        ("pattern_failure", "JSONB"),
+        ("analyst_score", "NUMERIC(6,1)"),  # quick filter without parsing JSONB
         # Entry zone (range) + technical trigger fields
         ("entry_zone_low", "NUMERIC(12,2)"),
         ("entry_zone_high", "NUMERIC(12,2)"),
@@ -147,16 +152,34 @@ def derive_bucket(sig: dict) -> str:
       PULLBACK_IN_PROGRESS — touched zone recently BUT trend is DOWN
                               and/or last bars still red. Falling knife —
                               wait for deeper Tier-2 zone or trend flip.
-      WATCHING             — above zone 1.5-8%, no recent touch.
+      WATCHING             — above zone 1.5-8%, no recent touch. Also used
+                              as the observational "watch today" bucket when
+                              the analyst verdict flags a fresh BUY/STRONG_BUY
+                              even if structurally far above zone.
       MISSED               — triggered ≥2d, delivered ≥3% profit, didn't buy.
       WRONG_TRIGGER        — triggered ≥2d, zone broke (>3% drawdown).
       STALE                — no entry / no recent trigger.
+
+    Analyst-verdict overlay: structural bucket is computed first, then the
+    observational analyst_verdict (today's candle + flow divergence + pattern
+    failures) can promote a STALE bucket to WATCHING so a fresh BUY signal
+    doesn't get hidden as historical noise.
     """
     cp = sig.get("current_price")
     t1l = sig.get("aggressive_entry_zone_low")
     t1h = sig.get("aggressive_entry_zone_high")
     t2l = sig.get("entry_zone_low")
     t2h = sig.get("entry_zone_high")
+
+    # Pre-extract analyst verdict — used as an overlay at the end
+    av = sig.get("analyst_verdict") or {}
+    if isinstance(av, str):
+        try:
+            import json as _json
+            av = _json.loads(av) or {}
+        except Exception:
+            av = {}
+    av_verdict = (av.get("verdict") or "").upper() if isinstance(av, dict) else ""
 
     if cp is None:
         return "STALE"
@@ -220,47 +243,59 @@ def derive_bucket(sig: dict) -> str:
         # If price is STILL actively falling (last close down + key level not yet
         # defended), keep is_falling_knife True. The level may fail.
 
+    def _overlay(structural: str) -> str:
+        """Apply analyst-verdict overlay: a fresh BUY/STRONG_BUY verdict
+        promotes STALE to WATCHING (observational opportunity even though
+        price is structurally far from zone). Does not downgrade actionable
+        buckets — IN_ZONE / JUST_BOUNCED / PULLBACK_IN_PROGRESS / WRONG_TRIGGER
+        / MISSED keep their structural meaning so the user still sees both
+        signals.
+        """
+        if structural == "STALE" and av_verdict in ("STRONG_BUY", "BUY"):
+            return "WATCHING"
+        return structural
+
     in_t1 = t1l is not None and t1h is not None and t1l <= cp <= t1h
     in_t2 = t2l is not None and t2h is not None and t2l <= cp <= t2h
     if in_t1 or in_t2:
-        return "IN_ZONE"
+        return _overlay("IN_ZONE")
 
     below_t1 = t1l is not None and cp < t1l
     below_t2 = t2l is not None and cp < t2l
     if below_t1 or below_t2:
         if triggered_in_past and zone_broke:
-            return "WRONG_TRIGGER"
-        return "IN_ZONE"
+            return _overlay("WRONG_TRIGGER")
+        return _overlay("IN_ZONE")
 
     candidates_high = [h for h in (t1h, t2h) if h is not None]
     if not candidates_high:
         if triggered_in_past and delivered_profit and bars_ago <= MISSED_MAX_AGE_BARS:
-            return "MISSED"
-        return "STALE"
+            return _overlay("MISSED")
+        return _overlay("STALE")
     closest_high = max(candidates_high)
     pct_above = (cp - closest_high) / closest_high * 100 if closest_high > 0 else 999
 
     # JUST_BOUNCED only if the bounce is REAL (trend not falling, close confirms)
     if recent_touch and bounced_up and pct_above <= 6.0 and not zone_broke:
         if is_real_bounce:
-            return "JUST_BOUNCED"
+            return _overlay("JUST_BOUNCED")
         if is_falling_knife:
-            return "PULLBACK_IN_PROGRESS"
+            return _overlay("PULLBACK_IN_PROGRESS")
         # Ambiguous (sideways, mixed signals) — treat as JUST_BOUNCED
         # but with the user-warning baked into the bucket-tab description
-        return "JUST_BOUNCED"
+        return _overlay("JUST_BOUNCED")
 
     if triggered_in_past and delivered_profit and bars_ago <= MISSED_MAX_AGE_BARS:
-        return "MISSED"
+        return _overlay("MISSED")
 
     if pct_above <= 1.5:
-        return "IN_ZONE"
+        return _overlay("IN_ZONE")
     if pct_above <= 8.0:
-        return "WATCHING"
+        return _overlay("WATCHING")
     # Far above zone — MISSED only if recent (≤21 bars). Otherwise STALE.
     if bars_ago <= MISSED_MAX_AGE_BARS and delivered_profit:
-        return "MISSED"
-    return "STALE"
+        return _overlay("MISSED")
+    return _overlay("STALE")
 
 
 def _trigger_fields(sig: dict) -> dict:
@@ -339,6 +374,8 @@ def insert_signal(sig: dict):
             htf_bias = %s,
             liquidity_sweep = %s,
             short_term_trend = %s,
+            analyst_verdict = %s, today_candle_quality = %s, flow_divergence = %s,
+            pattern_failure = %s, analyst_score = %s,
             entry_zone_low = %s, entry_zone_high = %s,
             aggressive_entry_zone_low = %s, aggressive_entry_zone_high = %s,
             primary_trigger_date = %s, primary_trigger_bars_ago = %s,
@@ -364,6 +401,11 @@ def insert_signal(sig: dict):
             json.dumps(sig.get("htf_bias")) if sig.get("htf_bias") else None,
             sig.get("liquidity_sweep"),
             json.dumps(sig.get("short_term_trend")) if sig.get("short_term_trend") else None,
+            json.dumps(sig.get("analyst_verdict")) if sig.get("analyst_verdict") else None,
+            json.dumps(sig.get("today_candle_quality")) if sig.get("today_candle_quality") else None,
+            json.dumps(sig.get("flow_divergence")) if sig.get("flow_divergence") else None,
+            json.dumps(sig.get("pattern_failure")) if sig.get("pattern_failure") else None,
+            (sig.get("analyst_verdict") or {}).get("score"),
             tf["entry_zone_low"], tf["entry_zone_high"],
             tf["aggressive_entry_zone_low"], tf["aggressive_entry_zone_high"],
             tf["primary_trigger_date"], tf["primary_trigger_bars_ago"],
@@ -457,6 +499,8 @@ def update_signal_state(active_row: dict, sig: dict, last_high: float, last_low:
                confidence = %s, hedge_fund_verdict = %s,
                structure_verdict = %s, order_flow_verdict = %s, volume_verdict = %s,
                htf_bias = %s, liquidity_sweep = %s, short_term_trend = %s,
+               analyst_verdict = %s, today_candle_quality = %s, flow_divergence = %s,
+               pattern_failure = %s, analyst_score = %s,
                entry_zone_low = %s, entry_zone_high = %s,
                aggressive_entry_zone_low = %s, aggressive_entry_zone_high = %s,
                primary_trigger_date = %s, primary_trigger_bars_ago = %s,
@@ -494,6 +538,11 @@ def update_signal_state(active_row: dict, sig: dict, last_high: float, last_low:
             json.dumps(sig.get("htf_bias")) if sig.get("htf_bias") else None,
             sig.get("liquidity_sweep"),
             json.dumps(sig.get("short_term_trend")) if sig.get("short_term_trend") else None,
+            json.dumps(sig.get("analyst_verdict")) if sig.get("analyst_verdict") else None,
+            json.dumps(sig.get("today_candle_quality")) if sig.get("today_candle_quality") else None,
+            json.dumps(sig.get("flow_divergence")) if sig.get("flow_divergence") else None,
+            json.dumps(sig.get("pattern_failure")) if sig.get("pattern_failure") else None,
+            (sig.get("analyst_verdict") or {}).get("score"),
             tf["entry_zone_low"], tf["entry_zone_high"],
             tf["aggressive_entry_zone_low"], tf["aggressive_entry_zone_high"],
             tf["primary_trigger_date"], tf["primary_trigger_bars_ago"],

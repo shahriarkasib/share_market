@@ -355,6 +355,7 @@ export default function LiveCompositeSignals({ market = "dse" }: Props = {}) {
                 <thead className="bg-[var(--surface-active)] text-[var(--text-muted)] text-xs">
                   <tr>
                     <th className="text-left px-3 py-2 font-medium">Symbol</th>
+                    <th className="text-left px-3 py-2 font-medium" title="Experienced-analyst synthesis: today's candle + pattern failures + tape vs daily divergence + flow + structure">🎯 Analyst</th>
                     <th className="text-right px-3 py-2 font-medium">Score</th>
                     <th className="text-left px-3 py-2 font-medium">Status</th>
                     <th className="text-right px-3 py-2 font-medium" title="Tier-1 = closer support (recent swing low / equilibrium / Fib). Lower edge but realistic fill.">Tier-1 (agg.)</th>
@@ -407,6 +408,30 @@ export default function LiveCompositeSignals({ market = "dse" }: Props = {}) {
                             }>{s.confidence}</span>
                           </div>
                         )}
+                      </td>
+                      <td className="px-3 py-2">
+                        {(() => {
+                          const av = s.analyst_verdict;
+                          if (!av || !av.verdict) return <span className="text-[var(--text-muted)]">—</span>;
+                          const v = av.verdict;
+                          const color =
+                            v === "STRONG_BUY" ? "bg-emerald-500/15 border-emerald-500/50 text-emerald-500 font-bold" :
+                            v === "BUY" ? "bg-emerald-400/15 border-emerald-400/40 text-emerald-400 font-semibold" :
+                            v === "WATCH" ? "bg-amber-500/15 border-amber-500/40 text-amber-500" :
+                            v === "NEUTRAL" ? "bg-gray-500/10 border-gray-500/30 text-gray-400" :
+                            v === "AVOID" ? "bg-red-400/15 border-red-400/40 text-red-400" :
+                            "bg-red-500/15 border-red-500/50 text-red-500 font-bold";
+                          const factors = (av.factors || []).slice(0, 4).map(f => `${f.score >= 0 ? "+" : ""}${f.score} ${f.factor}`).join("\n");
+                          return (
+                            <span
+                              className={`inline-block px-2 py-0.5 rounded border text-[11px] ${color}`}
+                              title={factors || ""}
+                            >
+                              {av.emoji || "?"} {v.replace("_", " ")}{" "}
+                              <span className="opacity-75">({(av.score ?? 0) >= 0 ? "+" : ""}{av.score})</span>
+                            </span>
+                          );
+                        })()}
                       </td>
                       <td className="px-3 py-2 text-right">
                         <span className={`inline-block px-2 py-0.5 rounded text-xs border ${levelColor(s.signal_level)}`}>
@@ -539,7 +564,7 @@ export default function LiveCompositeSignals({ market = "dse" }: Props = {}) {
                     </tr>
                     {s.chase_warning && (
                       <tr className="border-t border-[var(--border)]/30">
-                        <td colSpan={9} className="px-3 py-1.5 text-[11px] bg-red-500/5 text-red-400/90 italic">
+                        <td colSpan={10} className="px-3 py-1.5 text-[11px] bg-red-500/5 text-red-400/90 italic">
                           {s.chase_warning}
                         </td>
                       </tr>
@@ -548,7 +573,7 @@ export default function LiveCompositeSignals({ market = "dse" }: Props = {}) {
                     {(s.primary_trigger_date || s.tier1_trigger_date || s.tier2_trigger_date) &&
                      (bucket === "JUST_BOUNCED" || bucket === "MISSED" || bucket === "WRONG_TRIGGER") && (
                       <tr className="border-t border-[var(--border)]/30">
-                        <td colSpan={9} className="px-3 py-1.5 text-[11px] bg-blue-500/5">
+                        <td colSpan={10} className="px-3 py-1.5 text-[11px] bg-blue-500/5">
                           <span className="text-blue-400 font-semibold">📅 Triggered: </span>
                           {s.tier1_trigger_date && (
                             <span className="mr-3">

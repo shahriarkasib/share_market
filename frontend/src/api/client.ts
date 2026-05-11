@@ -344,6 +344,32 @@ export interface LiveCompositeSignal {
   tier2_trigger_bars_ago?: number | null;
   tier2_max_profit_pct?: number | null;
   bucket?: "IN_ZONE" | "JUST_BOUNCED" | "PULLBACK_IN_PROGRESS" | "WATCHING" | "MISSED" | "WRONG_TRIGGER" | "STALE" | null;
+  analyst_verdict?: {
+    verdict?: "STRONG_BUY" | "BUY" | "WATCH" | "NEUTRAL" | "AVOID" | "STRONG_AVOID" | null;
+    emoji?: string;
+    score?: number;
+    summary?: string;
+    factors?: Array<{ factor: string; score: number; detail?: string }>;
+  } | null;
+  analyst_score?: number | null;
+  today_candle_quality?: {
+    type?: string;
+    score?: number;
+    reason?: string;
+    is_green?: boolean;
+  } | null;
+  flow_divergence?: {
+    type?: string;
+    score?: number;
+    reason?: string;
+    tape_net?: number;
+    magnitude?: string;
+  } | null;
+  pattern_failure?: {
+    count?: number;
+    score?: number;
+    failures?: Array<{ pattern: string; date: string; original_bias: string; new_bias: string; reason: string }>;
+  } | null;
   short_term_trend?: {
     slope_pct?: number | null;
     direction?: "UP" | "DOWN" | "SIDEWAYS" | null;
