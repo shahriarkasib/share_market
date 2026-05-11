@@ -190,6 +190,405 @@ def compute_trend_regime(df, adx_value=None, lookback=14):
         return None
 
 
+def score_today_candle(df):
+    """Classify today's candle quality. Returns dict with type + bullish/bearish score.
+
+    Categories:
+      STRONG_BULLISH_REVERSAL  — large green body, low_wick big, closed high after downtrend
+      BULLISH_REVERSAL         — green body after red candles, decent body
+      INSIDE_DAY_BULLISH       — harami-style, small green inside prior body
+      INDECISION               — spinning top / doji
+      INSIDE_DAY_BEARISH       — small red inside prior body
+      BEARISH_REVERSAL         — red body after green, upper wick big
+      STRONG_BEARISH_REVERSAL  — large red body, closed low after uptrend
+      CONTINUATION_BULL        — green body extending uptrend
+      CONTINUATION_BEAR        — red body extending downtrend
+    """
+    if df is None or len(df) < 6:
+        return None
+    try:
+        c = df["close"].astype(float).values
+        o = df["open"].astype(float).values
+        h = df["high"].astype(float).values
+        l = df["low"].astype(float).values
+        last_o, last_c, last_h, last_l = float(o[-1]), float(c[-1]), float(h[-1]), float(l[-1])
+        prev_o, prev_c = float(o[-2]), float(c[-2])
+        rng = last_h - last_l
+        body = abs(last_c - last_o)
+        is_green = last_c > last_o
+        is_red = last_c < last_o
+        upper_wick = last_h - max(last_o, last_c)
+        lower_wick = min(last_o, last_c) - last_l
+
+        # 5-day trend context
+        prior5 = c[-6:-1]  # 5 prior closes (excluding today)
+        slope = (c[-1] - prior5[0]) / prior5[0] * 100 if prior5[0] else 0
+        red_count = sum(1 for i in range(-6, -1) if c[i] < o[i])
+        was_downtrend = red_count >= 3 and slope < 0
+        was_uptrend = red_count <= 1 and slope > 0
+
+        # Inside-day check
+        prev_top = max(prev_o, prev_c)
+        prev_bot = min(prev_o, prev_c)
+        is_inside = last_o > prev_bot and last_c < prev_top and last_o < prev_top and last_c > prev_bot
+
+        score = 0
+        type_ = "INDECISION"
+        reason = ""
+
+        if rng <= 0:
+            return None
+        body_pct = body / rng
+        lw_pct = lower_wick / rng
+        uw_pct = upper_wick / rng
+
+        # STRONG_BULLISH_REVERSAL: was downtrend, today big green body, close near high
+        if was_downtrend and is_green and body_pct >= 0.5 and last_c > prev_c and last_c >= last_h * 0.97:
+            type_ = "STRONG_BULLISH_REVERSAL"
+            score = 35
+            reason = f"Large green body ({body_pct*100:.0f}% of range) after {red_count} red days, closed near high"
+        elif was_downtrend and is_green and last_c > prev_c:
+            type_ = "BULLISH_REVERSAL"
+            score = 20
+            reason = f"Green close after {red_count} red days, body {body_pct*100:.0f}% of range"
+        elif is_inside and is_green and was_downtrend:
+            type_ = "INSIDE_DAY_BULLISH"
+            score = 10
+            reason = "Bullish harami at downtrend bottom — needs confirmation"
+        elif was_uptrend and is_red and body_pct >= 0.5 and last_c < prev_c and last_c <= last_l * 1.03:
+            type_ = "STRONG_BEARISH_REVERSAL"
+            score = -35
+            reason = "Large red body after uptrend, closed near low"
+        elif was_uptrend and is_red and last_c < prev_c:
+            type_ = "BEARISH_REVERSAL"
+            score = -20
+            reason = "Red close after uptrend"
+        elif is_inside:
+            type_ = "INSIDE_DAY_BEARISH" if is_red else "INSIDE_DAY_BULLISH"
+            score = -5 if is_red else 5
+            reason = "Inside day — indecision"
+        elif body_pct <= 0.25 and abs(lw_pct - uw_pct) < 0.2:
+            type_ = "INDECISION"
+            score = 0
+            reason = f"Spinning top / doji — small body ({body_pct*100:.0f}%) equal wicks"
+        elif is_green and was_uptrend:
+            type_ = "CONTINUATION_BULL"
+            score = 10
+            reason = "Green continuation of uptrend"
+        elif is_red and was_downtrend:
+            type_ = "CONTINUATION_BEAR"
+            score = -10
+            reason = "Red continuation of downtrend"
+        else:
+            type_ = "NEUTRAL"
+            score = 5 if is_green else -5
+            reason = "No strong setup"
+
+        return {
+            "type": type_,
+            "score": score,  # -35 to +35
+            "reason": reason,
+            "is_green": is_green,
+            "body_pct": round(body_pct, 2),
+            "lower_wick_pct": round(lw_pct, 2),
+            "upper_wick_pct": round(uw_pct, 2),
+            "closed_above_prior": last_c > prev_c,
+            "prior_5d_slope_pct": round(slope, 1),
+            "prior_5d_reds": int(red_count),
+        }
+    except Exception:
+        return None
+
+
+def detect_pattern_failures(df, candle_patterns):
+    """Detect when a recently-detected reversal pattern has FAILED.
+
+    A pattern fails when:
+      Bearish pattern (last 3 days) + today's STRONG bullish reversal → BEARISH FAILED
+      Bullish pattern (last 3 days) + today's STRONG bearish reversal → BULLISH FAILED
+
+    Failed bearish patterns are EXTRA bullish (trapped shorts get squeezed).
+    Failed bullish patterns are EXTRA bearish (trapped longs liquidate).
+    """
+    if df is None or len(df) < 6 or not candle_patterns:
+        return None
+    try:
+        n = len(df)
+        c = df["close"].astype(float).values
+        o = df["open"].astype(float).values
+        h = df["high"].astype(float).values
+        l = df["low"].astype(float).values
+        last_o, last_c, last_h, last_l = float(o[-1]), float(c[-1]), float(h[-1]), float(l[-1])
+        prev_high = float(h[-2])
+        prev_low = float(l[-2])
+        body_pct = abs(last_c - last_o) / max(0.01, last_h - last_l)
+        is_strong_green = last_c > last_o and body_pct >= 0.5 and last_c > prev_high
+        is_strong_red = last_c < last_o and body_pct >= 0.5 and last_c < prev_low
+
+        # Map symbolic dates to indices roughly — for our patterns, p['time'] is a date
+        # Recent pattern = within last 5 calendar days from the latest candle date
+        last_date_obj = df["date"].iloc[-1]
+        try:
+            import pandas as pd
+            last_date = pd.to_datetime(last_date_obj)
+        except Exception:
+            last_date = None
+        BEARISH_TYPES = {"Bearish Engulfing", "Evening Star", "Shooting Star", "Dark Cloud Cover",
+                          "Three Black Crows", "Hanging Man", "Bearish Harami"}
+        BULLISH_TYPES = {"Bullish Engulfing", "Morning Star", "Hammer", "Inverted Hammer",
+                          "Three White Soldiers", "Piercing Line", "Bullish Harami"}
+
+        recent_bearish = []
+        recent_bullish = []
+        for p in candle_patterns[-10:]:
+            try:
+                import pandas as pd
+                pdate = pd.to_datetime(p.get("time"))
+                age_days = (last_date - pdate).days if last_date is not None else 99
+            except Exception:
+                age_days = 99
+            if age_days > 5 or age_days < 0:
+                continue
+            ptype = p.get("type") or ""
+            pbias = p.get("bias") or ""
+            if ptype in BEARISH_TYPES or pbias == "bearish":
+                recent_bearish.append(p)
+            elif ptype in BULLISH_TYPES or pbias == "bullish":
+                recent_bullish.append(p)
+
+        failures = []
+        # Today is STRONG bullish reversal → look for invalidated bearish patterns
+        if is_strong_green:
+            for p in recent_bearish:
+                failures.append({
+                    "pattern": p.get("type"),
+                    "date": p.get("time"),
+                    "original_bias": "bearish",
+                    "new_bias": "bullish",
+                    "reason": f"{p.get('type')} on {p.get('time')} invalidated by today's strong green reversal (body {body_pct*100:.0f}% of range, closed above prior high ৳{prev_high:.2f})",
+                })
+        if is_strong_red:
+            for p in recent_bullish:
+                failures.append({
+                    "pattern": p.get("type"),
+                    "date": p.get("time"),
+                    "original_bias": "bullish",
+                    "new_bias": "bearish",
+                    "reason": f"{p.get('type')} on {p.get('time')} invalidated by today's strong red reversal (body {body_pct*100:.0f}% of range, closed below prior low ৳{prev_low:.2f})",
+                })
+
+        if not failures:
+            return None
+        # Score: failed pattern adds opposite bias
+        score = 0
+        for f in failures:
+            if f["new_bias"] == "bullish":
+                score += 15
+            elif f["new_bias"] == "bearish":
+                score -= 15
+        return {
+            "failures": failures,
+            "score": score,
+            "count": len(failures),
+        }
+    except Exception:
+        return None
+
+
+def score_live_flow_divergence(of, today_candle_is_green):
+    """Score divergence between intraday tape and today's daily candle.
+
+    POSITIVE_DIVERGENCE: Daily red BUT live ticks net positive → buyers accumulating despite red close
+    NEGATIVE_DIVERGENCE: Daily green BUT live ticks net negative → distribution despite green close
+    ALIGNED_BULLISH: Daily green + tape positive (clean buy day)
+    ALIGNED_BEARISH: Daily red + tape negative (clean sell day)
+    """
+    if not of:
+        return None
+    try:
+        td = of.get("tick_data") or {}
+        cd = td.get("cumulative_delta") or {}
+        cumulative = cd.get("cumulative") or 0
+        obi = of.get("orderbook_imbalance") or {}
+        obi_pct = obi.get("imbalance_pct") or 0
+
+        if cumulative == 0:
+            return None  # no tick data
+
+        # Magnitude buckets
+        if abs(cumulative) < 30_000:
+            magnitude = "small"
+        elif abs(cumulative) < 150_000:
+            magnitude = "medium"
+        else:
+            magnitude = "large"
+
+        score = 0
+        type_ = "ALIGNED"
+        reason = ""
+
+        if today_candle_is_green and cumulative > 0:
+            type_ = "ALIGNED_BULLISH"
+            score = 10 if magnitude == "small" else 20 if magnitude == "medium" else 30
+            reason = f"Daily green + tape net +{int(cumulative):,} ({magnitude})"
+        elif not today_candle_is_green and cumulative > 0:
+            type_ = "POSITIVE_DIVERGENCE"
+            score = 15 if magnitude == "small" else 25 if magnitude == "medium" else 35
+            reason = f"⚡ Daily RED but tape net +{int(cumulative):,} — buyers accumulating despite close"
+        elif today_candle_is_green and cumulative < 0:
+            type_ = "NEGATIVE_DIVERGENCE"
+            score = -15 if magnitude == "small" else -25 if magnitude == "medium" else -35
+            reason = f"⚠ Daily GREEN but tape net {int(cumulative):,} — distribution despite close"
+        elif not today_candle_is_green and cumulative < 0:
+            type_ = "ALIGNED_BEARISH"
+            score = -10 if magnitude == "small" else -20 if magnitude == "medium" else -30
+            reason = f"Daily red + tape net {int(cumulative):,} ({magnitude})"
+
+        return {
+            "type": type_,
+            "score": score,
+            "reason": reason,
+            "tape_net": int(cumulative),
+            "magnitude": magnitude,
+            "orderbook_pct": obi_pct,
+        }
+    except Exception:
+        return None
+
+
+def compute_analyst_verdict(chart_data, analysis, today_candle, pattern_failure, flow_divergence):
+    """Synthesise all observations like an experienced analyst.
+
+    Combines:
+      - Today's candle quality (-35 to +35)
+      - Pattern failure detection (±15 per failure)
+      - Live flow vs daily structure divergence (±35)
+      - Existing SMC structure (already in analysis)
+      - Multi-day proxy delta accumulation
+      - HTF bias alignment
+
+    Output verdict:
+      STRONG_BUY  (score ≥ +50)
+      BUY         (score +25 to +49)
+      WATCH       (score +5 to +24)
+      NEUTRAL     (-5 to +5)
+      AVOID       (-25 to -6)
+      STRONG_AVOID (≤ -25)
+    """
+    try:
+        score = 0
+        factors = []
+
+        if today_candle:
+            score += today_candle["score"]
+            factors.append({
+                "factor": f"Today's candle: {today_candle['type'].replace('_', ' ').title()}",
+                "score": today_candle["score"],
+                "detail": today_candle["reason"],
+            })
+
+        if pattern_failure:
+            score += pattern_failure["score"]
+            for f in pattern_failure["failures"][:2]:
+                factors.append({
+                    "factor": f"⚡ Pattern failure: {f['pattern']}",
+                    "score": 15 if f["new_bias"] == "bullish" else -15,
+                    "detail": f["reason"],
+                })
+
+        if flow_divergence:
+            score += flow_divergence["score"]
+            factors.append({
+                "factor": f"Tape vs daily: {flow_divergence['type'].replace('_', ' ').title()}",
+                "score": flow_divergence["score"],
+                "detail": flow_divergence["reason"],
+            })
+
+        # SMC structural bias
+        bias = analysis.get("bias") if analysis else None
+        if bias == "BULLISH":
+            score += 10
+            factors.append({"factor": "SMC bias: BULLISH", "score": 10, "detail": ""})
+        elif bias == "BEARISH":
+            score -= 15
+            factors.append({"factor": "SMC bias: BEARISH", "score": -15, "detail": ""})
+        elif bias == "WHIPSAW":
+            score -= 5
+            factors.append({"factor": "SMC bias: WHIPSAW", "score": -5, "detail": "Choppy structure"})
+
+        # Multi-day proxy delta (institutional accumulation footprint)
+        of = chart_data.get("order_flow") or {}
+        vd = of.get("volume_delta") or {}
+        delta_5d = vd.get("delta_5d") or 0
+        if delta_5d > 1_000_000:
+            score += 12
+            factors.append({"factor": "5-day proxy delta", "score": 12, "detail": f"+{int(delta_5d):,} heavy accumulation"})
+        elif delta_5d > 200_000:
+            score += 6
+            factors.append({"factor": "5-day proxy delta", "score": 6, "detail": f"+{int(delta_5d):,} steady accumulation"})
+        elif delta_5d < -1_000_000:
+            score -= 12
+            factors.append({"factor": "5-day proxy delta", "score": -12, "detail": f"{int(delta_5d):,} heavy distribution"})
+        elif delta_5d < -200_000:
+            score -= 6
+            factors.append({"factor": "5-day proxy delta", "score": -6, "detail": f"{int(delta_5d):,} steady distribution"})
+
+        # HTF bias alignment
+        htf = chart_data.get("htf_bias") or {}
+        if htf.get("bias") == "BULLISH" and bias == "BULLISH":
+            score += 5
+            factors.append({"factor": "HTF aligned bullish", "score": 5, "detail": f"Weekly {htf.get('trend_pct')}%"})
+        elif htf.get("bias") == "BEARISH" and bias == "BULLISH":
+            score -= 8
+            factors.append({"factor": "HTF conflict (weekly bear, daily bull)", "score": -8, "detail": "Counter-trend"})
+
+        # OBV trend (momentum confirmation)
+        obv = chart_data.get("obv") or {}
+        if obv.get("trend") == "rising" and obv.get("divergence") == "bullish":
+            score += 8
+            factors.append({"factor": "OBV bullish divergence", "score": 8, "detail": "Volume leading price up"})
+        elif obv.get("divergence") == "bearish":
+            score -= 8
+            factors.append({"factor": "OBV bearish divergence", "score": -8, "detail": "Volume fading"})
+
+        # VSA exhaustion signals
+        vsa = chart_data.get("vsa_events") or []
+        for ev in vsa[-3:]:
+            t = ev.get("type", "").upper()
+            if t in ("NO_SUPPLY", "STOPPING_VOLUME", "SPRING"):
+                score += 5
+                factors.append({"factor": f"VSA {t}", "score": 5, "detail": "Bullish exhaustion/absorption"})
+                break
+            if t in ("UPTHRUST", "BUYING_CLIMAX", "NO_DEMAND"):
+                score -= 5
+                factors.append({"factor": f"VSA {t}", "score": -5, "detail": "Bearish exhaustion at top"})
+                break
+
+        # Map to verdict
+        if score >= 50:
+            verdict = "STRONG_BUY"; emoji = "🚀"
+        elif score >= 25:
+            verdict = "BUY"; emoji = "🟢"
+        elif score >= 5:
+            verdict = "WATCH"; emoji = "👀"
+        elif score >= -5:
+            verdict = "NEUTRAL"; emoji = "⚪"
+        elif score >= -25:
+            verdict = "AVOID"; emoji = "🟡"
+        else:
+            verdict = "STRONG_AVOID"; emoji = "🔴"
+
+        return {
+            "verdict": verdict,
+            "emoji": emoji,
+            "score": score,
+            "factors": factors,
+            "summary": f"{emoji} {verdict} (score {score:+})",
+        }
+    except Exception as e:
+        return {"verdict": "NEUTRAL", "score": 0, "factors": [], "summary": f"error: {type(e).__name__}"}
+
+
 def _has_buyable_support_below(support_resistance, current_price, max_dist_pct=12.0,
                                 min_touches=3):
     """True if there's a multi-touch support within max_dist_pct% below current."""
@@ -4128,6 +4527,29 @@ def get_smc_chart(symbol: str, days: int = 180, interval: str = "daily"):
             f["ict_label"] = "BISI"
         elif f.get("type") == "bearish":
             f["ict_label"] = "SIBI"
+
+    # ─── ANALYST VERDICT — synthesise everything like an experienced trader ───
+    # Combines today's candle quality + pattern failures + live tape divergence
+    # + structural bias + multi-day accumulation + HTF + OBV + VSA.
+    today_candle = score_today_candle(df)
+    pattern_failure = detect_pattern_failures(df, candle_patterns)
+    candle_is_green = bool(today_candle and today_candle.get("is_green"))
+    flow_divergence = score_live_flow_divergence(order_flow, candle_is_green)
+    # Build a minimal chart_data dict for the verdict computation
+    _chart_for_verdict = {
+        "order_flow": order_flow,
+        "htf_bias": htf_bias,
+        "obv": advanced.get("obv"),
+        "vsa_events": advanced.get("vsa_events", []),
+    }
+    analyst_verdict = compute_analyst_verdict(
+        _chart_for_verdict, analysis, today_candle, pattern_failure, flow_divergence,
+    )
+    if isinstance(analysis, dict):
+        analysis["analyst_verdict"] = analyst_verdict
+        analysis["today_candle_quality"] = today_candle
+        analysis["pattern_failure"] = pattern_failure
+        analysis["flow_divergence"] = flow_divergence
 
     return {
         "symbol": symbol.upper(),
