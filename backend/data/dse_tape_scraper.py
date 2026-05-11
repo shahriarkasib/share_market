@@ -276,8 +276,8 @@ def get_watchlist() -> list[str]:
     try:
         conn = get_connection()
         rows = conn.execute(
-            "SELECT DISTINCT symbol FROM fundamentals WHERE category = 'A' "
-            "ORDER BY symbol LIMIT 120"
+            "SELECT DISTINCT symbol FROM fundamentals WHERE category IN ('A', 'B') "
+            "ORDER BY symbol LIMIT 250"
         ).fetchall()
         conn.close()
         # Filter to symbols we actually have a CID for
