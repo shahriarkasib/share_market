@@ -734,6 +734,40 @@ export interface TimeAndSalesResponse {
   ticks: TimeAndSalesTick[];
 }
 
+export interface SmartMoneyStock {
+  symbol: string;
+  trades: number;
+  buy_vol: number;
+  sell_vol: number;
+  net_delta: number;
+  buy_pct: number;
+  buy_sell_ratio: number;
+  high_px: number | null;
+  low_px: number | null;
+  last_trade: string | null;
+}
+
+export interface SmartMoneyResponse {
+  side: "buy" | "sell" | "all";
+  since_minutes: number;
+  min_trades: number;
+  count: number;
+  stocks: SmartMoneyStock[];
+}
+
+export async function fetchSmartMoneyRadar(
+  side: "buy" | "sell" | "all" = "buy",
+  sinceMinutes: number = 240,
+  minTrades: number = 5,
+  limit: number = 50,
+): Promise<SmartMoneyResponse> {
+  const { data } = await api.get<SmartMoneyResponse>("/market/smart-money-radar", {
+    params: { side, since_minutes: sinceMinutes, min_trades: minTrades, limit },
+  });
+  return data;
+}
+
+
 export async function fetchTimeAndSales(
   symbol: string,
   limit: number = 100,

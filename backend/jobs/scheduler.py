@@ -652,7 +652,7 @@ async def sync_order_book():
         from data.orderbook_scraper import fetch_all_depths
         conn = get_connection()
         syms = [r["symbol"] for r in conn.execute(
-            "SELECT symbol FROM fundamentals WHERE category IN ('A', 'B')"
+            "SELECT DISTINCT symbol FROM fundamentals WHERE symbol IS NOT NULL"
         ).fetchall()]
         conn.close()
 
@@ -838,7 +838,7 @@ async def fetch_orderbook_snapshots():
 
         # Get A-category symbols
         conn = get_connection()
-        rows = conn.execute("SELECT symbol FROM fundamentals WHERE category IN ('A', 'B') ORDER BY symbol").fetchall()
+        rows = conn.execute("SELECT DISTINCT symbol FROM fundamentals WHERE symbol IS NOT NULL ORDER BY symbol").fetchall()
         symbols = [r["symbol"] for r in rows]
 
         if not symbols:

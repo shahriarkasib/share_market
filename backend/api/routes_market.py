@@ -615,6 +615,83 @@ async def get_live_signals(
     return out
 
 
+@router.get("/smart-money-radar")
+async def smart_money_radar(side: str = "all", min_trades: int = 5,
+                              since_minutes: int = 240, limit: int = 50):
+    """Rank stocks by today's tick-level net order flow.
+
+    Shows which stocks SMART MONEY is touching right now — based on
+    Lee-Ready trade classification (trade at ask = buyer-initiated,
+    at bid = seller-initiated).
+
+    side: "buy" (most net buying), "sell" (most net selling), "all" (abs)
+    min_trades: skip stocks with too few prints
+    since_minutes: lookback window (default 4 hours)
+    """
+    from database import get_connection
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            f"""
+            SELECT
+                symbol,
+                COUNT(*) AS trade_count,
+                SUM(size) FILTER (WHERE side='B') AS buy_vol,
+                SUM(size) FILTER (WHERE side='S') AS sell_vol,
+                MAX(price) AS high_px,
+                MIN(price) AS low_px,
+                MAX(ts) AS last_trade_ts
+            FROM dse_ticks
+            WHERE ts >= NOW() - INTERVAL %s
+            GROUP BY symbol
+            HAVING COUNT(*) >= %s
+            """,
+            (f"{since_minutes} minutes", min_trades),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    out = []
+    for r in rows:
+        d = dict(r)
+        buy = float(d.get("buy_vol") or 0)
+        sell = float(d.get("sell_vol") or 0)
+        net = buy - sell
+        total = buy + sell
+        ratio = (buy / sell) if sell > 0 else (99 if buy > 0 else 0)
+        buy_pct = (buy / total * 100) if total > 0 else 0
+        last_ts = d.get("last_trade_ts")
+        if hasattr(last_ts, "isoformat"):
+            last_ts = last_ts.isoformat()
+        out.append({
+            "symbol": d["symbol"],
+            "trades": int(d["trade_count"]),
+            "buy_vol": int(buy),
+            "sell_vol": int(sell),
+            "net_delta": int(net),
+            "buy_pct": round(buy_pct, 1),
+            "buy_sell_ratio": round(ratio, 2),
+            "high_px": float(d["high_px"]) if d.get("high_px") else None,
+            "low_px": float(d["low_px"]) if d.get("low_px") else None,
+            "last_trade": last_ts,
+        })
+
+    if side == "buy":
+        out.sort(key=lambda x: -x["net_delta"])
+    elif side == "sell":
+        out.sort(key=lambda x: x["net_delta"])
+    else:
+        out.sort(key=lambda x: -abs(x["net_delta"]))
+
+    return {
+        "side": side,
+        "since_minutes": since_minutes,
+        "min_trades": min_trades,
+        "count": len(out),
+        "stocks": out[:limit],
+    }
+
+
 @router.get("/smc-screener")
 async def get_smc_screener(min_confidence: str = "MEDIUM"):
     """

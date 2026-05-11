@@ -38,7 +38,7 @@ LANKABD_BASE = "https://www.lankabd.com"
 TICK_URL = f"{LANKABD_BASE}/api/Company/MkSecondDataSymbol"
 COMPANY_LIST_PAGE = f"{LANKABD_BASE}/Home/MinuteChartMatrix"
 TIMEOUT = 10
-POLL_INTERVAL = int(os.environ.get("DSE_TAPE_POLL_SEC", "30"))
+POLL_INTERVAL = int(os.environ.get("DSE_TAPE_POLL_SEC", "180"))
 
 
 def ensure_schema():
@@ -272,18 +272,11 @@ def is_market_open() -> bool:
 
 
 def get_watchlist() -> list[str]:
-    """Stocks we actively trade — A-category symbols that have a CID."""
-    try:
-        conn = get_connection()
-        rows = conn.execute(
-            "SELECT DISTINCT symbol FROM fundamentals WHERE category IN ('A', 'B') "
-            "ORDER BY symbol LIMIT 250"
-        ).fetchall()
-        conn.close()
-        # Filter to symbols we actually have a CID for
-        return [r[0] for r in rows if r[0] in _CID_CACHE]
-    except Exception:
-        return []
+    """ALL stocks with a known LankaBD CID — smart-money tracking needs
+    full coverage (Z-cat pump-and-dump plays are often where the action is).
+    Returns up to ~700 symbols."""
+    # Just use the cid cache directly — that's everything LankaBD exposes
+    return list(_CID_CACHE.keys())
 
 
 def main():
@@ -333,7 +326,7 @@ def main():
                     # Token likely expired — refresh
                     token = get_csrf_token(session)
                     token_failures = 0
-            time.sleep(0.3)
+            time.sleep(0.2)  # gentler since we now poll ~700 symbols
 
         log.info(f"polled {len(watchlist)}, inserted {total_inserted} new ticks")
         time.sleep(POLL_INTERVAL)
