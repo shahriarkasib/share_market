@@ -456,13 +456,143 @@ def score_live_flow_divergence(of, today_candle_is_green):
         return None
 
 
-def compute_analyst_verdict(chart_data, analysis, today_candle, pattern_failure, flow_divergence):
+def score_volume_signature(df, today_candle, premium_discount):
+    """Read today's volume in context of the 30-day baseline and price position.
+
+    Computes RVOL (today_volume / 30d_avg_volume) then scores based on the
+    interaction of volume regime × price action × premium/discount zone.
+
+    Volume regime buckets:
+      climactic  (RVOL >= 2.5)   — exhaustion/transfer-of-ownership event
+      strong     (1.5 <= RVOL < 2.5) — institutional engagement
+      normal     (0.7 <= RVOL < 1.5) — baseline
+      weak       (0.4 <= RVOL < 0.7) — fading interest
+      dormant    (RVOL < 0.4)    — no participation
+
+    Scoring logic (analyst-style):
+      HIGH RVOL + green close + at discount     = ACCUMULATION  +20
+      HIGH RVOL + green close + at premium      = LATE_MOMENTUM +5 (chasing risk)
+      HIGH RVOL + red close   + at premium      = DISTRIBUTION -20 (smart money exiting)
+      HIGH RVOL + red close   + at discount     = CAPITULATION  +10 (potential bottom)
+      HIGH RVOL + flat close  + at premium      = CHURN_DIST    -15
+      HIGH RVOL + flat close  + at discount     = CHURN_ACCUM   +12
+      NORMAL RVOL                              = neutral 0
+      WEAK + green close                       = WEAK_RALLY    -5
+      WEAK + red close                         = SELLING_DRY   +5
+      DORMANT                                  = DORMANT       -3 (no edge)
+
+    Returns dict with type, score, reason, rvol, today_vol, avg_30d_vol, regime.
+    """
+    if df is None or len(df) < 10 or "volume" not in df.columns:
+        return None
+    try:
+        today_vol = float(df["volume"].iloc[-1] or 0)
+        if today_vol <= 0:
+            return None
+        # 30-day baseline (excludes today)
+        baseline_vols = df["volume"].iloc[-31:-1].dropna()
+        if len(baseline_vols) < 10:
+            return None
+        avg_30d = float(baseline_vols.mean())
+        if avg_30d <= 0:
+            return None
+        rvol = today_vol / avg_30d
+
+        # Regime
+        if rvol >= 2.5: regime = "climactic"
+        elif rvol >= 1.5: regime = "strong"
+        elif rvol >= 0.7: regime = "normal"
+        elif rvol >= 0.4: regime = "weak"
+        else: regime = "dormant"
+
+        # Today's price direction
+        is_green = bool(today_candle and today_candle.get("is_green"))
+        body_pct = float(today_candle.get("body_pct", 0)) if today_candle else 0
+        is_flat = body_pct < 25  # small body relative to range
+
+        # Premium/discount context (None tolerated → treat as equilibrium)
+        pd_zone = (premium_discount or {}).get("current_zone") or "equilibrium"
+        pd_pct = float((premium_discount or {}).get("current_pct") or 50)
+        at_premium = pd_zone == "premium" or pd_pct >= 70
+        at_discount = pd_zone == "discount" or pd_pct <= 30
+
+        score = 0
+        type_ = "NEUTRAL"
+        reason = ""
+
+        if regime in ("climactic", "strong"):
+            tag = "🔥" if regime == "climactic" else "⚡"
+            if is_flat and at_premium:
+                type_ = "CHURN_DISTRIBUTION"
+                score = -18 if regime == "climactic" else -12
+                reason = f"{tag} {rvol:.1f}× RVOL at premium with flat close — supply matching demand at the top"
+            elif is_flat and at_discount:
+                type_ = "CHURN_ACCUMULATION"
+                score = 15 if regime == "climactic" else 10
+                reason = f"{tag} {rvol:.1f}× RVOL at discount with flat close — absorption at support"
+            elif is_green and at_discount:
+                type_ = "ACCUMULATION"
+                score = 22 if regime == "climactic" else 15
+                reason = f"{tag} {rvol:.1f}× RVOL + green close at discount — institutional accumulation"
+            elif is_green and at_premium:
+                type_ = "LATE_MOMENTUM"
+                score = 4 if regime == "climactic" else 5
+                reason = f"{tag} {rvol:.1f}× RVOL + green at premium — momentum but chasing risk"
+            elif not is_green and at_premium:
+                type_ = "DISTRIBUTION"
+                score = -22 if regime == "climactic" else -15
+                reason = f"{tag} {rvol:.1f}× RVOL + red at premium — smart money exiting"
+            elif not is_green and at_discount:
+                type_ = "CAPITULATION"
+                score = 12 if regime == "climactic" else 8
+                reason = f"{tag} {rvol:.1f}× RVOL + red at discount — potential bottom, watch for reversal"
+            else:
+                # mid-range
+                type_ = "ENGAGED"
+                score = 6 if is_green else -6
+                reason = f"{tag} {rvol:.1f}× RVOL at mid-range — institutional engagement, {'bullish' if is_green else 'bearish'} bias"
+        elif regime == "normal":
+            type_ = "BASELINE"
+            score = 0
+            reason = f"{rvol:.1f}× RVOL — normal participation, no edge from volume alone"
+        elif regime == "weak":
+            if is_green:
+                type_ = "WEAK_RALLY"
+                score = -5
+                reason = f"⚠ {rvol:.1f}× RVOL — rally without volume conviction"
+            else:
+                type_ = "DRY_SELLING"
+                score = 5
+                reason = f"{rvol:.1f}× RVOL — sellers exhausted, supply drying up"
+        else:  # dormant
+            type_ = "DORMANT"
+            score = -3
+            reason = f"⚠ {rvol:.1f}× RVOL — no participation, illiquid"
+
+        return {
+            "type": type_,
+            "score": score,
+            "reason": reason,
+            "rvol": round(rvol, 2),
+            "today_volume": int(today_vol),
+            "avg_30d_volume": int(avg_30d),
+            "regime": regime,
+            "premium_zone": pd_zone,
+            "premium_pct": round(pd_pct, 1),
+        }
+    except Exception:
+        return None
+
+
+def compute_analyst_verdict(chart_data, analysis, today_candle, pattern_failure, flow_divergence,
+                            volume_signature=None):
     """Synthesise all observations like an experienced analyst.
 
     Combines:
       - Today's candle quality (-35 to +35)
       - Pattern failure detection (±15 per failure)
       - Live flow vs daily structure divergence (±35)
+      - Volume signature: RVOL × price × premium-zone (±22)
       - Existing SMC structure (already in analysis)
       - Multi-day proxy delta accumulation
       - HTF bias alignment
@@ -502,6 +632,14 @@ def compute_analyst_verdict(chart_data, analysis, today_candle, pattern_failure,
                 "factor": f"Tape vs daily: {flow_divergence['type'].replace('_', ' ').title()}",
                 "score": flow_divergence["score"],
                 "detail": flow_divergence["reason"],
+            })
+
+        if volume_signature:
+            score += volume_signature["score"]
+            factors.append({
+                "factor": f"Volume: {volume_signature['type'].replace('_', ' ').title()}",
+                "score": volume_signature["score"],
+                "detail": volume_signature["reason"],
             })
 
         # SMC structural bias
@@ -4535,6 +4673,7 @@ def get_smc_chart(symbol: str, days: int = 180, interval: str = "daily"):
     pattern_failure = detect_pattern_failures(df, candle_patterns)
     candle_is_green = bool(today_candle and today_candle.get("is_green"))
     flow_divergence = score_live_flow_divergence(order_flow, candle_is_green)
+    volume_signature = score_volume_signature(df, today_candle, premium_discount)
     # Build a minimal chart_data dict for the verdict computation
     _chart_for_verdict = {
         "order_flow": order_flow,
@@ -4544,12 +4683,14 @@ def get_smc_chart(symbol: str, days: int = 180, interval: str = "daily"):
     }
     analyst_verdict = compute_analyst_verdict(
         _chart_for_verdict, analysis, today_candle, pattern_failure, flow_divergence,
+        volume_signature=volume_signature,
     )
     if isinstance(analysis, dict):
         analysis["analyst_verdict"] = analyst_verdict
         analysis["today_candle_quality"] = today_candle
         analysis["pattern_failure"] = pattern_failure
         analysis["flow_divergence"] = flow_divergence
+        analysis["volume_signature"] = volume_signature
 
     return {
         "symbol": symbol.upper(),

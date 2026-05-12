@@ -370,6 +370,18 @@ export interface LiveCompositeSignal {
     score?: number;
     failures?: Array<{ pattern: string; date: string; original_bias: string; new_bias: string; reason: string }>;
   } | null;
+  volume_signature?: {
+    type?: string;
+    score?: number;
+    reason?: string;
+    rvol?: number;
+    today_volume?: number;
+    avg_30d_volume?: number;
+    regime?: "climactic" | "strong" | "normal" | "weak" | "dormant" | string;
+    premium_zone?: string;
+    premium_pct?: number;
+  } | null;
+  rvol?: number | null;
   short_term_trend?: {
     slope_pct?: number | null;
     direction?: "UP" | "DOWN" | "SIDEWAYS" | null;

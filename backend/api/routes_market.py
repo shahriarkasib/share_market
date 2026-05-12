@@ -598,7 +598,8 @@ async def get_live_signals(
                     d[k] = [] if k != "votes" else {}
         # JSONB single-dict columns
         for k_dict in ("htf_bias", "short_term_trend", "analyst_verdict",
-                       "today_candle_quality", "flow_divergence", "pattern_failure"):
+                       "today_candle_quality", "flow_divergence", "pattern_failure",
+                       "volume_signature"):
             v = d.get(k_dict)
             if isinstance(v, str):
                 try: d[k_dict] = _json.loads(v)

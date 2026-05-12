@@ -408,6 +408,21 @@ export default function LiveCompositeSignals({ market = "dse" }: Props = {}) {
                             }>{s.confidence}</span>
                           </div>
                         )}
+                        {s.volume_signature && s.volume_signature.rvol !== undefined && s.volume_signature.rvol !== null && (() => {
+                          const vs = s.volume_signature!;
+                          const rv = vs.rvol!;
+                          const cls =
+                            vs.regime === "climactic" ? "text-purple-500 font-bold" :
+                            vs.regime === "strong" ? "text-emerald-500 font-medium" :
+                            vs.regime === "normal" ? "text-gray-400" :
+                            vs.regime === "weak" ? "text-amber-500" :
+                            "text-red-400";
+                          return (
+                            <div className={`text-[10px] mt-0.5 ${cls}`} title={vs.reason || ""}>
+                              RVOL {rv.toFixed(1)}× · {vs.regime}
+                            </div>
+                          );
+                        })()}
                       </td>
                       <td className="px-3 py-2">
                         {(() => {
