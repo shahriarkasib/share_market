@@ -261,14 +261,29 @@ def insert_ticks(symbol: str, ticks: list[dict]) -> int:
 
 
 def is_market_open() -> bool:
-    """DSE: Sun-Thu, 10:00-14:30 BST (UTC+6)."""
-    now_utc = datetime.now(timezone.utc)
-    bst_minutes = (now_utc.hour * 60 + now_utc.minute + 6 * 60) % (24 * 60)
-    bst_hour = bst_minutes // 60
-    bst_day = (now_utc.weekday() + (1 if now_utc.hour + 6 >= 24 else 0)) % 7
-    if bst_day not in (6, 0, 1, 2, 3):
-        return False
-    return 10 <= bst_hour < 15
+    """DSE: 10:00-14:30 BST (UTC+6) on trading days.
+
+    Honours DSE_HOLIDAYS / DSE_SPECIAL_TRADING_DAYS overrides via
+    config.is_dse_trading_day() — so Eid make-up Saturdays trade
+    and holiday Sundays don't.
+    """
+    try:
+        import sys, os
+        sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        from config import is_dse_trading_day, DSE_TIMEZONE
+        now_bst = datetime.now(DSE_TIMEZONE)
+        if not is_dse_trading_day(now_bst):
+            return False
+        return 10 <= now_bst.hour < 15
+    except Exception:
+        # Fallback to original logic if config import fails
+        now_utc = datetime.now(timezone.utc)
+        bst_minutes = (now_utc.hour * 60 + now_utc.minute + 6 * 60) % (24 * 60)
+        bst_hour = bst_minutes // 60
+        bst_day = (now_utc.weekday() + (1 if now_utc.hour + 6 >= 24 else 0)) % 7
+        if bst_day not in (6, 0, 1, 2, 3):
+            return False
+        return 10 <= bst_hour < 15
 
 
 def get_watchlist() -> list[str]:

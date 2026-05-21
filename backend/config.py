@@ -10,6 +10,44 @@ MARKET_OPEN_TIME = time(10, 0)   # 10:00 AM BST
 MARKET_CLOSE_TIME = time(14, 30)  # 2:30 PM BST
 MARKET_DAYS = [6, 0, 1, 2, 3]    # Sun=6, Mon=0, Tue=1, Wed=2, Thu=3
 
+# ─── Holiday Calendar Overrides ────────────────────────────────────────────
+# DSE publishes special schedules for Eid + national holidays.
+# Use ISO format "YYYY-MM-DD".
+#
+# DSE_HOLIDAYS: Dates that fall on normal trading days (Sun-Thu) but are
+# CLOSED due to holidays. The scheduler will skip these.
+#
+# DSE_SPECIAL_TRADING_DAYS: Dates that fall on Fri/Sat but are EXCEPTIONALLY
+# OPEN (e.g., Eid make-up days). The scheduler will trade these.
+DSE_HOLIDAYS = {
+    # Eid-ul-Adha 2026 closure (May 25-31)
+    "2026-05-25", "2026-05-26", "2026-05-27", "2026-05-28", "2026-05-29",
+    # May 30-31 already non-trading (Fri-Sat) but listed for clarity
+    "2026-05-30", "2026-05-31",
+}
+DSE_SPECIAL_TRADING_DAYS = {
+    # Eid week make-up days — Sat May 23 trades to compensate for the closure
+    "2026-05-23",
+    # Sunday May 24 is already a normal trading day (no override needed but
+    # listed here for documentation)
+}
+
+
+def is_dse_trading_day(d) -> bool:
+    """Return True if `d` (a date or datetime) is a DSE trading day.
+
+    Logic:
+      1. If date is in DSE_SPECIAL_TRADING_DAYS → trading day (override)
+      2. If date is in DSE_HOLIDAYS → NOT trading day (override)
+      3. Else fall back to weekday check (MARKET_DAYS: Sun-Thu)
+    """
+    iso = d.strftime("%Y-%m-%d") if hasattr(d, "strftime") else str(d)
+    if iso in DSE_SPECIAL_TRADING_DAYS:
+        return True
+    if iso in DSE_HOLIDAYS:
+        return False
+    return d.weekday() in MARKET_DAYS
+
 # Data Refresh Configuration
 REFRESH_INTERVAL_SECONDS = 300  # 5 minutes
 HISTORICAL_DAYS = 365  # 1 year of history for indicators

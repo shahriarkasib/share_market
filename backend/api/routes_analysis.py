@@ -19,7 +19,7 @@ from analysis.daily_report import (
     run_daily_analysis,
     save_daily_analysis,
 )
-from config import MARKET_DAYS, CACHE_TTL_LIVE_PRICES
+from config import MARKET_DAYS, CACHE_TTL_LIVE_PRICES, is_dse_trading_day
 from data.cache import cache
 from database import get_connection
 
@@ -30,9 +30,13 @@ _analysis_lock = threading.Lock()
 
 
 def _is_market_open() -> str:
-    """Return 'OPEN', 'PRE_MARKET', or 'CLOSED'."""
+    """Return 'OPEN', 'PRE_MARKET', or 'CLOSED'.
+
+    Uses is_dse_trading_day() which honours DSE_HOLIDAYS and
+    DSE_SPECIAL_TRADING_DAYS overrides (e.g., Eid make-up Saturdays).
+    """
     now = datetime.now(DSE_TZ)
-    if now.weekday() not in MARKET_DAYS:
+    if not is_dse_trading_day(now):
         return "CLOSED"
     t = now.time()
     if dtime(9, 30) <= t < dtime(10, 0):

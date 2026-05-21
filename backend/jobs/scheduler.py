@@ -26,22 +26,40 @@ _heavy_refresh_lock = threading.Lock()
 
 
 def is_trading_day(date_str: str = None) -> bool:
-    """Check if a given date is a DSE trading day (not weekend, not holiday).
-    Uses the market_holidays table. Bangladesh weekends = Friday + Saturday.
+    """Check if a given date is a DSE trading day.
+
+    Priority order:
+      1. config.DSE_SPECIAL_TRADING_DAYS  → trade (override Fri/Sat)
+      2. config.DSE_HOLIDAYS              → don't trade (override Sun-Thu)
+      3. market_holidays DB table          → don't trade (legacy holidays)
+      4. weekday in MARKET_DAYS (Sun-Thu)  → trade
     """
     if date_str is None:
         date_str = datetime.now(DSE_TZ).strftime("%Y-%m-%d")
     try:
-        dt = datetime.strptime(date_str, "%Y-%m-%d")
-        # Friday=4, Saturday=5 in Python weekday()
-        if dt.weekday() in (4, 5):
+        from config import is_dse_trading_day, DSE_HOLIDAYS, DSE_SPECIAL_TRADING_DAYS
+        dt = datetime.strptime(date_str, "%Y-%m-%d").date()
+
+        # Config-driven overrides take priority
+        if date_str in DSE_SPECIAL_TRADING_DAYS:
+            return True
+        if date_str in DSE_HOLIDAYS:
             return False
-        conn = get_connection()
-        row = conn.execute(
-            "SELECT 1 FROM market_holidays WHERE date = ?", (date_str,)
-        ).fetchone()
-        conn.close()
-        return row is None  # True if NOT a holiday
+
+        # Legacy DB holiday table (backup)
+        try:
+            conn = get_connection()
+            row = conn.execute(
+                "SELECT 1 FROM market_holidays WHERE date = ?", (date_str,)
+            ).fetchone()
+            conn.close()
+            if row is not None:
+                return False
+        except Exception:
+            pass  # DB table may not exist — skip
+
+        # Default: weekday-based check
+        return is_dse_trading_day(dt)
     except Exception as e:
         logger.warning(f"is_trading_day check failed: {e}, assuming trading day")
         return True
@@ -898,7 +916,7 @@ def setup_scheduler() -> AsyncIOScheduler:
     scheduler.add_job(
         fast_pipeline,
         trigger=CronTrigger(
-            day_of_week="sun,mon,tue,wed,thu",
+            day_of_week="sat,sun,mon,tue,wed,thu",
             hour="10-14", minute="*/2",
             timezone="Asia/Dhaka",
         ),
@@ -911,7 +929,7 @@ def setup_scheduler() -> AsyncIOScheduler:
     scheduler.add_job(
         heavy_refresh,
         trigger=CronTrigger(
-            day_of_week="sun,mon,tue,wed,thu",
+            day_of_week="sat,sun,mon,tue,wed,thu",
             hour="10-14", minute="2,12,22,32,42,52",
             timezone="Asia/Dhaka",
         ),
@@ -924,7 +942,7 @@ def setup_scheduler() -> AsyncIOScheduler:
     scheduler.add_job(
         sync_daily_prices_from_live,
         trigger=CronTrigger(
-            day_of_week="sun,mon,tue,wed,thu",
+            day_of_week="sat,sun,mon,tue,wed,thu",
             hour="10-14", minute="5,20,35,50",
             timezone="Asia/Dhaka",
         ),
@@ -955,7 +973,7 @@ def setup_scheduler() -> AsyncIOScheduler:
     scheduler.add_job(
         run_post_market_analysis,
         trigger=CronTrigger(
-            day_of_week="sun,mon,tue,wed,thu",
+            day_of_week="sat,sun,mon,tue,wed,thu",
             hour=15, minute=0, timezone="Asia/Dhaka",
         ),
         id="daily_analysis",
@@ -967,7 +985,7 @@ def setup_scheduler() -> AsyncIOScheduler:
     scheduler.add_job(
         sync_order_book,
         trigger=CronTrigger(
-            day_of_week="sun,mon,tue,wed,thu",
+            day_of_week="sat,sun,mon,tue,wed,thu",
             hour="10-14", minute="1,11,21,31,41,51",
             timezone="Asia/Dhaka",
         ),
@@ -980,7 +998,7 @@ def setup_scheduler() -> AsyncIOScheduler:
     scheduler.add_job(
         precompute_radar,
         trigger=CronTrigger(
-            day_of_week="sun,mon,tue,wed,thu",
+            day_of_week="sat,sun,mon,tue,wed,thu",
             hour=15, minute=30, timezone="Asia/Dhaka",
         ),
         id="precompute_radar",
@@ -992,7 +1010,7 @@ def setup_scheduler() -> AsyncIOScheduler:
     scheduler.add_job(
         run_live_scanner,
         trigger=CronTrigger(
-            day_of_week="sun,mon,tue,wed,thu",
+            day_of_week="sat,sun,mon,tue,wed,thu",
             hour="9-14", minute="*/5",
             timezone="Asia/Dhaka",
         ),
@@ -1007,7 +1025,7 @@ def setup_scheduler() -> AsyncIOScheduler:
     scheduler.add_job(
         run_composite_signal_tracker,
         trigger=CronTrigger(
-            day_of_week="sun,mon,tue,wed,thu",
+            day_of_week="sat,sun,mon,tue,wed,thu",
             hour="10-15", minute="1,4,7,10,13,16,19,22,25,28,31,34,37,40,43,46,49,52,55,58",
             timezone="Asia/Dhaka",
         ),
@@ -1022,7 +1040,7 @@ def setup_scheduler() -> AsyncIOScheduler:
     scheduler.add_job(
         run_signal_performance_update,
         trigger=CronTrigger(
-            day_of_week="sun,mon,tue,wed,thu",
+            day_of_week="sat,sun,mon,tue,wed,thu",
             hour=15, minute=45, timezone="Asia/Dhaka",
         ),
         id="signal_performance",
@@ -1048,7 +1066,7 @@ def setup_scheduler() -> AsyncIOScheduler:
     scheduler.add_job(
         verify_scan_decisions,
         trigger=CronTrigger(
-            day_of_week="sun,mon,tue,wed,thu",
+            day_of_week="sat,sun,mon,tue,wed,thu",
             hour=15, minute=30, timezone="Asia/Dhaka",
         ),
         id="verify_decisions",
@@ -1060,7 +1078,7 @@ def setup_scheduler() -> AsyncIOScheduler:
     scheduler.add_job(
         scrape_daily_news,
         trigger=CronTrigger(
-            day_of_week="sun,mon,tue,wed,thu",
+            day_of_week="sat,sun,mon,tue,wed,thu",
             hour=16, minute=0, timezone="Asia/Dhaka",
         ),
         id="daily_news_scrape",
@@ -1072,7 +1090,7 @@ def setup_scheduler() -> AsyncIOScheduler:
     scheduler.add_job(
         fetch_orderbook_snapshots,
         trigger=CronTrigger(
-            day_of_week="sun,mon,tue,wed,thu",
+            day_of_week="sat,sun,mon,tue,wed,thu",
             hour="10-14", minute="3,8,13,18,23,28,33,38,43,48,53,58",
             timezone="Asia/Dhaka",
         ),
