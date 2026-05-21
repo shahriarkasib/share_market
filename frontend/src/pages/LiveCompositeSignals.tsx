@@ -54,7 +54,7 @@ export default function LiveCompositeSignals({ market = "dse" }: Props = {}) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<StatusFilter>("active");
-  const [minScore, setMinScore] = useState(60);
+  const [minScore, setMinScore] = useState(50);
   const [tPlusTwoOnly, setTPlusTwoOnly] = useState(false);
   const [minAgreement, setMinAgreement] = useState(0);
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
@@ -85,7 +85,7 @@ export default function LiveCompositeSignals({ market = "dse" }: Props = {}) {
     return () => window.clearInterval(id);
   }, [filter, minScore]);
 
-  const [bucket, setBucket] = useState<"IN_ZONE" | "JUST_BOUNCED" | "PULLBACK_IN_PROGRESS" | "WATCHING" | "MISSED" | "WRONG_TRIGGER" | "ALL">("IN_ZONE");
+  const [bucket, setBucket] = useState<"IN_ZONE" | "JUST_BOUNCED" | "PULLBACK_IN_PROGRESS" | "WATCHING" | "MISSED" | "WRONG_TRIGGER" | "ALL">("ALL");
 
   const filteredAll = useMemo(() => signals.filter((s) => {
     if (tPlusTwoOnly && !s.t_plus_2_friendly) return false;
