@@ -3488,6 +3488,63 @@ def generate_analysis(structure_events, fvgs, order_blocks, key_levels, current_
                 )
             aggressive_entry_distance_pct = round((current_price - agg_px) / current_price * 100, 1)
 
+    # === FALLBACK ENTRY ZONES ===
+    # If the action wasn't a BUY type (e.g., "WAIT — NO TREND", "WAIT — SUPPLY
+    # OVERHEAD"), the trade levels never got computed. But the user still wants
+    # to see reference levels on the Live Signals page. Compute simple
+    # fallbacks from swing_low / swing_high / current_price so columns aren't
+    # empty for stocks that are technically "wait" but have positive analyst
+    # verdicts (STRONG_BUY +75 SAIHAMCOT with no trend, etc.).
+    if entry is None and current_price and swing_low and swing_high:
+        try:
+            entry = round(max(swing_low * 1.02, current_price * 0.9), 2)
+            entry_zone_low = round(entry * 0.99, 2)
+            entry_zone_high = round(entry * 1.01, 2)
+            entry_label = f"Fallback: ৳{entry_zone_low}-{entry_zone_high} (swing-low confluence)"
+        except Exception:
+            pass
+    if aggressive_entry is None and current_price and swing_low:
+        try:
+            # Tier-1 = midpoint between current and swing low (closer aggressive)
+            agg_px = round((current_price + swing_low) / 2, 2)
+            aggressive_entry = agg_px
+            aggressive_entry_zone_low = round(agg_px * 0.99, 2)
+            aggressive_entry_zone_high = round(agg_px * 1.01, 2)
+            aggressive_entry_distance_pct = round((current_price - agg_px) / current_price * 100, 1)
+            aggressive_entry_label = f"Fallback Tier-1: ৳{aggressive_entry_zone_low}-{aggressive_entry_zone_high}"
+        except Exception:
+            pass
+    if stop_loss is None and swing_low:
+        stop_loss = round(swing_low * 0.97, 2)  # 3% below swing low
+    if target1 is None and swing_high:
+        target1 = round(swing_high, 2)
+    if target2 is None and swing_high:
+        target2 = round(swing_high * 1.05, 2)
+    if rr is None and entry and stop_loss and target1:
+        try:
+            risk = entry - stop_loss
+            reward = target1 - entry
+            if risk > 0:
+                rr = round(reward / risk, 2)
+        except Exception:
+            pass
+
+    # === BUY RANGE — Tier-1 (best) to current_price (max acceptable) ===
+    # The user wants to know not just "the perfect entry" but "the max
+    # acceptable price to pay today." For STRONG_BUY signals, paying slight
+    # premium over Tier-1 is acceptable (price may run away). For weaker
+    # signals, only buy AT Tier-1 or below.
+    buy_range_low = None
+    buy_range_high = None
+    max_buy_price = None
+    if current_price and aggressive_entry:
+        buy_range_low = aggressive_entry
+        # max_buy_price ceiling: current_price + tiny premium tolerance.
+        # Verdict-aware tolerance is applied later (after analyst_verdict);
+        # base here is 0.5% above current.
+        max_buy_price = round(current_price * 1.005, 2)
+        buy_range_high = max_buy_price
+
     # === Entry status — distinguish "buy now" vs "wait for pullback" vs "too far" ===
     # Per SMC rule (Image 2): in trending up, buy in DISCOUNT zone, not premium.
     # Per SMC rule (Image 1 #9.5): don't justify emotional buys.
@@ -3519,16 +3576,25 @@ def generate_analysis(structure_events, fvgs, order_blocks, key_levels, current_
             entry_status = "AT_ENTRY"
         elif closest_dist > 2.0 and closest_dist <= 8.0:
             entry_status = "WAIT_PULLBACK"
-            if aggressive_entry:
+            # Show a BUY RANGE: best price (Tier-1) to max acceptable (current
+            # with tiny premium). User can pick — discipline at Tier-1 or
+            # market-buy up to the ceiling for STRONG_BUY signals.
+            if aggressive_entry and max_buy_price:
                 chase_warning = (
-                    f"⚠ Don't chase at ৳{current_price}. Use limits: "
-                    f"Tier-1 ৳{aggressive_entry} ({aggressive_entry_distance_pct:.1f}% below); "
-                    f"Tier-2 ৳{entry} ({entry_distance_pct:.1f}% below, confluence)."
+                    f"💰 Buy range ৳{aggressive_entry}-{max_buy_price}. "
+                    f"Best at ৳{aggressive_entry} (Tier-1, {aggressive_entry_distance_pct:.1f}% below); "
+                    f"max ৳{max_buy_price} (≤0.5% over current). "
+                    f"Tier-2 deep ৳{entry} ({entry_distance_pct:.1f}% below, confluence)."
+                )
+            elif aggressive_entry:
+                chase_warning = (
+                    f"💰 Buy at ৳{aggressive_entry} or below (Tier-1, {aggressive_entry_distance_pct:.1f}% below). "
+                    f"Tier-2 deep ৳{entry} ({entry_distance_pct:.1f}% below)."
                 )
             else:
                 chase_warning = (
-                    f"⚠ Don't chase at ৳{current_price} — entry is ৳{entry} "
-                    f"({entry_distance_pct:.1f}% below). Place a buy limit; wait for pullback."
+                    f"💰 Buy at ৳{entry} or below ({entry_distance_pct:.1f}% below). "
+                    f"Place a limit order; don't chase above current."
                 )
         elif closest_dist > 8.0:
             entry_status = "TOO_FAR"
@@ -4003,6 +4069,9 @@ def generate_analysis(structure_events, fvgs, order_blocks, key_levels, current_
         "entry_status": entry_status,
         "entry_distance_pct": entry_distance_pct,
         "chase_warning": chase_warning,
+        "buy_range_low": buy_range_low,
+        "buy_range_high": buy_range_high,
+        "max_buy_price": max_buy_price,
         "aggressive_entry": aggressive_entry,
         "aggressive_entry_label": aggressive_entry_label,
         "aggressive_entry_distance_pct": aggressive_entry_distance_pct,
