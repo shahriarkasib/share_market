@@ -560,11 +560,17 @@ async def get_live_signals(
     # CRITICAL: filter to DSE rows only. NASDAQ has its own endpoint at
     # /api/v1/nasdaq/live-signals. Market column may be NULL for legacy rows
     # (treat NULL as DSE since the DSE tracker pre-dates the column).
+    # Sort by analyst_score first (observational verdict — today's candle +
+    # tape + flow + volume + absorption). Falls back to composite_score for
+    # stocks without an analyst verdict and last_seen as final tiebreaker.
+    # This ensures STRONG_BUY signals surface at the top of the page instead
+    # of being buried below WATCH/NEUTRAL stocks with marginally higher
+    # legacy composite scores.
     if status == "all":
         rows = conn.execute(
             "SELECT * FROM live_signals WHERE composite_score >= %s "
             "AND (market = 'dse' OR market IS NULL) "
-            "ORDER BY composite_score DESC, last_seen DESC LIMIT 200",
+            "ORDER BY analyst_score DESC NULLS LAST, composite_score DESC, last_seen DESC LIMIT 200",
             (min_score,),
         ).fetchall()
     elif status == "closed":
@@ -579,7 +585,7 @@ async def get_live_signals(
         rows = conn.execute(
             "SELECT * FROM live_signals WHERE status = %s AND composite_score >= %s "
             "AND (market = 'dse' OR market IS NULL) "
-            "ORDER BY composite_score DESC, last_seen DESC LIMIT 100",
+            "ORDER BY analyst_score DESC NULLS LAST, composite_score DESC, last_seen DESC LIMIT 100",
             (status, min_score),
         ).fetchall()
     # Optional bucket filter (IN_ZONE | WATCHING | MISSED | STALE)
@@ -599,7 +605,7 @@ async def get_live_signals(
         # JSONB single-dict columns
         for k_dict in ("htf_bias", "short_term_trend", "analyst_verdict",
                        "today_candle_quality", "flow_divergence", "pattern_failure",
-                       "volume_signature"):
+                       "volume_signature", "absorption_pattern"):
             v = d.get(k_dict)
             if isinstance(v, str):
                 try: d[k_dict] = _json.loads(v)
