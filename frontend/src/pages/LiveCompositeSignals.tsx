@@ -423,6 +423,25 @@ export default function LiveCompositeSignals({ market = "dse" }: Props = {}) {
                             </div>
                           );
                         })()}
+                        {s.absorption_pattern && s.absorption_pattern.type && (() => {
+                          const ab = s.absorption_pattern!;
+                          const bullish = ab.type === "BULLISH_ABSORPTION";
+                          const cls = bullish
+                            ? "text-cyan-500 font-medium"
+                            : "text-orange-500 font-medium";
+                          const label = bullish ? "🌀 ABSORPTION" : "⚠️ DISTRIBUTION";
+                          const extra = [
+                            `${ab.count}d/${ab.span_days}d`,
+                            ab.volume_trend === "declining" ? "↓vol" : ab.volume_trend === "rising" ? "↑vol" : "",
+                            ab.at_demand_zone ? "@OB" : "",
+                            ab.today_active ? "live" : "",
+                          ].filter(Boolean).join(" · ");
+                          return (
+                            <div className={`text-[10px] mt-0.5 ${cls}`} title={ab.reason || ""}>
+                              {label} {extra}
+                            </div>
+                          );
+                        })()}
                       </td>
                       <td className="px-3 py-2">
                         {(() => {

@@ -382,6 +382,18 @@ export interface LiveCompositeSignal {
     premium_pct?: number;
   } | null;
   rvol?: number | null;
+  absorption_pattern?: {
+    type?: "BULLISH_ABSORPTION" | "BEARISH_DISTRIBUTION" | string;
+    count?: number;
+    volume_trend?: "declining" | "stable" | "rising" | string;
+    today_active?: boolean;
+    at_demand_zone?: boolean;
+    span_days?: number;
+    score?: number;
+    reason?: string;
+    events?: Array<{ time?: string; type?: string; strength?: number }>;
+  } | null;
+  absorption_score?: number | null;
   short_term_trend?: {
     slope_pct?: number | null;
     direction?: "UP" | "DOWN" | "SIDEWAYS" | null;

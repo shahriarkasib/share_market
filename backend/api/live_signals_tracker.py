@@ -103,6 +103,8 @@ def ensure_schema():
         ("pattern_failure", "JSONB"),
         ("volume_signature", "JSONB"),
         ("rvol", "NUMERIC(6,2)"),  # quick filter on relative volume
+        ("absorption_pattern", "JSONB"),
+        ("absorption_score", "NUMERIC(5,1)"),  # quick filter, NULL if no pattern
         ("analyst_score", "NUMERIC(6,1)"),  # quick filter without parsing JSONB
         # Entry zone (range) + technical trigger fields
         ("entry_zone_low", "NUMERIC(12,2)"),
@@ -377,7 +379,8 @@ def insert_signal(sig: dict):
             liquidity_sweep = %s,
             short_term_trend = %s,
             analyst_verdict = %s, today_candle_quality = %s, flow_divergence = %s,
-            pattern_failure = %s, volume_signature = %s, rvol = %s, analyst_score = %s,
+            pattern_failure = %s, volume_signature = %s, rvol = %s,
+            absorption_pattern = %s, absorption_score = %s, analyst_score = %s,
             entry_zone_low = %s, entry_zone_high = %s,
             aggressive_entry_zone_low = %s, aggressive_entry_zone_high = %s,
             primary_trigger_date = %s, primary_trigger_bars_ago = %s,
@@ -409,6 +412,8 @@ def insert_signal(sig: dict):
             json.dumps(sig.get("pattern_failure")) if sig.get("pattern_failure") else None,
             json.dumps(sig.get("volume_signature")) if sig.get("volume_signature") else None,
             (sig.get("volume_signature") or {}).get("rvol"),
+            json.dumps(sig.get("absorption_pattern")) if sig.get("absorption_pattern") else None,
+            (sig.get("absorption_pattern") or {}).get("score"),
             (sig.get("analyst_verdict") or {}).get("score"),
             tf["entry_zone_low"], tf["entry_zone_high"],
             tf["aggressive_entry_zone_low"], tf["aggressive_entry_zone_high"],
@@ -504,7 +509,8 @@ def update_signal_state(active_row: dict, sig: dict, last_high: float, last_low:
                structure_verdict = %s, order_flow_verdict = %s, volume_verdict = %s,
                htf_bias = %s, liquidity_sweep = %s, short_term_trend = %s,
                analyst_verdict = %s, today_candle_quality = %s, flow_divergence = %s,
-               pattern_failure = %s, volume_signature = %s, rvol = %s, analyst_score = %s,
+               pattern_failure = %s, volume_signature = %s, rvol = %s,
+               absorption_pattern = %s, absorption_score = %s, analyst_score = %s,
                entry_zone_low = %s, entry_zone_high = %s,
                aggressive_entry_zone_low = %s, aggressive_entry_zone_high = %s,
                primary_trigger_date = %s, primary_trigger_bars_ago = %s,
@@ -548,6 +554,8 @@ def update_signal_state(active_row: dict, sig: dict, last_high: float, last_low:
             json.dumps(sig.get("pattern_failure")) if sig.get("pattern_failure") else None,
             json.dumps(sig.get("volume_signature")) if sig.get("volume_signature") else None,
             (sig.get("volume_signature") or {}).get("rvol"),
+            json.dumps(sig.get("absorption_pattern")) if sig.get("absorption_pattern") else None,
+            (sig.get("absorption_pattern") or {}).get("score"),
             (sig.get("analyst_verdict") or {}).get("score"),
             tf["entry_zone_low"], tf["entry_zone_high"],
             tf["aggressive_entry_zone_low"], tf["aggressive_entry_zone_high"],

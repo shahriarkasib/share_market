@@ -584,8 +584,148 @@ def score_volume_signature(df, today_candle, premium_discount):
         return None
 
 
+def detect_absorption_pattern(df, vsa_events, order_blocks=None, current_price=None,
+                              lookback_days=15, min_count=3):
+    """Multi-day Wyckoff absorption / distribution pattern detector.
+
+    A SINGLE NO_SUPPLY day = mild signal (already scored in compute_analyst_verdict).
+    THREE+ NO_SUPPLY days within 15 trading days with DECLINING volume across them
+    = textbook Wyckoff accumulation phase (sellers progressively exhausted, smart
+    money systematically absorbing supply before markup). Symmetric for
+    NO_DEMAND/UPTHRUST = distribution phase before markdown.
+
+    Returns dict with:
+      type: BULLISH_ABSORPTION | BEARISH_DISTRIBUTION | None
+      count, volume_trend, today_active, at_demand_zone, span_days, score, reason
+    """
+    if df is None or len(df) < min_count + 2 or not vsa_events:
+        return None
+    try:
+        BULL_TYPES = {"NO_SUPPLY", "SPRING", "STOPPING_VOLUME", "TEST"}
+        BEAR_TYPES = {"NO_DEMAND", "UPTHRUST", "BUYING_CLIMAX"}
+
+        # Use time-based recency (idx field may be out of sync with df after
+        # live-bar append). Build a set of "recent" timestamps from df's tail.
+        recent_times = set()
+        if "time" in df.columns:
+            recent_times = set(str(t) for t in df["time"].iloc[-lookback_days:].tolist())
+        elif hasattr(df.index, "to_series"):
+            recent_times = set(str(t) for t in df.index[-lookback_days:].tolist())
+
+        def _is_recent(ev):
+            t = str(ev.get("time", ""))
+            return (t in recent_times) if recent_times else (ev.get("idx", -1) >= max(0, len(df) - lookback_days))
+
+        bull_events = [ev for ev in vsa_events if ev.get("type", "").upper() in BULL_TYPES and _is_recent(ev)]
+        bear_events = [ev for ev in vsa_events if ev.get("type", "").upper() in BEAR_TYPES and _is_recent(ev)]
+
+        if len(bull_events) >= len(bear_events) and len(bull_events) >= min_count:
+            events = bull_events
+            pattern_type = "BULLISH_ABSORPTION"
+        elif len(bear_events) >= min_count and len(bear_events) > len(bull_events):
+            events = bear_events
+            pattern_type = "BEARISH_DISTRIBUTION"
+        else:
+            return None
+
+        # Volume trend across the events themselves (time-based lookup)
+        ev_vols = []
+        vol_by_time = {}
+        if "time" in df.columns and "volume" in df.columns:
+            vol_by_time = dict(zip(df["time"].astype(str), df["volume"].tolist()))
+        for ev in events:
+            t = str(ev.get("time", ""))
+            v = vol_by_time.get(t)
+            if v is None:
+                idx = ev.get("idx", -1)
+                if 0 <= idx < len(df) and "volume" in df.columns:
+                    v = df["volume"].iloc[idx]
+            if v and v > 0:
+                ev_vols.append(float(v))
+        volume_trend = "stable"
+        if len(ev_vols) >= 3:
+            half = len(ev_vols) // 2
+            first_avg = sum(ev_vols[:half]) / max(1, half)
+            second_avg = sum(ev_vols[half:]) / max(1, len(ev_vols) - half)
+            if second_avg < first_avg * 0.7:
+                volume_trend = "declining"
+            elif second_avg > first_avg * 1.3:
+                volume_trend = "rising"
+
+        # today_active: last event's time == latest df bar time
+        latest_df_time = str(df["time"].iloc[-1]) if "time" in df.columns else None
+        last_ev_time = str(events[-1].get("time", ""))
+        today_active = bool(latest_df_time) and last_ev_time == latest_df_time
+        # span_days: count business days between first and last event using df ordering
+        try:
+            times_list = df["time"].astype(str).tolist() if "time" in df.columns else []
+            i0 = times_list.index(str(events[0].get("time", ""))) if times_list else 0
+            i1 = times_list.index(last_ev_time) if times_list else 0
+            span_days = i1 - i0
+        except ValueError:
+            span_days = events[-1].get("idx", 0) - events[0].get("idx", 0)
+
+        # Demand zone proximity
+        at_demand_zone = False
+        if pattern_type == "BULLISH_ABSORPTION" and order_blocks and current_price:
+            for ob in order_blocks:
+                if ob.get("type") != "bullish":
+                    continue
+                if ob.get("status") not in ("active", "fresh", "tested"):
+                    continue
+                top = float(ob.get("top", 0) or 0)
+                bot = float(ob.get("bottom", 0) or 0)
+                if bot <= 0 or top <= 0:
+                    continue
+                if bot * 0.98 <= current_price <= top * 1.02:
+                    at_demand_zone = True
+                    break
+
+        if pattern_type == "BULLISH_ABSORPTION":
+            base = 12 + min(8, (len(events) - min_count) * 3)
+            if volume_trend == "declining": base += 4
+            if today_active: base += 3
+            if at_demand_zone: base += 5
+            score = min(base, 22)
+            tag = "🌀"
+            reason = (
+                f"{tag} {len(events)} NO_SUPPLY/absorption days in {span_days}d "
+                f"({volume_trend} volume)"
+                f"{' — at demand zone' if at_demand_zone else ''}"
+                f"{' — active today' if today_active else ''}"
+            )
+        else:
+            base = -12 - min(8, (len(events) - min_count) * 3)
+            if volume_trend == "declining": base -= 4
+            if today_active: base -= 3
+            score = max(base, -22)
+            tag = "⚠️"
+            reason = (
+                f"{tag} {len(events)} NO_DEMAND/upthrust days in {span_days}d "
+                f"({volume_trend} volume)"
+                f"{' — active today' if today_active else ''}"
+            )
+
+        return {
+            "type": pattern_type,
+            "count": len(events),
+            "volume_trend": volume_trend,
+            "today_active": today_active,
+            "at_demand_zone": at_demand_zone,
+            "span_days": int(span_days),
+            "score": int(score),
+            "reason": reason,
+            "events": [
+                {"time": ev.get("time"), "type": ev.get("type"), "strength": ev.get("strength")}
+                for ev in events[-5:]
+            ],
+        }
+    except Exception:
+        return None
+
+
 def compute_analyst_verdict(chart_data, analysis, today_candle, pattern_failure, flow_divergence,
-                            volume_signature=None):
+                            volume_signature=None, absorption_pattern=None):
     """Synthesise all observations like an experienced analyst.
 
     Combines:
@@ -593,6 +733,7 @@ def compute_analyst_verdict(chart_data, analysis, today_candle, pattern_failure,
       - Pattern failure detection (±15 per failure)
       - Live flow vs daily structure divergence (±35)
       - Volume signature: RVOL × price × premium-zone (±22)
+      - Absorption pattern: multi-day Wyckoff accumulation/distribution (±22)
       - Existing SMC structure (already in analysis)
       - Multi-day proxy delta accumulation
       - HTF bias alignment
@@ -640,6 +781,14 @@ def compute_analyst_verdict(chart_data, analysis, today_candle, pattern_failure,
                 "factor": f"Volume: {volume_signature['type'].replace('_', ' ').title()}",
                 "score": volume_signature["score"],
                 "detail": volume_signature["reason"],
+            })
+
+        if absorption_pattern:
+            score += absorption_pattern["score"]
+            factors.append({
+                "factor": f"Wyckoff: {absorption_pattern['type'].replace('_', ' ').title()}",
+                "score": absorption_pattern["score"],
+                "detail": absorption_pattern["reason"],
             })
 
         # SMC structural bias
@@ -4674,6 +4823,11 @@ def get_smc_chart(symbol: str, days: int = 180, interval: str = "daily"):
     candle_is_green = bool(today_candle and today_candle.get("is_green"))
     flow_divergence = score_live_flow_divergence(order_flow, candle_is_green)
     volume_signature = score_volume_signature(df, today_candle, premium_discount)
+    _cur_price = float(df["close"].iloc[-1]) if len(df) else None
+    absorption_pattern = detect_absorption_pattern(
+        df, advanced.get("vsa_events", []), order_blocks=order_blocks,
+        current_price=_cur_price,
+    )
     # Build a minimal chart_data dict for the verdict computation
     _chart_for_verdict = {
         "order_flow": order_flow,
@@ -4683,7 +4837,7 @@ def get_smc_chart(symbol: str, days: int = 180, interval: str = "daily"):
     }
     analyst_verdict = compute_analyst_verdict(
         _chart_for_verdict, analysis, today_candle, pattern_failure, flow_divergence,
-        volume_signature=volume_signature,
+        volume_signature=volume_signature, absorption_pattern=absorption_pattern,
     )
     if isinstance(analysis, dict):
         analysis["analyst_verdict"] = analyst_verdict
@@ -4691,6 +4845,7 @@ def get_smc_chart(symbol: str, days: int = 180, interval: str = "daily"):
         analysis["pattern_failure"] = pattern_failure
         analysis["flow_divergence"] = flow_divergence
         analysis["volume_signature"] = volume_signature
+        analysis["absorption_pattern"] = absorption_pattern
 
     return {
         "symbol": symbol.upper(),
