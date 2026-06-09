@@ -542,6 +542,8 @@ async def get_live_signals(
     status: str = "active",
     min_score: int = 0,
     bucket: str | None = None,  # IN_ZONE | WATCHING | MISSED | STALE
+    buy_only: bool = True,  # filter to BUY/STRONG_BUY signal_level only
+    quality_filter: bool = True,  # exclude insurance/MF/banks/BATBC noise
 ):
     """
     Return live composite signals from the live_signals table.
@@ -591,6 +593,22 @@ async def get_live_signals(
     # Optional bucket filter (IN_ZONE | WATCHING | MISSED | STALE)
     if bucket:
         rows = [r for r in rows if (dict(r).get("bucket") or "").upper() == bucket.upper()]
+
+    # NEW: signal_level filter — show only BUY / STRONG_BUY when requested
+    if buy_only:
+        rows = [r for r in rows if (dict(r).get("signal_level") or "").upper() in ("BUY", "STRONG_BUY")]
+
+    # NEW: quality filter — exclude insurance, mutual funds, banks, BATBC
+    # (low-signal-quality symbols per backtest)
+    if quality_filter:
+        from config import is_signal_quality_symbol
+        # Pull symbol→sector map once
+        sec_rows = conn.execute("SELECT symbol, sector FROM fundamentals").fetchall()
+        sec_map = {sr["symbol"]: sr.get("sector") for sr in sec_rows}
+        rows = [
+            r for r in rows
+            if is_signal_quality_symbol(dict(r).get("symbol",""), sec_map.get(dict(r).get("symbol",""), ""))
+        ]
     conn.close()
     out = []
     for r in rows:

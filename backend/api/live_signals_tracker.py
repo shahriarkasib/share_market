@@ -106,6 +106,14 @@ def ensure_schema():
         ("absorption_pattern", "JSONB"),
         ("absorption_score", "NUMERIC(5,1)"),  # quick filter, NULL if no pattern
         ("analyst_score", "NUMERIC(6,1)"),  # quick filter without parsing JSONB
+        # ── Locked trigger snapshot (set ONCE at first save, never updated) ──
+        ("actual_trigger_price", "NUMERIC(12,2)"),  # LTP at first trigger ts
+        ("trigger_locked", "BOOLEAN DEFAULT FALSE"),  # guard against overwrite
+        # ── T+N OHLC tracking (populated by perf update) ──
+        ("t1_high", "NUMERIC(12,2)"), ("t1_low", "NUMERIC(12,2)"), ("t1_close", "NUMERIC(12,2)"), ("t1_date", "DATE"),
+        ("t2_high", "NUMERIC(12,2)"), ("t2_low", "NUMERIC(12,2)"), ("t2_close", "NUMERIC(12,2)"), ("t2_date", "DATE"),
+        ("t3_high", "NUMERIC(12,2)"), ("t3_low", "NUMERIC(12,2)"), ("t3_close", "NUMERIC(12,2)"),
+        ("t5_high", "NUMERIC(12,2)"), ("t5_low", "NUMERIC(12,2)"), ("t5_close", "NUMERIC(12,2)"),
         # Entry zone (range) + technical trigger fields
         ("entry_zone_low", "NUMERIC(12,2)"),
         ("entry_zone_high", "NUMERIC(12,2)"),
@@ -492,8 +500,9 @@ def update_signal_state(active_row: dict, sig: dict, last_high: float, last_low:
         """UPDATE live_signals
            SET last_seen = NOW(), status = %s, composite_score = %s,
                risk_score = %s, current_price = %s,
-               triggered_high = GREATEST(COALESCE(triggered_high, 0), %s),
-               triggered_low = LEAST(COALESCE(triggered_low, 9999999), %s),
+               -- triggered_high/low are LOCKED at insert. Do NOT update —
+               -- previously used GREATEST/LEAST which made them running
+               -- max/min, corrupting the "entry price" reference.
                active_signals = %s, reasons = %s,
                regime = %s, action_type = %s, entry_distance_pct = %s, votes = %s,
                state_label = %s, days_since_trigger = %s, fvg_distance_pct = %s,
@@ -524,7 +533,8 @@ def update_signal_state(active_row: dict, sig: dict, last_high: float, last_low:
            WHERE id = %s""",
         (
             new_status, sig["composite_score"], sig["risk_score"],
-            cur_price, last_high, last_low,
+            cur_price,
+            # NOTE: last_high, last_low removed — triggered_high/low locked at insert
             json.dumps(sig.get("active_signals", [])),
             json.dumps(sig.get("reasons", [])),
             sig.get("regime"), sig.get("action_type"),

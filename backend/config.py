@@ -10,6 +10,42 @@ MARKET_OPEN_TIME = time(10, 0)   # 10:00 AM BST
 MARKET_CLOSE_TIME = time(14, 30)  # 2:30 PM BST
 MARKET_DAYS = [6, 0, 1, 2, 3]    # Sun=6, Mon=0, Tue=1, Wed=2, Thu=3
 
+# ─── Signal Quality Filters ────────────────────────────────────────────────
+# Sectors / symbols where the system's signals don't translate to profit
+# (mostly mean-reverting or low-liquidity). Excluded from default Live
+# Signals view but still tracked in DB for backtests.
+SIGNAL_EXCLUDED_SECTORS = {
+    'Insurance', 'Life Insurance', 'Mutual Funds', 'Bank',
+}
+SIGNAL_EXCLUDED_SYMBOLS = {
+    'BATBC',  # known low-quality signal source per backtest
+}
+# Patterns: anything ending in MF (mutual fund) or *INS* (insurance) is junk
+SIGNAL_EXCLUDED_PATTERNS = ('MF', 'INS', 'BANK')
+
+
+def is_signal_quality_symbol(symbol: str, sector: str | None = None) -> bool:
+    """Return True if a symbol should appear in the curated Live Signals view."""
+    if not symbol:
+        return False
+    if symbol in SIGNAL_EXCLUDED_SYMBOLS:
+        return False
+    s = (sector or '').strip()
+    if s in SIGNAL_EXCLUDED_SECTORS:
+        return False
+    # Suffix-based heuristics
+    for suffix in ('MF',):
+        if symbol.endswith(suffix):
+            return False
+    # Insurance company patterns: most end in INS
+    if 'INS' in symbol and symbol not in ('TITASGAS',):
+        return False
+    # Bank patterns: most contain BANK
+    if 'BANK' in symbol and symbol not in ('LANKABAFIN',):  # LANKABA-FIN not bank
+        return False
+    return True
+
+
 # ─── Holiday Calendar Overrides ────────────────────────────────────────────
 # DSE publishes special schedules for Eid + national holidays.
 # Use ISO format "YYYY-MM-DD".
