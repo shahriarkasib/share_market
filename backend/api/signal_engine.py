@@ -617,6 +617,141 @@ def compute_risk_score(analysis: dict, vp_pos: dict, vwap_data: Optional[dict],
     return min(5, max(1, risk))
 
 
+def compute_bid_ladder(current_price, aggressive_entry, entry, stop_loss,
+                       target1, support_resistance=None, analyst_verdict_score=0):
+    """Build a 3-tier bid placement ladder with position-size suggestions.
+
+    Designed for retail T+2 traders: tells you HOW to split a buy across
+    multiple price levels to optimize fill quality and risk.
+
+    Returns: list of {price, size_pct, label, edge} dicts. Sums to 100%.
+    """
+    if not current_price or current_price <= 0:
+        return []
+
+    # Find closest multi-touch support BELOW current (for "Spring" zone)
+    spring_zone = None
+    if support_resistance:
+        sups = [
+            s for s in support_resistance
+            if s.get("role") == "support"
+            and s.get("touches", 0) >= 2
+            and float(s.get("price", 0)) < current_price
+            and float(s.get("price", 0)) > (stop_loss or 0) * 1.01  # above stop
+        ]
+        if sups:
+            # closest below current
+            closest = max(sups, key=lambda s: float(s.get("price", 0)))
+            spring_zone = round(float(closest.get("price", 0)) * 1.005, 2)  # just above support
+
+    # Calibrate ladder based on conviction (analyst_verdict_score)
+    is_strong = analyst_verdict_score >= 50
+    is_buy = analyst_verdict_score >= 25
+
+    ladder = []
+    max_buy = round(current_price * (1.01 if is_strong else 1.005), 2)
+
+    # === Case A: price is BELOW Tier-1 (rare — discount zone, BUY heavily) ===
+    if aggressive_entry and current_price < aggressive_entry:
+        ladder.append({
+            "price": round(current_price, 2), "size_pct": 70,
+            "label": f"Market ৳{current_price} (already in discount)",
+            "edge": "high"
+        })
+        if spring_zone and spring_zone < current_price:
+            ladder.append({
+                "price": spring_zone, "size_pct": 20,
+                "label": f"Spring zone ৳{spring_zone} (multi-touch support)",
+                "edge": "very_high"
+            })
+        if entry and entry < current_price:
+            ladder.append({
+                "price": entry, "size_pct": 10,
+                "label": f"Tier-2 deep ৳{entry} (max edge)",
+                "edge": "max"
+            })
+
+    # === Case B: price ≈ Tier-1 (within 2%) — Buy IN-ZONE ===
+    elif aggressive_entry and current_price <= aggressive_entry * 1.02:
+        ladder.append({
+            "price": max_buy, "size_pct": 40,
+            "label": f"Market ≤৳{max_buy} (current + tiny premium)",
+            "edge": "good"
+        })
+        ladder.append({
+            "price": aggressive_entry, "size_pct": 35,
+            "label": f"Tier-1 ৳{aggressive_entry} (best entry)",
+            "edge": "high"
+        })
+        if spring_zone:
+            ladder.append({
+                "price": spring_zone, "size_pct": 25,
+                "label": f"Spring zone ৳{spring_zone} (multi-touch support)",
+                "edge": "very_high"
+            })
+        elif entry:
+            ladder.append({
+                "price": entry, "size_pct": 25,
+                "label": f"Tier-2 ৳{entry} (deep edge)",
+                "edge": "max"
+            })
+
+    # === Case C: price 2-8% above Tier-1 (premium — wait for pullback) ===
+    elif aggressive_entry and current_price <= aggressive_entry * 1.08:
+        # Small portion at market for FOMO insurance (only if STRONG_BUY)
+        if is_strong:
+            ladder.append({
+                "price": max_buy, "size_pct": 25,
+                "label": f"Anchor ৳{max_buy} (STRONG_BUY conviction)",
+                "edge": "medium"
+            })
+            ladder.append({
+                "price": aggressive_entry, "size_pct": 40,
+                "label": f"Tier-1 limit ৳{aggressive_entry} (pullback target)",
+                "edge": "high"
+            })
+            ladder.append({
+                "price": spring_zone or entry, "size_pct": 35,
+                "label": f"Deep limit ৳{spring_zone or entry} (max edge)",
+                "edge": "very_high"
+            })
+        else:
+            # Not strong enough to anchor — just patient limits
+            ladder.append({
+                "price": aggressive_entry, "size_pct": 50,
+                "label": f"Tier-1 limit ৳{aggressive_entry} (wait for pullback)",
+                "edge": "high"
+            })
+            ladder.append({
+                "price": spring_zone or entry, "size_pct": 50,
+                "label": f"Deep limit ৳{spring_zone or entry} (high-edge zone)",
+                "edge": "very_high"
+            })
+
+    # === Case D: price >8% above Tier-1 (chase zone — skip or tiny exploratory) ===
+    else:
+        # Don't market-buy when extended. Place all as limit orders.
+        if entry:
+            ladder.append({
+                "price": aggressive_entry or entry, "size_pct": 30,
+                "label": f"T1 limit ৳{aggressive_entry or entry} (wait)",
+                "edge": "medium"
+            })
+            ladder.append({
+                "price": entry, "size_pct": 70,
+                "label": f"T2 deep ৳{entry} (only worth it here)",
+                "edge": "high"
+            })
+
+    # Add stop-loss reference as the floor (not a buy, but useful display)
+    if ladder and stop_loss:
+        for x in ladder:
+            x["risk_pct"] = round((stop_loss - x["price"]) / x["price"] * 100, 2) if x["price"] else None
+            x["reward_pct"] = round((target1 - x["price"]) / x["price"] * 100, 2) if x["price"] and target1 else None
+
+    return ladder
+
+
 def compute_composite_signal(chart_data: dict, conn=None) -> dict:
     """Take a full smc_chart response and produce a composite signal.
 
@@ -961,6 +1096,15 @@ def compute_composite_signal(chart_data: dict, conn=None) -> dict:
         "buy_range_low": analysis.get("buy_range_low"),
         "buy_range_high": analysis.get("buy_range_high"),
         "max_buy_price": analysis.get("max_buy_price"),
+        "bid_ladder": compute_bid_ladder(
+            current_price=current_price,
+            aggressive_entry=analysis.get("aggressive_entry"),
+            entry=analysis.get("entry"),
+            stop_loss=analysis.get("stop_loss"),
+            target1=analysis.get("target1"),
+            support_resistance=chart_data.get("support_resistance"),
+            analyst_verdict_score=(analysis.get("analyst_verdict") or {}).get("score", 0),
+        ),
         "aggressive_entry": analysis.get("aggressive_entry"),
         "aggressive_entry_label": analysis.get("aggressive_entry_label"),
         "aggressive_entry_distance_pct": analysis.get("aggressive_entry_distance_pct"),

@@ -199,14 +199,47 @@ export default function LiveCompositeSignals({ market = "dse" }: Props = {}) {
             </p>
           )}
         </div>
-        <button
-          onClick={load}
-          disabled={loading}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs border border-[var(--border)] hover:bg-[var(--hover)] disabled:opacity-50"
-        >
-          <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
-          Refresh
-        </button>
+        <div className="flex gap-2">
+          <button
+            onClick={() => {
+              // CSV export of currently-visible signals
+              const cols = [
+                "symbol","first_triggered","actual_trigger_price","current_price",
+                "signal_level","analyst_score","composite_score","bias",
+                "t1_high","t1_low","t1_close","t2_high","t2_low","t2_close",
+                "t3_close","t5_close",
+                "aggressive_entry","entry","stop_loss","target1","target2",
+                "max_buy_price","status","bucket","action_type"
+              ];
+              const rows = signals.map((s) => cols.map((c) => {
+                const v = (s as Record<string, unknown>)[c];
+                if (v == null) return "";
+                if (typeof v === "string") return JSON.stringify(v);
+                return String(v);
+              }).join(","));
+              const csv = cols.join(",") + "\n" + rows.join("\n");
+              const blob = new Blob([csv], { type: "text/csv" });
+              const url = URL.createObjectURL(blob);
+              const a = document.createElement("a");
+              a.href = url;
+              a.download = `live_signals_${new Date().toISOString().slice(0,10)}.csv`;
+              a.click();
+              URL.revokeObjectURL(url);
+            }}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs border border-[var(--border)] hover:bg-[var(--hover)]"
+            title="Export current view to CSV"
+          >
+            📥 CSV
+          </button>
+          <button
+            onClick={load}
+            disabled={loading}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs border border-[var(--border)] hover:bg-[var(--hover)] disabled:opacity-50"
+          >
+            <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
+            Refresh
+          </button>
+        </div>
       </div>
 
       <div className="flex flex-wrap items-center gap-2 mb-4">
@@ -600,6 +633,82 @@ export default function LiveCompositeSignals({ market = "dse" }: Props = {}) {
                       <tr className="border-t border-[var(--border)]/30">
                         <td colSpan={10} className="px-3 py-1.5 text-[11px] bg-red-500/5 text-red-400/90 italic">
                           {s.chase_warning}
+                        </td>
+                      </tr>
+                    )}
+                    {/* Bid Ladder — how to split your buy across price levels */}
+                    {s.bid_ladder && s.bid_ladder.length > 0 && (
+                      <tr className="border-t border-[var(--border)]/30">
+                        <td colSpan={10} className="px-3 py-1.5 bg-emerald-500/5">
+                          <div className="text-[11px] text-emerald-400 font-semibold mb-1">💰 Bid Placement Ladder:</div>
+                          <div className="flex flex-wrap gap-2 text-[11px]">
+                            {s.bid_ladder.map((b, i) => (
+                              <div key={i} className={`inline-block px-2 py-1 rounded border ${
+                                b.edge === "max" ? "bg-emerald-500/20 border-emerald-500/60 text-emerald-300" :
+                                b.edge === "very_high" ? "bg-emerald-500/15 border-emerald-500/50 text-emerald-400" :
+                                b.edge === "high" ? "bg-cyan-500/15 border-cyan-500/40 text-cyan-400" :
+                                b.edge === "good" ? "bg-amber-500/15 border-amber-500/40 text-amber-400" :
+                                "bg-gray-500/15 border-gray-500/40 text-gray-400"
+                              }`}>
+                                <strong>{b.size_pct}%</strong> @ ৳{b.price.toFixed(1)}
+                                {b.reward_pct != null && b.risk_pct != null && (
+                                  <span className="opacity-70 ml-1">
+                                    (R/R {Math.abs((b.reward_pct || 0) / (b.risk_pct || -1)).toFixed(1)}:1)
+                                  </span>
+                                )}
+                                <div className="text-[10px] opacity-80 mt-0.5">{b.label}</div>
+                              </div>
+                            ))}
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                    {/* T+N performance — shows post-trigger OHLC */}
+                    {(s.actual_trigger_price || s.t1_close || s.t2_close) && (
+                      <tr className="border-t border-[var(--border)]/30">
+                        <td colSpan={10} className="px-3 py-1.5 text-[11px] bg-blue-500/5">
+                          <span className="text-blue-400 font-semibold mr-2">📊 Performance:</span>
+                          {s.actual_trigger_price !== null && s.actual_trigger_price !== undefined && (
+                            <span className="mr-3">
+                              Entry <strong className="text-blue-300">৳{s.actual_trigger_price}</strong>
+                            </span>
+                          )}
+                          {s.t1_close !== null && s.t1_close !== undefined && (
+                            <span className="mr-3">
+                              T+1: H ৳{s.t1_high} L ৳{s.t1_low} <strong>C ৳{s.t1_close}</strong>
+                              {s.actual_trigger_price && (
+                                <span className={
+                                  s.t1_close >= s.actual_trigger_price ? "text-emerald-400 ml-1" : "text-red-400 ml-1"
+                                }>
+                                  ({((s.t1_close - s.actual_trigger_price)/s.actual_trigger_price*100).toFixed(1)}%)
+                                </span>
+                              )}
+                            </span>
+                          )}
+                          {s.t2_close !== null && s.t2_close !== undefined && s.t2_close > 0 && (
+                            <span className="mr-3">
+                              T+2: H ৳{s.t2_high} L ৳{s.t2_low} <strong>C ৳{s.t2_close}</strong>
+                              {s.actual_trigger_price && (
+                                <span className={
+                                  s.t2_close >= s.actual_trigger_price ? "text-emerald-400 ml-1" : "text-red-400 ml-1"
+                                }>
+                                  ({((s.t2_close - s.actual_trigger_price)/s.actual_trigger_price*100).toFixed(1)}%)
+                                </span>
+                              )}
+                            </span>
+                          )}
+                          {s.t5_close !== null && s.t5_close !== undefined && s.t5_close > 0 && (
+                            <span>
+                              T+5: <strong>৳{s.t5_close}</strong>
+                              {s.actual_trigger_price && (
+                                <span className={
+                                  s.t5_close >= s.actual_trigger_price ? "text-emerald-400 ml-1" : "text-red-400 ml-1"
+                                }>
+                                  ({((s.t5_close - s.actual_trigger_price)/s.actual_trigger_price*100).toFixed(1)}%)
+                                </span>
+                              )}
+                            </span>
+                          )}
                         </td>
                       </tr>
                     )}

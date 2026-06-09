@@ -109,6 +109,8 @@ def ensure_schema():
         # ── Locked trigger snapshot (set ONCE at first save, never updated) ──
         ("actual_trigger_price", "NUMERIC(12,2)"),  # LTP at first trigger ts
         ("trigger_locked", "BOOLEAN DEFAULT FALSE"),  # guard against overwrite
+        # ── Bid ladder: dynamic position-size suggestion per signal ──
+        ("bid_ladder", "JSONB"),  # [{price, size_pct, label, edge, risk_pct, reward_pct}, ...]
         # ── T+N OHLC tracking (populated by perf update) ──
         ("t1_high", "NUMERIC(12,2)"), ("t1_low", "NUMERIC(12,2)"), ("t1_close", "NUMERIC(12,2)"), ("t1_date", "DATE"),
         ("t2_high", "NUMERIC(12,2)"), ("t2_low", "NUMERIC(12,2)"), ("t2_close", "NUMERIC(12,2)"), ("t2_date", "DATE"),
@@ -139,6 +141,24 @@ def ensure_schema():
     conn.execute("CREATE INDEX IF NOT EXISTS idx_live_signals_status_seen ON live_signals (status, last_seen DESC)")
     conn.commit()
     conn.close()
+
+
+def cleanup_old_signals(days: int = 30) -> int:
+    """Delete signals older than `days` to keep the table lean.
+
+    Keeps: active rows + signals from last `days` days (for backtest).
+    """
+    conn = get_connection()
+    cur = conn.execute(
+        """DELETE FROM live_signals
+           WHERE status NOT IN ('active', 'hit_t1')
+             AND first_triggered < NOW() - INTERVAL '%s days'
+        """ % days
+    )
+    deleted = cur.rowcount if hasattr(cur, "rowcount") else 0
+    conn.commit()
+    conn.close()
+    return deleted
 
 
 def get_active_signal(symbol: str):
@@ -388,7 +408,7 @@ def insert_signal(sig: dict):
             short_term_trend = %s,
             analyst_verdict = %s, today_candle_quality = %s, flow_divergence = %s,
             pattern_failure = %s, volume_signature = %s, rvol = %s,
-            absorption_pattern = %s, absorption_score = %s, analyst_score = %s,
+            absorption_pattern = %s, absorption_score = %s, bid_ladder = %s, analyst_score = %s,
             entry_zone_low = %s, entry_zone_high = %s,
             aggressive_entry_zone_low = %s, aggressive_entry_zone_high = %s,
             primary_trigger_date = %s, primary_trigger_bars_ago = %s,
@@ -422,6 +442,7 @@ def insert_signal(sig: dict):
             (sig.get("volume_signature") or {}).get("rvol"),
             json.dumps(sig.get("absorption_pattern")) if sig.get("absorption_pattern") else None,
             (sig.get("absorption_pattern") or {}).get("score"),
+            json.dumps(sig.get("bid_ladder")) if sig.get("bid_ladder") else None,
             (sig.get("analyst_verdict") or {}).get("score"),
             tf["entry_zone_low"], tf["entry_zone_high"],
             tf["aggressive_entry_zone_low"], tf["aggressive_entry_zone_high"],
@@ -519,7 +540,7 @@ def update_signal_state(active_row: dict, sig: dict, last_high: float, last_low:
                htf_bias = %s, liquidity_sweep = %s, short_term_trend = %s,
                analyst_verdict = %s, today_candle_quality = %s, flow_divergence = %s,
                pattern_failure = %s, volume_signature = %s, rvol = %s,
-               absorption_pattern = %s, absorption_score = %s, analyst_score = %s,
+               absorption_pattern = %s, absorption_score = %s, bid_ladder = %s, analyst_score = %s,
                entry_zone_low = %s, entry_zone_high = %s,
                aggressive_entry_zone_low = %s, aggressive_entry_zone_high = %s,
                primary_trigger_date = %s, primary_trigger_bars_ago = %s,
@@ -566,6 +587,7 @@ def update_signal_state(active_row: dict, sig: dict, last_high: float, last_low:
             (sig.get("volume_signature") or {}).get("rvol"),
             json.dumps(sig.get("absorption_pattern")) if sig.get("absorption_pattern") else None,
             (sig.get("absorption_pattern") or {}).get("score"),
+            json.dumps(sig.get("bid_ladder")) if sig.get("bid_ladder") else None,
             (sig.get("analyst_verdict") or {}).get("score"),
             tf["entry_zone_low"], tf["entry_zone_high"],
             tf["aggressive_entry_zone_low"], tf["aggressive_entry_zone_high"],

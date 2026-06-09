@@ -394,6 +394,23 @@ export interface LiveCompositeSignal {
     events?: Array<{ time?: string; type?: string; strength?: number }>;
   } | null;
   absorption_score?: number | null;
+  // Locked trigger snapshot
+  actual_trigger_price?: number | null;
+  trigger_locked?: boolean | null;
+  // T+N OHLC tracking
+  t1_high?: number | null; t1_low?: number | null; t1_close?: number | null; t1_date?: string | null;
+  t2_high?: number | null; t2_low?: number | null; t2_close?: number | null; t2_date?: string | null;
+  t3_high?: number | null; t3_low?: number | null; t3_close?: number | null;
+  t5_high?: number | null; t5_low?: number | null; t5_close?: number | null;
+  // Bid ladder
+  bid_ladder?: Array<{
+    price: number;
+    size_pct: number;
+    label: string;
+    edge?: "max" | "very_high" | "high" | "good" | "medium" | string;
+    risk_pct?: number | null;
+    reward_pct?: number | null;
+  }> | null;
   short_term_trend?: {
     slope_pct?: number | null;
     direction?: "UP" | "DOWN" | "SIDEWAYS" | null;
