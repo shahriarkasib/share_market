@@ -1,6 +1,6 @@
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { RefreshCw, TrendingUp, AlertTriangle, Clock } from "lucide-react";
+import { RefreshCw } from "lucide-react";
 import {
   fetchLiveCompositeSignals,
   fetchNasdaqLiveSignals,
@@ -11,52 +11,61 @@ interface Props {
   market?: "dse" | "nasdaq";
 }
 
-type StatusFilter = "active" | "hit_t1" | "all" | "closed";
-
 const REFRESH_MS = 5 * 60 * 1000; // 5 min
 
-function timeAgo(iso: string): string {
-  const ms = Date.now() - new Date(iso).getTime();
-  const min = Math.floor(ms / 60000);
-  if (min < 1) return "just now";
-  if (min < 60) return `${min}m ago`;
-  const hr = Math.floor(min / 60);
-  if (hr < 24) return `${hr}h ago`;
-  return `${Math.floor(hr / 24)}d ago`;
+function fmtDateTime(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  const datePart = d.toLocaleDateString("en-GB", { day: "2-digit", month: "short" });
+  const timePart = d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", hour12: false });
+  return `${datePart} ${timePart}`;
 }
 
-function levelColor(level: string): string {
-  if (level === "STRONG_BUY") return "text-emerald-500 bg-emerald-500/15 border-emerald-500/40";
-  if (level === "BUY") return "text-emerald-400 bg-emerald-500/10 border-emerald-500/30";
-  if (level === "WATCH") return "text-amber-500 bg-amber-500/10 border-amber-500/30";
-  return "text-gray-500 bg-gray-500/10 border-gray-500/30";
+function pctClass(pct: number | null | undefined): string {
+  if (pct == null) return "text-[var(--text-muted)]";
+  if (pct > 0.1) return "text-emerald-500";
+  if (pct < -0.1) return "text-red-500";
+  return "text-[var(--text-muted)]";
 }
 
-function statusColor(status: string): string {
-  if (status === "active") return "text-emerald-500";
-  if (status === "hit_t1") return "text-blue-500";
-  if (status === "completed") return "text-emerald-600";
-  if (status === "stopped_out") return "text-red-500";
-  if (status === "invalidated") return "text-orange-500";
-  return "text-gray-500";
+function fmtPct(pct: number | null | undefined): string {
+  if (pct == null) return "—";
+  return `${pct >= 0 ? "+" : ""}${pct.toFixed(2)}%`;
 }
 
-function riskBars(risk: number): string {
-  return "█".repeat(risk) + "░".repeat(5 - risk);
+function fmtPrice(p: number | null | undefined, cur: string): string {
+  if (p == null || p === 0) return "—";
+  return `${cur}${p.toFixed(1)}`;
+}
+
+function verdictColor(v: string | null | undefined): string {
+  if (!v) return "text-[var(--text-muted)]";
+  if (v === "STRONG_BUY") return "text-emerald-500 font-semibold";
+  if (v === "BUY") return "text-emerald-400";
+  if (v === "WATCH") return "text-amber-500";
+  if (v === "NEUTRAL") return "text-gray-400";
+  if (v === "AVOID") return "text-orange-500";
+  return "text-red-500";
+}
+
+function statusBadge(status: string | null | undefined): { text: string; cls: string } {
+  if (status === "active") return { text: "active", cls: "text-emerald-500 bg-emerald-500/10 border-emerald-500/30" };
+  if (status === "hit_t1") return { text: "hit T1", cls: "text-blue-500 bg-blue-500/10 border-blue-500/30" };
+  if (status === "completed") return { text: "completed", cls: "text-emerald-600 bg-emerald-600/10 border-emerald-600/30" };
+  if (status === "stopped_out") return { text: "stopped", cls: "text-red-500 bg-red-500/10 border-red-500/30" };
+  if (status === "invalidated") return { text: "invalid", cls: "text-orange-500 bg-orange-500/10 border-orange-500/30" };
+  if (status === "expired") return { text: "expired", cls: "text-gray-500 bg-gray-500/10 border-gray-500/30" };
+  return { text: status || "—", cls: "text-gray-500 bg-gray-500/10 border-gray-500/30" };
 }
 
 export default function LiveCompositeSignals({ market = "dse" }: Props = {}) {
   const isNasdaq = market === "nasdaq";
   const cur = isNasdaq ? "$" : "৳";
-  const fmtPrice = (n: number) => isNasdaq ? n.toFixed(2) : n.toFixed(1);
   const chartBase = isNasdaq ? "/nasdaq/smc-chart/" : "/smc-chart/";
+
   const [signals, setSignals] = useState<LiveCompositeSignal[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [filter, setFilter] = useState<StatusFilter>("active");
-  const [minScore, setMinScore] = useState(50);
-  const [tPlusTwoOnly, setTPlusTwoOnly] = useState(false);
-  const [minAgreement, setMinAgreement] = useState(0);
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
 
   const load = async () => {
@@ -64,8 +73,14 @@ export default function LiveCompositeSignals({ market = "dse" }: Props = {}) {
     setError(null);
     try {
       const data = isNasdaq
-        ? await fetchNasdaqLiveSignals(filter, minScore)
-        : await fetchLiveCompositeSignals(filter, minScore);
+        ? await fetchNasdaqLiveSignals("all", 0)
+        : await fetchLiveCompositeSignals("all", 0);
+      // Sort by first_triggered DESC (latest first)
+      data.sort((a, b) => {
+        const ta = a.first_triggered ? new Date(a.first_triggered).getTime() : 0;
+        const tb = b.first_triggered ? new Date(b.first_triggered).getTime() : 0;
+        return tb - ta;
+      });
       setSignals(data);
       setLastRefresh(new Date());
     } catch (e: unknown) {
@@ -77,157 +92,78 @@ export default function LiveCompositeSignals({ market = "dse" }: Props = {}) {
 
   useEffect(() => {
     void load();
-  }, [filter, minScore]);
+  }, []);
 
-  // Auto-refresh every 5 min
   useEffect(() => {
     const id = window.setInterval(() => void load(), REFRESH_MS);
     return () => window.clearInterval(id);
-  }, [filter, minScore]);
+  }, []);
 
-  const [bucket, setBucket] = useState<"IN_ZONE" | "JUST_BOUNCED" | "PULLBACK_IN_PROGRESS" | "WATCHING" | "MISSED" | "WRONG_TRIGGER" | "ALL">("ALL");
-
-  const filteredAll = useMemo(() => signals.filter((s) => {
-    if (tPlusTwoOnly && !s.t_plus_2_friendly) return false;
-    if (minAgreement > 0 && (s.buy_votes ?? 0) < minAgreement) return false;
-    return true;
-  }), [signals, tPlusTwoOnly, minAgreement]);
-
-  const deriveBucket = (s: LiveCompositeSignal): "IN_ZONE" | "JUST_BOUNCED" | "PULLBACK_IN_PROGRESS" | "WATCHING" | "MISSED" | "WRONG_TRIGGER" | "STALE" => {
-    if (s.bucket) return s.bucket;
-    const cp = s.current_price;
-    if (cp == null) return "STALE";
-    const t1l = s.aggressive_entry_zone_low; const t1h = s.aggressive_entry_zone_high;
-    const t2l = s.entry_zone_low; const t2h = s.entry_zone_high;
-    const barsAgo = s.primary_trigger_bars_ago ?? 0;
-    const maxProfit = s.primary_trigger_max_profit_pct ?? 0;
-    const maxDrawdown = s.primary_trigger_max_drawdown_pct ?? 0;
-    const triggeredInPast = barsAgo >= 2;
-    const deliveredProfit = maxProfit >= 3.0;
-    const zoneBroke = maxDrawdown < -3.0;
-    const recentTouch = barsAgo >= 0 && barsAgo <= 5;
-    const bouncedUp = maxProfit >= 1.0;
-    const st = s.short_term_trend;
-    const trendDir = st?.direction ?? "SIDEWAYS";
-    const consecRed = st?.consecutive_red ?? 0;
-    const bounceConfirmed = st?.bounce_confirmed ?? false;
-    const isRealBounce = (trendDir !== "DOWN" && consecRed <= 1) || bounceConfirmed;
-    const isFallingKnife = trendDir === "DOWN" && !bounceConfirmed;
-
-    if ((t1l != null && t1h != null && cp >= t1l && cp <= t1h)
-      || (t2l != null && t2h != null && cp >= t2l && cp <= t2h)) return "IN_ZONE";
-    if ((t1l != null && cp < t1l) || (t2l != null && cp < t2l)) {
-      if (triggeredInPast && zoneBroke) return "WRONG_TRIGGER";
-      return "IN_ZONE";
-    }
-    const highs = [t1h, t2h].filter((x): x is number => x != null);
-    if (!highs.length) {
-      if (triggeredInPast && deliveredProfit) return "MISSED";
-      return "STALE";
-    }
-    const closest = Math.max(...highs);
-    const pctAbove = ((cp - closest) / closest) * 100;
-    if (recentTouch && bouncedUp && pctAbove <= 6.0 && !zoneBroke) {
-      if (isRealBounce) return "JUST_BOUNCED";
-      if (isFallingKnife) return "PULLBACK_IN_PROGRESS";
-      return "JUST_BOUNCED";
-    }
-    if (triggeredInPast && deliveredProfit) return "MISSED";
-    if (pctAbove <= 1.5) return "IN_ZONE";
-    if (pctAbove <= 8) return "WATCHING";
-    return "MISSED";
+  const exportCSV = () => {
+    const cols = [
+      "symbol", "first_triggered", "actual_trigger_price", "current_price", "pl_pct",
+      "t1_close", "t2_close", "t5_close",
+      "verdict", "analyst_score", "composite_score",
+      "status", "bucket", "bias", "regime", "action_type",
+      "stop_loss", "target1", "target2", "rvol"
+    ];
+    const rows = signals.map((s) => {
+      const verdict = s.analyst_verdict?.verdict || "";
+      const tp = s.actual_trigger_price ?? null;
+      const cp = s.current_price ?? null;
+      const pl = (tp && cp && tp > 0) ? ((cp - tp) / tp * 100).toFixed(2) : "";
+      return [
+        s.symbol,
+        s.first_triggered ? `"${s.first_triggered}"` : "",
+        tp ?? "",
+        cp ?? "",
+        pl,
+        s.t1_close ?? "",
+        s.t2_close ?? "",
+        s.t5_close ?? "",
+        verdict,
+        s.analyst_score ?? "",
+        s.composite_score ?? "",
+        s.status ?? "",
+        s.bucket ?? "",
+        s.bias ?? "",
+        s.regime ?? "",
+        s.action_type ?? "",
+        s.stop_loss ?? "",
+        s.target1 ?? "",
+        s.target2 ?? "",
+        s.rvol ?? "",
+      ].join(",");
+    });
+    const csv = cols.join(",") + "\n" + rows.join("\n");
+    const blob = new Blob([csv], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `live_signals_${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
   };
 
-  const bucketed = useMemo(() => {
-    const byBucket: Record<string, LiveCompositeSignal[]> = {
-      IN_ZONE: [], JUST_BOUNCED: [], PULLBACK_IN_PROGRESS: [], WATCHING: [], MISSED: [], WRONG_TRIGGER: [], STALE: [],
-    };
-    filteredAll.forEach((s) => {
-      const b = deriveBucket(s);
-      byBucket[b].push(s);
-    });
-    return byBucket;
-  }, [filteredAll]);
-
-  // Accuracy stats — for past triggers (>T+2 = 2 trading days), avg max-profit
-  const accuracy = useMemo(() => {
-    const triggered = filteredAll.filter(
-      (s) => (s.primary_trigger_bars_ago ?? 0) >= 2
-        && s.primary_trigger_max_profit_pct != null
-    );
-    if (!triggered.length) return null;
-    const profits = triggered.map((s) => s.primary_trigger_max_profit_pct as number);
-    const avgProfit = profits.reduce((a, b) => a + b, 0) / profits.length;
-    const hits = profits.filter((p) => p >= 5).length;  // ≥5% gain = hit
-    const hitRate = (hits / profits.length) * 100;
-    return {
-      total: triggered.length,
-      avgProfit: Math.round(avgProfit * 10) / 10,
-      hitRate: Math.round(hitRate),
-      best: Math.round(Math.max(...profits) * 10) / 10,
-      worst: Math.round(Math.min(...profits) * 10) / 10,
-    };
-  }, [filteredAll]);
-
-  // For the active bucket, group by signal_level for finer ranking
-  const list = useMemo(() => {
-    if (bucket === "ALL") return filteredAll;
-    return bucketed[bucket] || [];
-  }, [bucket, bucketed, filteredAll]);
-
-  const grouped = useMemo(() => {
-    const strong = list.filter((s) => s.signal_level === "STRONG_BUY");
-    const buy = list.filter((s) => s.signal_level === "BUY");
-    const watch = list.filter((s) => s.signal_level === "WATCH");
-    return { strong, buy, watch };
-  }, [list]);
-
   return (
-    <div className="max-w-[1440px] mx-auto px-3 sm:px-4 lg:px-8 py-6">
-      <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
+    <div className="p-6">
+      <div className="flex items-center justify-between mb-4">
         <div>
-          <h1 className="text-xl font-bold flex items-center gap-2">
-            {isNasdaq ? "NASDAQ Live Composite Signals" : "Live Composite Signals"}
-            <span className="text-xs font-normal text-[var(--text-muted)]">
-              9 strategies × {isNasdaq ? "halal NASDAQ" : "all DSE"} stocks · refreshes every 5 min
-            </span>
+          <h1 className="text-xl font-semibold">
+            {isNasdaq ? "🇺🇸 NASDAQ" : "🇧🇩 DSE"} Live Signals
           </h1>
-          {lastRefresh && (
-            <p className="text-xs text-[var(--text-muted)] mt-0.5">
-              Last refresh: {lastRefresh.toLocaleTimeString()} ·{" "}
-              <span className="text-emerald-500">auto-refreshing</span>
-            </p>
-          )}
+          <p className="text-xs text-[var(--text-muted)] mt-1">
+            {signals.length} signals · sorted by trigger time (newest first)
+            {lastRefresh && (
+              <> · Last refresh {lastRefresh.toLocaleTimeString()} · <span className="text-emerald-500">auto-refreshing</span></>
+            )}
+          </p>
         </div>
         <div className="flex gap-2">
           <button
-            onClick={() => {
-              // CSV export of currently-visible signals
-              const cols = [
-                "symbol","first_triggered","actual_trigger_price","current_price",
-                "signal_level","analyst_score","composite_score","bias",
-                "t1_high","t1_low","t1_close","t2_high","t2_low","t2_close",
-                "t3_close","t5_close",
-                "aggressive_entry","entry","stop_loss","target1","target2",
-                "max_buy_price","status","bucket","action_type"
-              ];
-              const rows = signals.map((s) => cols.map((c) => {
-                const v = (s as Record<string, unknown>)[c];
-                if (v == null) return "";
-                if (typeof v === "string") return JSON.stringify(v);
-                return String(v);
-              }).join(","));
-              const csv = cols.join(",") + "\n" + rows.join("\n");
-              const blob = new Blob([csv], { type: "text/csv" });
-              const url = URL.createObjectURL(blob);
-              const a = document.createElement("a");
-              a.href = url;
-              a.download = `live_signals_${new Date().toISOString().slice(0,10)}.csv`;
-              a.click();
-              URL.revokeObjectURL(url);
-            }}
+            onClick={exportCSV}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs border border-[var(--border)] hover:bg-[var(--hover)]"
-            title="Export current view to CSV"
+            title="Export to CSV"
           >
             📥 CSV
           </button>
@@ -242,520 +178,117 @@ export default function LiveCompositeSignals({ market = "dse" }: Props = {}) {
         </div>
       </div>
 
-      <div className="flex flex-wrap items-center gap-2 mb-4">
-        <span className="text-xs text-[var(--text-muted)]">Status:</span>
-        {(["active", "hit_t1", "closed", "all"] as StatusFilter[]).map((f) => (
-          <button
-            key={f}
-            onClick={() => setFilter(f)}
-            className={`px-2.5 py-1 rounded text-xs border transition ${
-              filter === f
-                ? "bg-[var(--surface-active)] border-[var(--border)] text-[var(--text)]"
-                : "border-[var(--border)] text-[var(--text-muted)] hover:bg-[var(--hover)]"
-            }`}
-          >
-            {f.toUpperCase()}
-          </button>
-        ))}
-        <span className="text-xs text-[var(--text-muted)] ml-4">Min score:</span>
-        {[50, 60, 70, 80].map((s) => (
-          <button
-            key={s}
-            onClick={() => setMinScore(s)}
-            className={`px-2.5 py-1 rounded text-xs border transition ${
-              minScore === s
-                ? "bg-[var(--surface-active)] border-[var(--border)] text-[var(--text)]"
-                : "border-[var(--border)] text-[var(--text-muted)] hover:bg-[var(--hover)]"
-            }`}
-          >
-            {s}+
-          </button>
-        ))}
-        <span className="text-xs text-[var(--text-muted)] ml-4">Agreement:</span>
-        {[0, 4, 5, 6].map((a) => (
-          <button
-            key={a}
-            onClick={() => setMinAgreement(a)}
-            className={`px-2.5 py-1 rounded text-xs border transition ${
-              minAgreement === a
-                ? "bg-[var(--surface-active)] border-[var(--border)] text-[var(--text)]"
-                : "border-[var(--border)] text-[var(--text-muted)] hover:bg-[var(--hover)]"
-            }`}
-            title={a === 0 ? "any agreement" : `at least ${a}/9 strategies say BUY`}
-          >
-            {a === 0 ? "any" : `${a}+/9`}
-          </button>
-        ))}
-        <button
-          onClick={() => setTPlusTwoOnly((v) => !v)}
-          className={`ml-4 px-3 py-1 rounded text-xs border transition font-semibold ${
-            tPlusTwoOnly
-              ? "bg-blue-500/15 border-blue-500/50 text-blue-500"
-              : "border-[var(--border)] text-[var(--text-muted)] hover:bg-[var(--hover)]"
-          }`}
-          title="Show only signals likely to resolve in 1-3 days (BUY_NOW + ADX>=25 + not extreme premium + no overhead supply)"
-        >
-          {tPlusTwoOnly ? "✅ T+2 ONLY" : "T+2 mode"}
-        </button>
-      </div>
-
       {error && (
         <div className="rounded border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-500 mb-3">
           {error}
         </div>
       )}
 
-      {/* BUCKET TABS — 3 sections: BUY ZONE / WATCHING / MISSED */}
-      <div className="mb-3 flex flex-wrap gap-2">
-        {([
-          { key: "IN_ZONE", label: "🟢 BUY ZONE", desc: "price IN entry range — actionable now",
-            cls: "bg-emerald-500/15 border-emerald-500/50 text-emerald-500" },
-          { key: "JUST_BOUNCED", label: "🚀 JUST BOUNCED", desc: "touched zone in last 5 bars + bounced ≥1% + trend not falling — support CONFIRMED",
-            cls: "bg-cyan-500/15 border-cyan-500/50 text-cyan-400" },
-          { key: "PULLBACK_IN_PROGRESS", label: "📉 STILL FALLING", desc: "touched zone but trend down + consecutive red bars — falling knife, wait for deeper Tier-2 zone",
-            cls: "bg-orange-500/15 border-orange-500/50 text-orange-400" },
-          { key: "WATCHING", label: "👀 WATCHING", desc: "above zone, no recent touch — wait for first pullback",
-            cls: "bg-amber-500/15 border-amber-500/50 text-amber-500" },
-          { key: "MISSED", label: "❌ MISSED", desc: "triggered ≥2d ago, delivered ≥3% profit, didn't buy",
-            cls: "bg-red-500/15 border-red-500/50 text-red-500" },
-          { key: "WRONG_TRIGGER", label: "💥 WRONG TRIGGER", desc: "triggered, but price went BELOW zone — our zone was wrong",
-            cls: "bg-rose-500/15 border-rose-500/50 text-rose-400" },
-          { key: "ALL", label: "📊 ALL", desc: "all signals",
-            cls: "bg-blue-500/15 border-blue-500/50 text-blue-500" },
-        ] as const).map((b) => {
-          const count = b.key === "ALL" ? filteredAll.length : (bucketed[b.key]?.length ?? 0);
-          return (
-            <button
-              key={b.key}
-              onClick={() => setBucket(b.key as typeof bucket)}
-              title={b.desc}
-              className={`px-3 py-1.5 rounded text-xs border transition flex items-center gap-2 ${
-                bucket === b.key
-                  ? b.cls
-                  : "border-[var(--border)] text-[var(--text-muted)] hover:bg-[var(--hover)]"
-              }`}
-            >
-              <span className="font-semibold">{b.label}</span>
-              <span className="opacity-80">({count})</span>
-            </button>
-          );
-        })}
+      <div className="rounded border border-[var(--border)] overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead className="bg-[var(--surface)] text-[var(--text-muted)] text-xs">
+            <tr>
+              <th className="text-left px-3 py-2 font-medium">Symbol</th>
+              <th className="text-left px-3 py-2 font-medium">Triggered</th>
+              <th className="text-right px-3 py-2 font-medium">Trigger ৳</th>
+              <th className="text-right px-3 py-2 font-medium">Current ৳</th>
+              <th className="text-right px-3 py-2 font-medium">P&L</th>
+              <th className="text-right px-3 py-2 font-medium">T+1 Close</th>
+              <th className="text-right px-3 py-2 font-medium">T+2 Close</th>
+              <th className="text-right px-3 py-2 font-medium">T+5 Close</th>
+              <th className="text-left px-3 py-2 font-medium">Verdict</th>
+              <th className="text-right px-3 py-2 font-medium">Score</th>
+              <th className="text-right px-3 py-2 font-medium">Stop</th>
+              <th className="text-right px-3 py-2 font-medium">Target 1</th>
+              <th className="text-right px-3 py-2 font-medium">Target 2</th>
+              <th className="text-right px-3 py-2 font-medium">RVOL</th>
+              <th className="text-left px-3 py-2 font-medium">Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            {signals.length === 0 && !loading && (
+              <tr>
+                <td colSpan={15} className="px-3 py-8 text-center text-[var(--text-muted)]">
+                  No signals.
+                </td>
+              </tr>
+            )}
+            {signals.map((s) => {
+              const verdict = s.analyst_verdict?.verdict;
+              const tp = s.actual_trigger_price;
+              const cp = s.current_price;
+              const pl = (tp && cp && tp > 0) ? (cp - tp) / tp * 100 : null;
+              const t1Pct = (tp && s.t1_close && tp > 0 && s.t1_close > 0) ? (s.t1_close - tp) / tp * 100 : null;
+              const t2Pct = (tp && s.t2_close && tp > 0 && s.t2_close > 0) ? (s.t2_close - tp) / tp * 100 : null;
+              const t5Pct = (tp && s.t5_close && tp > 0 && s.t5_close > 0) ? (s.t5_close - tp) / tp * 100 : null;
+              const sb = statusBadge(s.status);
+              return (
+                <tr key={s.id} className="border-t border-[var(--border)] hover:bg-[var(--hover)]/40">
+                  <td className="px-3 py-2">
+                    <Link
+                      to={`${chartBase}${s.symbol}`}
+                      className="font-mono font-bold text-blue-500 hover:underline"
+                    >
+                      {s.symbol}
+                    </Link>
+                  </td>
+                  <td className="px-3 py-2 text-xs font-mono text-[var(--text-muted)]">
+                    {fmtDateTime(s.first_triggered)}
+                  </td>
+                  <td className="px-3 py-2 text-right font-mono">
+                    {fmtPrice(tp, cur)}
+                  </td>
+                  <td className="px-3 py-2 text-right font-mono">
+                    {fmtPrice(cp, cur)}
+                  </td>
+                  <td className={`px-3 py-2 text-right font-mono text-xs ${pctClass(pl)}`}>
+                    {fmtPct(pl)}
+                  </td>
+                  <td className="px-3 py-2 text-right font-mono text-xs">
+                    <div>{fmtPrice(s.t1_close, cur)}</div>
+                    <div className={`text-[10px] ${pctClass(t1Pct)}`}>{fmtPct(t1Pct)}</div>
+                  </td>
+                  <td className="px-3 py-2 text-right font-mono text-xs">
+                    <div>{fmtPrice(s.t2_close, cur)}</div>
+                    <div className={`text-[10px] ${pctClass(t2Pct)}`}>{fmtPct(t2Pct)}</div>
+                  </td>
+                  <td className="px-3 py-2 text-right font-mono text-xs">
+                    <div>{fmtPrice(s.t5_close, cur)}</div>
+                    <div className={`text-[10px] ${pctClass(t5Pct)}`}>{fmtPct(t5Pct)}</div>
+                  </td>
+                  <td className={`px-3 py-2 text-xs ${verdictColor(verdict)}`}>
+                    {verdict || "—"}
+                  </td>
+                  <td className="px-3 py-2 text-right font-mono text-xs">
+                    {s.analyst_score != null ? (
+                      <span className={s.analyst_score >= 25 ? "text-emerald-400" : s.analyst_score <= -25 ? "text-red-400" : "text-[var(--text-muted)]"}>
+                        {s.analyst_score >= 0 ? "+" : ""}{s.analyst_score}
+                      </span>
+                    ) : "—"}
+                  </td>
+                  <td className="px-3 py-2 text-right font-mono text-xs text-[var(--text-muted)]">
+                    {fmtPrice(s.stop_loss, cur)}
+                  </td>
+                  <td className="px-3 py-2 text-right font-mono text-xs text-emerald-400/80">
+                    {fmtPrice(s.target1, cur)}
+                  </td>
+                  <td className="px-3 py-2 text-right font-mono text-xs text-emerald-500/80">
+                    {fmtPrice(s.target2, cur)}
+                  </td>
+                  <td className="px-3 py-2 text-right font-mono text-xs">
+                    {s.rvol != null ? `${Number(s.rvol).toFixed(1)}×` : "—"}
+                  </td>
+                  <td className="px-3 py-2">
+                    <span className={`inline-block px-2 py-0.5 rounded border text-[10px] ${sb.cls}`}>
+                      {sb.text}
+                    </span>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
       </div>
-
-      {/* ACCURACY BANNER — what past triggers actually delivered */}
-      {accuracy && (
-        <div className="mb-4 rounded border border-purple-500/30 bg-purple-500/5 px-3 py-2 text-xs">
-          <span className="font-semibold text-purple-400">Past trigger accuracy</span>
-          <span className="text-[var(--text-muted)]"> ({accuracy.total} triggers ≥2d old):</span>
-          {" "}
-          hit rate (≥5% gain) <strong className="text-emerald-500">{accuracy.hitRate}%</strong>
-          {" · "}avg max profit <strong className="text-emerald-500">+{accuracy.avgProfit}%</strong>
-          {" · "}best <strong className="text-emerald-500">+{accuracy.best}%</strong>
-          {" · "}worst drawdown <strong className="text-red-500">{accuracy.worst}%</strong>
-        </div>
-      )}
-
-      <div className="mb-4 rounded border border-[var(--border)] px-3 py-2 text-xs text-[var(--text-muted)] flex flex-wrap gap-x-4 gap-y-1">
-        <span className="font-semibold text-[var(--text)]">Legend:</span>
-        <span><span className="text-emerald-500 font-bold">BUY NOW</span> = today tagged FVG + green close</span>
-        <span><span className="text-emerald-400">RECENT TRIGGER</span> = tagged 1-3d ago, re-entry possible</span>
-        <span><span className="text-blue-400">MISSED ENTRY</span> = triggered, price moved past zone</span>
-        <span><span className="text-purple-400">RUNNING</span> = tagged &gt;7d ago, trend continuing</span>
-        <span><span className="text-amber-500">BUY LIMIT</span> = pullback to entry pending</span>
-        <span><span className="text-gray-500">STALE</span> = entry &gt;12% away</span>
-      </div>
-
-      {grouped.strong.length === 0 && grouped.buy.length === 0 && grouped.watch.length === 0 && !loading && (
-        <div className="rounded border border-[var(--border)] px-4 py-8 text-center text-[var(--text-muted)] text-sm">
-          No signals matching this filter. Lower min-score or change status to see more.
-        </div>
-      )}
-
-      {(["strong", "buy", "watch"] as const).map((tier) => {
-        const list = grouped[tier];
-        if (list.length === 0) return null;
-        const tierLabel =
-          tier === "strong" ? "🔥 STRONG BUY (≥80)" :
-          tier === "buy" ? "✅ BUY (65-79)" :
-          "👀 WATCH (50-64)";
-        return (
-          <div key={tier} className="mb-6">
-            <div className="text-sm font-bold mb-2 text-[var(--text)]">
-              {tierLabel} <span className="text-[var(--text-muted)] font-normal">({list.length})</span>
-            </div>
-            <div className="rounded-lg border border-[var(--border)] overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead className="bg-[var(--surface-active)] text-[var(--text-muted)] text-xs">
-                  <tr>
-                    <th className="text-left px-3 py-2 font-medium">Symbol</th>
-                    <th className="text-left px-3 py-2 font-medium" title="Experienced-analyst synthesis: today's candle + pattern failures + tape vs daily divergence + flow + structure">🎯 Analyst</th>
-                    <th className="text-right px-3 py-2 font-medium">Score</th>
-                    <th className="text-left px-3 py-2 font-medium">Status</th>
-                    <th className="text-right px-3 py-2 font-medium" title="Tier-1 = closer support (recent swing low / equilibrium / Fib). Lower edge but realistic fill.">Tier-1 (agg.)</th>
-                    <th className="text-right px-3 py-2 font-medium" title="Tier-2 = high-edge confluence (FVG + multi-touch support). May not fill.">Tier-2 (patient)</th>
-                    <th className="text-right px-3 py-2 font-medium">Stop</th>
-                    <th className="text-right px-3 py-2 font-medium">T1</th>
-                    <th className="text-right px-3 py-2 font-medium">Risk</th>
-                    <th className="text-left px-3 py-2 font-medium">Status / Verdict</th>
-                    <th className="text-left px-3 py-2 font-medium">Strategies (vote)</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {list.map((s) => {
-                    const eStatus = s.entry_status;
-                    const tier1 = s.aggressive_entry;
-                    const tier1Dist = s.aggressive_entry_distance_pct;
-                    const tier2 = s.entry;
-                    const tier2Dist = s.entry_distance_pct;
-                    // Color logic: AT_ENTRY/DISCOUNT_TRIGGERED → green; WAIT_PULLBACK → amber; TOO_FAR → red
-                    const tierColor = (dist: number | null | undefined) => {
-                      if (dist === null || dist === undefined) return "text-[var(--text-muted)]";
-                      if (dist <= 2 && dist >= -2) return "text-emerald-500 font-semibold";
-                      if (dist > 2 && dist <= 8) return "text-amber-500";
-                      if (dist > 8) return "text-red-500";
-                      if (dist < -2) return "text-emerald-400 font-semibold"; // discount triggered
-                      return "text-[var(--text-muted)]";
-                    };
-                    const statusBadge =
-                      eStatus === "AT_ENTRY" ? { text: "🟢 BUY NOW", cls: "text-emerald-500 font-bold" } :
-                      eStatus === "DISCOUNT_TRIGGERED" ? { text: "🟢 DISCOUNT", cls: "text-emerald-400 font-bold" } :
-                      eStatus === "WAIT_PULLBACK" ? { text: "🟡 BUY LIMIT", cls: "text-amber-500 font-medium" } :
-                      eStatus === "TOO_FAR" ? { text: "🔴 DON'T CHASE", cls: "text-red-500 font-medium" } :
-                      null;
-                    return (
-                    <Fragment key={s.id}>
-                    <tr className="border-t border-[var(--border)] hover:bg-[var(--hover)]">
-                      <td className="px-3 py-2">
-                        <Link
-                          to={`${chartBase}${s.symbol}`}
-                          className="font-mono font-bold text-blue-500 hover:underline"
-                        >
-                          {s.symbol}
-                        </Link>
-                        {s.confidence && (
-                          <div className="text-[10px] text-[var(--text-muted)] mt-0.5">
-                            conf: <span className={
-                              s.confidence === "HIGH" ? "text-emerald-500" :
-                              s.confidence === "MEDIUM" ? "text-amber-500" :
-                              "text-gray-500"
-                            }>{s.confidence}</span>
-                          </div>
-                        )}
-                        {s.volume_signature && s.volume_signature.rvol !== undefined && s.volume_signature.rvol !== null && (() => {
-                          const vs = s.volume_signature!;
-                          const rv = vs.rvol!;
-                          const cls =
-                            vs.regime === "climactic" ? "text-purple-500 font-bold" :
-                            vs.regime === "strong" ? "text-emerald-500 font-medium" :
-                            vs.regime === "normal" ? "text-gray-400" :
-                            vs.regime === "weak" ? "text-amber-500" :
-                            "text-red-400";
-                          return (
-                            <div className={`text-[10px] mt-0.5 ${cls}`} title={vs.reason || ""}>
-                              RVOL {rv.toFixed(1)}× · {vs.regime}
-                            </div>
-                          );
-                        })()}
-                        {s.absorption_pattern && s.absorption_pattern.type && (() => {
-                          const ab = s.absorption_pattern!;
-                          const bullish = ab.type === "BULLISH_ABSORPTION";
-                          const cls = bullish
-                            ? "text-cyan-500 font-medium"
-                            : "text-orange-500 font-medium";
-                          const label = bullish ? "🌀 ABSORPTION" : "⚠️ DISTRIBUTION";
-                          const extra = [
-                            `${ab.count}d/${ab.span_days}d`,
-                            ab.volume_trend === "declining" ? "↓vol" : ab.volume_trend === "rising" ? "↑vol" : "",
-                            ab.at_demand_zone ? "@OB" : "",
-                            ab.today_active ? "live" : "",
-                          ].filter(Boolean).join(" · ");
-                          return (
-                            <div className={`text-[10px] mt-0.5 ${cls}`} title={ab.reason || ""}>
-                              {label} {extra}
-                            </div>
-                          );
-                        })()}
-                      </td>
-                      <td className="px-3 py-2">
-                        {(() => {
-                          const av = s.analyst_verdict;
-                          if (!av || !av.verdict) return <span className="text-[var(--text-muted)]">—</span>;
-                          const v = av.verdict;
-                          const color =
-                            v === "STRONG_BUY" ? "bg-emerald-500/15 border-emerald-500/50 text-emerald-500 font-bold" :
-                            v === "BUY" ? "bg-emerald-400/15 border-emerald-400/40 text-emerald-400 font-semibold" :
-                            v === "WATCH" ? "bg-amber-500/15 border-amber-500/40 text-amber-500" :
-                            v === "NEUTRAL" ? "bg-gray-500/10 border-gray-500/30 text-gray-400" :
-                            v === "AVOID" ? "bg-red-400/15 border-red-400/40 text-red-400" :
-                            "bg-red-500/15 border-red-500/50 text-red-500 font-bold";
-                          const factors = (av.factors || []).slice(0, 4).map(f => `${f.score >= 0 ? "+" : ""}${f.score} ${f.factor}`).join("\n");
-                          return (
-                            <span
-                              className={`inline-block px-2 py-0.5 rounded border text-[11px] ${color}`}
-                              title={factors || ""}
-                            >
-                              {av.emoji || "?"} {v.replace("_", " ")}{" "}
-                              <span className="opacity-75">({(av.score ?? 0) >= 0 ? "+" : ""}{av.score})</span>
-                            </span>
-                          );
-                        })()}
-                      </td>
-                      <td className="px-3 py-2 text-right">
-                        <span className={`inline-block px-2 py-0.5 rounded text-xs border ${levelColor(s.signal_level)}`}>
-                          {s.composite_score}
-                        </span>
-                      </td>
-                      <td className={`px-3 py-2 text-xs font-medium ${statusColor(s.status)}`}>
-                        {s.status === "active" && <TrendingUp className="inline h-3.5 w-3.5 mr-1" />}
-                        {s.status === "stopped_out" && <AlertTriangle className="inline h-3.5 w-3.5 mr-1" />}
-                        {s.status.replace("_", " ")}
-                        {s.pl_pct !== null && s.pl_pct !== undefined && (
-                          <span className={`ml-2 ${s.pl_pct >= 0 ? "text-emerald-500" : "text-red-500"}`}>
-                            {s.pl_pct > 0 ? "+" : ""}{s.pl_pct.toFixed(1)}%
-                          </span>
-                        )}
-                        <div className="text-[10px] text-[var(--text-muted)] mt-0.5">
-                          <Clock className="inline h-3 w-3 mr-0.5" />
-                          {timeAgo(s.first_triggered)}
-                        </div>
-                      </td>
-                      <td className={`px-3 py-2 text-right font-mono text-xs ${tierColor(tier1Dist)}`}>
-                        {tier1 !== null && tier1 !== undefined ? (
-                          <>
-                            {cur}{fmtPrice(tier1)}
-                            {tier1Dist !== null && tier1Dist !== undefined && (
-                              <div className="text-[10px] opacity-80">
-                                {tier1Dist > 0 ? `${tier1Dist.toFixed(1)}% below` :
-                                 tier1Dist < -1 ? `${Math.abs(tier1Dist).toFixed(1)}% triggered` :
-                                 "at entry"}
-                              </div>
-                            )}
-                          </>
-                        ) : "—"}
-                      </td>
-                      <td className={`px-3 py-2 text-right font-mono text-xs ${tierColor(tier2Dist)}`}>
-                        {tier2 !== null && tier2 !== undefined ? (
-                          <>
-                            {cur}{fmtPrice(tier2)}
-                            {tier2Dist !== null && tier2Dist !== undefined && (
-                              <div className="text-[10px] opacity-80">
-                                {tier2Dist > 0 ? `${tier2Dist.toFixed(1)}% below` :
-                                 tier2Dist < -1 ? `${Math.abs(tier2Dist).toFixed(1)}% triggered` :
-                                 "at entry"}
-                              </div>
-                            )}
-                          </>
-                        ) : "—"}
-                      </td>
-                      <td className="px-3 py-2 text-right font-mono text-xs text-red-500/80">
-                        {s.stop_loss !== null ? `${cur}${fmtPrice(s.stop_loss)}` : "—"}
-                      </td>
-                      <td className="px-3 py-2 text-right font-mono text-xs text-emerald-500/80">
-                        {s.target1 !== null ? `${cur}${fmtPrice(s.target1)}` : "—"}
-                      </td>
-                      <td className="px-3 py-2 text-right font-mono text-xs">
-                        <span title={`Risk ${s.risk_score}/5`} className={
-                          s.risk_score <= 2 ? "text-emerald-500" :
-                          s.risk_score === 3 ? "text-amber-500" :
-                          "text-red-500"
-                        }>
-                          {riskBars(s.risk_score)}
-                        </span>
-                      </td>
-                      <td className="px-3 py-2 text-xs">
-                        <div className="flex flex-col gap-0.5">
-                          {statusBadge ? (
-                            <span className={statusBadge.cls}>{statusBadge.text}</span>
-                          ) : (
-                            <span className={
-                              s.action_type === "BUY_NOW" ? "text-emerald-500 font-bold" :
-                              s.action_type === "RECENT_TRIGGER" ? "text-emerald-400 font-medium" :
-                              s.action_type === "BUY_LIMIT" ? "text-amber-500" :
-                              s.action_type === "MISSED_ENTRY" ? "text-blue-400" :
-                              s.action_type === "RUNNING" ? "text-purple-400" :
-                              s.action_type === "SETUP_DEEP" ? "text-blue-300/70" :
-                              s.action_type === "STALE" ? "text-gray-500" :
-                              s.action_type === "AVOID" ? "text-red-500" :
-                              "text-[var(--text-muted)]"
-                            }>
-                              {s.action_type?.replace(/_/g, " ")}
-                            </span>
-                          )}
-                          {s.hedge_fund_verdict && (
-                            <span className="text-[10px] text-[var(--text-muted)]" title={s.hedge_fund_verdict}>
-                              {s.hedge_fund_verdict.length > 38
-                                ? s.hedge_fund_verdict.slice(0, 38) + "…"
-                                : s.hedge_fund_verdict}
-                            </span>
-                          )}
-                          {s.htf_bias && s.htf_bias.bias && (
-                            <span className={`text-[10px] ${
-                              s.htf_bias.bias === "BULLISH" ? "text-emerald-500" :
-                              s.htf_bias.bias === "BEARISH" ? "text-red-500" :
-                              "text-amber-500"
-                            }`}>
-                              HTF {s.htf_bias.bias.toLowerCase()}
-                              {s.htf_bias.trend_pct !== null && s.htf_bias.trend_pct !== undefined &&
-                                ` (${s.htf_bias.trend_pct >= 0 ? "+" : ""}${s.htf_bias.trend_pct.toFixed(0)}%)`}
-                            </span>
-                          )}
-                          {s.regime && !statusBadge && (
-                            <span className="text-[10px] text-[var(--text-muted)]">
-                              {s.regime.replace("_", " ").toLowerCase()}
-                            </span>
-                          )}
-                        </div>
-                      </td>
-                      <td className="px-3 py-2 text-xs">
-                        <div className="flex flex-wrap gap-0.5">
-                          {s.votes && Object.entries(s.votes)
-                            .sort(([, a], [, b]) => b.weight_in_regime - a.weight_in_regime)
-                            .slice(0, 6)
-                            .map(([name, v]) => (
-                              <span
-                                key={name}
-                                className={`px-1.5 py-0.5 rounded text-[10px] font-mono ${
-                                  v.vote === "BUY"
-                                    ? "bg-emerald-500/15 text-emerald-500 border border-emerald-500/30"
-                                    : v.vote === "AVOID"
-                                    ? "bg-red-500/15 text-red-500 border border-red-500/30"
-                                    : "bg-gray-500/10 text-gray-500 border border-gray-500/30"
-                                }`}
-                                title={`${name}: ${v.vote} (score ${v.score}, weight ${v.weight_in_regime}%)`}
-                              >
-                                {name}:{v.score}
-                              </span>
-                            ))}
-                        </div>
-                      </td>
-                    </tr>
-                    {s.chase_warning && (
-                      <tr className="border-t border-[var(--border)]/30">
-                        <td colSpan={10} className="px-3 py-1.5 text-[11px] bg-red-500/5 text-red-400/90 italic">
-                          {s.chase_warning}
-                        </td>
-                      </tr>
-                    )}
-                    {/* Bid Ladder — how to split your buy across price levels */}
-                    {s.bid_ladder && s.bid_ladder.length > 0 && (
-                      <tr className="border-t border-[var(--border)]/30">
-                        <td colSpan={10} className="px-3 py-1.5 bg-emerald-500/5">
-                          <div className="text-[11px] text-emerald-400 font-semibold mb-1">💰 Bid Placement Ladder:</div>
-                          <div className="flex flex-wrap gap-2 text-[11px]">
-                            {s.bid_ladder.map((b, i) => (
-                              <div key={i} className={`inline-block px-2 py-1 rounded border ${
-                                b.edge === "max" ? "bg-emerald-500/20 border-emerald-500/60 text-emerald-300" :
-                                b.edge === "very_high" ? "bg-emerald-500/15 border-emerald-500/50 text-emerald-400" :
-                                b.edge === "high" ? "bg-cyan-500/15 border-cyan-500/40 text-cyan-400" :
-                                b.edge === "good" ? "bg-amber-500/15 border-amber-500/40 text-amber-400" :
-                                "bg-gray-500/15 border-gray-500/40 text-gray-400"
-                              }`}>
-                                <strong>{b.size_pct}%</strong> @ ৳{b.price.toFixed(1)}
-                                {b.reward_pct != null && b.risk_pct != null && (
-                                  <span className="opacity-70 ml-1">
-                                    (R/R {Math.abs((b.reward_pct || 0) / (b.risk_pct || -1)).toFixed(1)}:1)
-                                  </span>
-                                )}
-                                <div className="text-[10px] opacity-80 mt-0.5">{b.label}</div>
-                              </div>
-                            ))}
-                          </div>
-                        </td>
-                      </tr>
-                    )}
-                    {/* T+N performance — shows post-trigger OHLC */}
-                    {(s.actual_trigger_price || s.t1_close || s.t2_close) && (
-                      <tr className="border-t border-[var(--border)]/30">
-                        <td colSpan={10} className="px-3 py-1.5 text-[11px] bg-blue-500/5">
-                          <span className="text-blue-400 font-semibold mr-2">📊 Performance:</span>
-                          {s.actual_trigger_price !== null && s.actual_trigger_price !== undefined && (
-                            <span className="mr-3">
-                              Entry <strong className="text-blue-300">৳{s.actual_trigger_price}</strong>
-                            </span>
-                          )}
-                          {s.t1_close !== null && s.t1_close !== undefined && (
-                            <span className="mr-3">
-                              T+1: H ৳{s.t1_high} L ৳{s.t1_low} <strong>C ৳{s.t1_close}</strong>
-                              {s.actual_trigger_price && (
-                                <span className={
-                                  s.t1_close >= s.actual_trigger_price ? "text-emerald-400 ml-1" : "text-red-400 ml-1"
-                                }>
-                                  ({((s.t1_close - s.actual_trigger_price)/s.actual_trigger_price*100).toFixed(1)}%)
-                                </span>
-                              )}
-                            </span>
-                          )}
-                          {s.t2_close !== null && s.t2_close !== undefined && s.t2_close > 0 && (
-                            <span className="mr-3">
-                              T+2: H ৳{s.t2_high} L ৳{s.t2_low} <strong>C ৳{s.t2_close}</strong>
-                              {s.actual_trigger_price && (
-                                <span className={
-                                  s.t2_close >= s.actual_trigger_price ? "text-emerald-400 ml-1" : "text-red-400 ml-1"
-                                }>
-                                  ({((s.t2_close - s.actual_trigger_price)/s.actual_trigger_price*100).toFixed(1)}%)
-                                </span>
-                              )}
-                            </span>
-                          )}
-                          {s.t5_close !== null && s.t5_close !== undefined && s.t5_close > 0 && (
-                            <span>
-                              T+5: <strong>৳{s.t5_close}</strong>
-                              {s.actual_trigger_price && (
-                                <span className={
-                                  s.t5_close >= s.actual_trigger_price ? "text-emerald-400 ml-1" : "text-red-400 ml-1"
-                                }>
-                                  ({((s.t5_close - s.actual_trigger_price)/s.actual_trigger_price*100).toFixed(1)}%)
-                                </span>
-                              )}
-                            </span>
-                          )}
-                        </td>
-                      </tr>
-                    )}
-                    {/* Trigger info — shown for JUST_BOUNCED, MISSED, WRONG_TRIGGER */}
-                    {(s.primary_trigger_date || s.tier1_trigger_date || s.tier2_trigger_date) &&
-                     (bucket === "JUST_BOUNCED" || bucket === "MISSED" || bucket === "WRONG_TRIGGER") && (
-                      <tr className="border-t border-[var(--border)]/30">
-                        <td colSpan={10} className="px-3 py-1.5 text-[11px] bg-blue-500/5">
-                          <span className="text-blue-400 font-semibold">📅 Triggered: </span>
-                          {s.tier1_trigger_date && (
-                            <span className="mr-3">
-                              Tier-1 zone hit on <strong>{s.tier1_trigger_date}</strong>
-                              {s.tier1_trigger_bars_ago !== null && s.tier1_trigger_bars_ago !== undefined && (
-                                <> ({s.tier1_trigger_bars_ago}d ago)</>
-                              )}
-                              {s.tier1_max_profit_pct !== null && s.tier1_max_profit_pct !== undefined && (
-                                <> — max profit since: <strong className={
-                                  s.tier1_max_profit_pct >= 0 ? "text-emerald-500" : "text-red-500"
-                                }>{s.tier1_max_profit_pct >= 0 ? "+" : ""}{s.tier1_max_profit_pct.toFixed(1)}%</strong></>
-                              )}
-                            </span>
-                          )}
-                          {s.tier2_trigger_date && (
-                            <span>
-                              Tier-2 zone hit on <strong>{s.tier2_trigger_date}</strong>
-                              {s.tier2_trigger_bars_ago !== null && s.tier2_trigger_bars_ago !== undefined && (
-                                <> ({s.tier2_trigger_bars_ago}d ago)</>
-                              )}
-                              {s.tier2_max_profit_pct !== null && s.tier2_max_profit_pct !== undefined && (
-                                <> — would-be max profit: <strong className={
-                                  s.tier2_max_profit_pct >= 0 ? "text-emerald-500" : "text-red-500"
-                                }>{s.tier2_max_profit_pct >= 0 ? "+" : ""}{s.tier2_max_profit_pct.toFixed(1)}%</strong></>
-                              )}
-                            </span>
-                          )}
-                        </td>
-                      </tr>
-                    )}
-                    </Fragment>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        );
-      })}
     </div>
   );
 }
