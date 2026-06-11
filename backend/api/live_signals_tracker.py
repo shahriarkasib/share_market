@@ -361,11 +361,12 @@ def insert_signal(sig: dict):
            (symbol, market, status, composite_score, signal_level, risk_score,
             entry, stop_loss, target1, target2, bias, active_signals, reasons,
             triggered_high, triggered_low, current_price,
+            actual_trigger_price, trigger_locked,
             regime, action_type, entry_distance_pct, votes,
             state_label, days_since_trigger, fvg_distance_pct,
             t_plus_2_friendly, t_plus_2_reasons, t_plus_2_bonuses)
            VALUES (%s, 'dse', 'active', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                   %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                   %s, %s, %s, %s, TRUE, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
         (
             sig["symbol"],
             sig["composite_score"], sig["signal_level"], sig["risk_score"],
@@ -375,6 +376,7 @@ def insert_signal(sig: dict):
             json.dumps(sig.get("active_signals", [])),
             json.dumps(sig.get("reasons", [])),
             sig["current_price"], sig["current_price"], sig["current_price"],
+            sig["current_price"],  # actual_trigger_price = LTP at first trigger
             sig.get("regime"), sig.get("action_type"),
             sig.get("entry_distance_pct"),
             json.dumps(sig.get("votes", {})),
