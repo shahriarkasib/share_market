@@ -544,6 +544,8 @@ async def get_live_signals(
     bucket: str | None = None,  # IN_ZONE | WATCHING | MISSED | STALE
     buy_only: bool = True,  # filter to BUY/STRONG_BUY signal_level only
     quality_filter: bool = True,  # exclude insurance/MF/banks/BATBC noise
+    sort_by: str = "score",  # "score" (default) or "triggered" for newest-first
+    limit: int = 200,
 ):
     """
     Return live composite signals from the live_signals table.
@@ -569,10 +571,14 @@ async def get_live_signals(
     # of being buried below WATCH/NEUTRAL stocks with marginally higher
     # legacy composite scores.
     if status == "all":
+        order_clause = (
+            "ORDER BY first_triggered DESC NULLS LAST"
+            if sort_by == "triggered"
+            else "ORDER BY analyst_score DESC NULLS LAST, composite_score DESC, last_seen DESC"
+        )
         rows = conn.execute(
-            "SELECT * FROM live_signals WHERE composite_score >= %s "
-            "AND (market = 'dse' OR market IS NULL) "
-            "ORDER BY analyst_score DESC NULLS LAST, composite_score DESC, last_seen DESC LIMIT 200",
+            f"SELECT * FROM live_signals WHERE composite_score >= %s "
+            f"AND (market = 'dse' OR market IS NULL) {order_clause} LIMIT {int(limit)}",
             (min_score,),
         ).fetchall()
     elif status == "closed":
