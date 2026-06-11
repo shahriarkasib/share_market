@@ -424,10 +424,15 @@ export interface LiveCompositeSignal {
 export async function fetchLiveCompositeSignals(
   status: string = "active",
   minScore: number = 0,
+  options?: { buy_only?: boolean; quality_filter?: boolean },
 ): Promise<LiveCompositeSignal[]> {
-  const { data } = await api.get<LiveCompositeSignal[]>("/market/live-signals", {
-    params: { status, min_score: minScore },
-  });
+  const params: Record<string, string | number | boolean> = {
+    status,
+    min_score: minScore,
+  };
+  if (options?.buy_only !== undefined) params.buy_only = options.buy_only;
+  if (options?.quality_filter !== undefined) params.quality_filter = options.quality_filter;
+  const { data } = await api.get<LiveCompositeSignal[]>("/market/live-signals", { params });
   return data;
 }
 

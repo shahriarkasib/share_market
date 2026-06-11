@@ -72,9 +72,11 @@ export default function LiveCompositeSignals({ market = "dse" }: Props = {}) {
     setLoading(true);
     setError(null);
     try {
+      // Show ALL signals (no BUY-only filter), but keep quality filter
+      // to exclude insurance/MF/banks/BATBC noise.
       const data = isNasdaq
         ? await fetchNasdaqLiveSignals("all", 0)
-        : await fetchLiveCompositeSignals("all", 0);
+        : await fetchLiveCompositeSignals("all", 0, { buy_only: false, quality_filter: true });
       // Sort by first_triggered DESC (latest first)
       data.sort((a, b) => {
         const ta = a.first_triggered ? new Date(a.first_triggered).getTime() : 0;
