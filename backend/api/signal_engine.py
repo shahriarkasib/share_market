@@ -629,6 +629,32 @@ def compute_bid_ladder(current_price, aggressive_entry, entry, stop_loss,
     if not current_price or current_price <= 0:
         return []
 
+    # GUARD: if structural entries are stale (>8% below current), they're
+    # from old chart history and useless as bid limits. Fall back to a
+    # sensible current-price ladder.
+    stale_threshold = current_price * 0.92
+    if aggressive_entry and aggressive_entry < stale_threshold:
+        aggressive_entry = None
+    if entry and entry < stale_threshold:
+        entry = None
+    if not aggressive_entry and not entry:
+        max_buy = round(current_price * 1.005, 2)
+        mild_dip = round(current_price * 0.99, 2)
+        deeper_dip = round(current_price * 0.975, 2)
+        def rr(p):
+            return {
+                "risk_pct": round((stop_loss - p) / p * 100, 2) if stop_loss else None,
+                "reward_pct": round((target1 - p) / p * 100, 2) if target1 else None,
+            }
+        return [
+            {"price": max_buy, "size_pct": 40, "edge": "medium",
+             "label": f"Market ≤৳{max_buy} (current +0.5%)", **rr(max_buy)},
+            {"price": mild_dip, "size_pct": 35, "edge": "high",
+             "label": f"Mild dip ৳{mild_dip} (-1%)", **rr(mild_dip)},
+            {"price": deeper_dip, "size_pct": 25, "edge": "very_high",
+             "label": f"Deeper dip ৳{deeper_dip} (-2.5%)", **rr(deeper_dip)},
+        ]
+
     # Find closest multi-touch support BELOW current (for "Spring" zone)
     spring_zone = None
     if support_resistance:

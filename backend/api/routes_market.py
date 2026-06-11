@@ -701,7 +701,7 @@ async def get_daily_summary(date: str | None = None):
             (sym, target_date),
         ).fetchone()
 
-        # Pull prior 20-day avg volume
+        # Pull prior 20-day avg volume + recent 15-day swing low for sensible stop
         avg_vol_row = conn.execute(
             """SELECT AVG(volume) AS av FROM (
                  SELECT volume FROM daily_prices
@@ -710,6 +710,15 @@ async def get_daily_summary(date: str | None = None):
                ) t""",
             (sym, target_date),
         ).fetchone()
+        recent_low_row = conn.execute(
+            """SELECT MIN(low) AS lo FROM (
+                 SELECT low FROM daily_prices
+                 WHERE symbol = %s AND date <= %s
+                 ORDER BY date DESC LIMIT 15
+               ) t""",
+            (sym, target_date),
+        ).fetchone()
+        recent_15d_low = float(recent_low_row["lo"]) if recent_low_row and recent_low_row["lo"] else None
 
         confirmation = {}
         if candle:
@@ -717,7 +726,20 @@ async def get_daily_summary(date: str | None = None):
             t_high = float(candle["high"])
             t_low = float(candle["low"])
             t_close = float(candle["close"])
-            t_range = max(t_high - t_low, 0.01)
+
+            # SENSIBLE STOP: max(close × 0.97, recent_15d_low × 0.99)
+            # Never deeper than -5% from close. Tiered: scalp/swing/structural.
+            scalp_stop = round(t_close * 0.97, 2)  # -3% scalp stop
+            swing_stop = round(max(recent_15d_low or t_close * 0.95, t_close * 0.92) * 0.99, 2) if recent_15d_low else round(t_close * 0.95, 2)
+            structural_stop = float(d["stop_loss"]) if d.get("stop_loss") else None
+
+            # SENSIBLE TARGETS: T1 should be reachable; if stored T1 is far, use scalp target
+            stored_t1 = float(d["target1"]) if d.get("target1") else None
+            stored_t2 = float(d["target2"]) if d.get("target2") else None
+            scalp_t1 = round(t_close * 1.025, 2)  # +2.5%
+            swing_t1 = round(t_close * 1.05, 2)   # +5%
+            # If stored T1 is more than 8% above close, it's a structural target — fine for swing
+            t1_reachable = stored_t1 if (stored_t1 and stored_t1 <= t_close * 1.10) else scalp_t1
 
             # Confirmation rules for tomorrow
             confirmation = {
@@ -727,17 +749,24 @@ async def get_daily_summary(date: str | None = None):
                     "low": round(t_low, 2),
                     "close": round(t_close, 2),
                 },
-                "min_confirm_open": round(t_close * 1.000, 2),  # gap up or flat
-                "strong_confirm_open": round(t_close * 1.005, 2),  # gap up >0.5%
-                "must_hold_30min": round(t_close * 0.99, 2),  # don't break -1%
-                "invalidation_low": round(t_low * 0.995, 2),  # if breaks today's low -0.5%
-                "first_target": round(t_close * 1.02, 2),  # +2% first scalp
+                "min_confirm_open": round(t_close * 1.000, 2),
+                "strong_confirm_open": round(t_close * 1.005, 2),
+                "must_hold_30min": round(t_close * 0.99, 2),
+                "invalidation_low": round(t_low * 0.995, 2),
+                "first_target": round(t_close * 1.02, 2),
                 "buy_zone_low": round(t_close * 0.995, 2),
                 "buy_zone_high": round(t_close * 1.005, 2),
+                # NEW: tiered stops + reachable targets
+                "scalp_stop": scalp_stop,           # -3% (intraday/T+1 trade)
+                "swing_stop": swing_stop,           # recent swing low (5-10 day hold)
+                "structural_stop": structural_stop, # SMC long stop (1+ month)
+                "scalp_target": scalp_t1,           # +2.5%
+                "swing_target": swing_t1,           # +5%
+                "structural_target": stored_t1,     # original T1 (could be far)
             }
             if avg_vol_row and avg_vol_row["av"]:
                 avg_vol = float(avg_vol_row["av"])
-                confirmation["min_volume_first_hour"] = int(avg_vol * 0.15)  # 15% of daily by 11am
+                confirmation["min_volume_first_hour"] = int(avg_vol * 0.15)
                 confirmation["strong_volume_first_hour"] = int(avg_vol * 0.25)
 
         # Pick out top 3 verdict factors for context

@@ -122,7 +122,13 @@ export default function DailySummary() {
                 <div className="text-right text-xs font-mono">
                   <div>Close ৳{fmt(s.close_price)} · Trigger ৳{fmt(s.trigger_price)}</div>
                   <div className="text-[var(--text-muted)]">
-                    Stop ৳{fmt(s.stop_loss)} · T1 ৳{fmt(s.target1)} · T2 ৳{fmt(s.target2)}
+                    {s.confirmation?.scalp_stop && (
+                      <>Scalp stop ৳{fmt(s.confirmation.scalp_stop)} · </>
+                    )}
+                    {s.confirmation?.swing_stop && (
+                      <>Swing stop ৳{fmt(s.confirmation.swing_stop)} · </>
+                    )}
+                    T1 ৳{fmt(s.confirmation?.scalp_target || s.target1)}
                   </div>
                 </div>
               </div>
@@ -205,8 +211,13 @@ export default function DailySummary() {
                       </div>
                       <div className="pl-5 space-y-0.5 text-[var(--text)]">
                         <div>• Buy zone: <strong>৳{fmt(c.buy_zone_low)} – ৳{fmt(c.buy_zone_high)}</strong></div>
-                        <div>• First scalp target: <strong>৳{fmt(c.first_target)}</strong> (+2%)</div>
-                        <div>• Stop loss: <strong>৳{fmt(s.stop_loss)}</strong></div>
+                        <div>• Scalp target (T+1-2): <strong>৳{fmt(c.scalp_target)}</strong> (+2.5%)</div>
+                        <div>• Swing target (T+5): <strong>৳{fmt(c.swing_target)}</strong> (+5%)</div>
+                        <div className="text-red-400">• Scalp stop: <strong>৳{fmt(c.scalp_stop)}</strong> (-3%)</div>
+                        <div className="text-red-400">• Swing stop: <strong>৳{fmt(c.swing_stop)}</strong> (recent low)</div>
+                        {c.structural_target && c.structural_target !== c.scalp_target && (
+                          <div className="text-[var(--text-muted)]">• Structural T1: ৳{fmt(c.structural_target)} (long hold)</div>
+                        )}
                       </div>
                     </div>
                   </div>

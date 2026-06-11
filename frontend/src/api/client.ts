@@ -448,6 +448,13 @@ export interface DailySummarySignal {
     buy_zone_high?: number;
     min_volume_first_hour?: number;
     strong_volume_first_hour?: number;
+    // Tiered stops + targets (realistic vs structural)
+    scalp_stop?: number;
+    swing_stop?: number;
+    structural_stop?: number;
+    scalp_target?: number;
+    swing_target?: number;
+    structural_target?: number;
   };
 }
 
