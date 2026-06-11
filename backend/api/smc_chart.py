@@ -1012,10 +1012,414 @@ def detect_range_breakout(df):
         return None
 
 
+def detect_volume_climax_reversal(df):
+    """Detect a sell-off climax: huge red volume day, long lower wick, then reversal.
+
+    Classic capitulation: volume surges to 2.5×+ average on a wide-range
+    down day, but the close is well off the lows (long lower wick = buyers
+    stepped in). Then today follows up green.
+    """
+    try:
+        if df is None or len(df) < 20:
+            return None
+        last3 = df.tail(3).reset_index(drop=True)
+        if len(last3) < 3:
+            return None
+        # Look for a climax day in last 5 days
+        recent = df.tail(7).reset_index(drop=True)
+        avg_vol = float(df["volume"].tail(30).mean())
+        if avg_vol <= 0:
+            return None
+        climax_idx = None
+        for i in range(len(recent) - 1):
+            r = recent.iloc[i]
+            vol_ratio = float(r["volume"]) / avg_vol if avg_vol else 0
+            rng = float(r["high"]) - float(r["low"])
+            if rng <= 0:
+                continue
+            lower_wick = min(float(r["open"]), float(r["close"])) - float(r["low"])
+            wick_pct = lower_wick / rng
+            is_red = float(r["close"]) < float(r["open"])
+            wide_range = rng / float(r["close"]) > 0.04 if float(r["close"]) > 0 else False
+            if vol_ratio >= 2.5 and is_red and wick_pct >= 0.45 and wide_range:
+                climax_idx = i
+                break
+        if climax_idx is None:
+            return None
+        # Confirm follow-through: today must be green or higher close than climax day
+        today = df.iloc[-1]
+        climax_day = recent.iloc[climax_idx]
+        today_green = float(today["close"]) > float(today["open"])
+        higher_than_climax = float(today["close"]) > float(climax_day["close"])
+        if not (today_green or higher_than_climax):
+            return None
+        vol_ratio = float(climax_day["volume"]) / avg_vol
+        score = 15
+        if vol_ratio >= 4.0:
+            score += 5
+        if today_green and higher_than_climax:
+            score += 5
+        return {
+            "type": "VOLUME_CLIMAX_REVERSAL",
+            "detected": True,
+            "score": min(score, 22),
+            "climax_vol_ratio": round(vol_ratio, 1),
+            "days_since_climax": len(recent) - 1 - climax_idx,
+            "detail": (
+                f"Climax day {len(recent) - 1 - climax_idx}d ago: "
+                f"{vol_ratio:.1f}× vol, big red with lower wick rejection, "
+                f"{'today green follow-through' if today_green else 'price held'}"
+            ),
+        }
+    except Exception:
+        return None
+
+
+def detect_double_bottom_v2(df, tolerance_pct=0.03):
+    """Detect a Double or Triple Bottom pattern.
+
+    Two/three swing lows within `tolerance_pct` (3% by default) of each
+    other, separated by at least 5 bars, with the most recent low not
+    breaking. Strong support confirmation.
+    """
+    try:
+        if df is None or len(df) < 40:
+            return None
+        lookback = df.tail(80).reset_index(drop=True)
+        # Find 3-bar pivot lows
+        lows = []
+        for i in range(3, len(lookback) - 3):
+            window = lookback.iloc[i - 3 : i + 4]
+            if float(lookback.iloc[i]["low"]) == float(window["low"].min()):
+                lows.append({"idx": i, "low": float(lookback.iloc[i]["low"])})
+        if len(lows) < 2:
+            return None
+        # Find pairs/triplets within tolerance, at least 5 bars apart
+        last_low = lows[-1]
+        matches = [last_low]
+        for L in reversed(lows[:-1]):
+            if last_low["idx"] - L["idx"] < 5:
+                continue
+            tol = last_low["low"] * tolerance_pct
+            if abs(L["low"] - last_low["low"]) <= tol:
+                matches.append(L)
+                if len(matches) >= 3:
+                    break
+        if len(matches) < 2:
+            return None
+        # Confirm: current price must be ABOVE the bottom (broke higher)
+        cur = float(lookback.iloc[-1]["close"])
+        base = min(m["low"] for m in matches)
+        if cur < base * 1.005:  # not yet broken above
+            return None
+        # Find the peak BETWEEN the lows (neckline)
+        idx_low = min(m["idx"] for m in matches)
+        idx_high = max(m["idx"] for m in matches)
+        between = lookback.iloc[idx_low : idx_high + 1]
+        neckline = float(between["high"].max())
+        score = 18 if len(matches) == 2 else 25  # triple bottom = stronger
+        # Bonus if cur is breaking above neckline
+        if cur > neckline:
+            score += 5
+        return {
+            "type": "TRIPLE_BOTTOM" if len(matches) >= 3 else "DOUBLE_BOTTOM",
+            "detected": True,
+            "score": min(score, 25),
+            "n_bottoms": len(matches),
+            "bottom_price": round(base, 2),
+            "neckline": round(neckline, 2),
+            "detail": (
+                f"{len(matches)} lows tested at ৳{base:.1f} "
+                f"(tolerance ±{tolerance_pct*100:.0f}%), "
+                f"neckline ৳{neckline:.1f}, "
+                f"{'broke neckline' if cur > neckline else 'pre-breakout'}"
+            ),
+        }
+    except Exception:
+        return None
+
+
+def detect_channel_breakout(df):
+    """Detect a downtrend channel breakout.
+
+    Fit a falling trendline through recent swing highs. If today's close
+    breaks above the projected trendline value with volume, it's a
+    channel breakout.
+    """
+    try:
+        if df is None or len(df) < 30:
+            return None
+        lookback = df.tail(40).reset_index(drop=True)
+        # Find swing highs (3-bar pivot)
+        highs = []
+        for i in range(3, len(lookback) - 3):
+            window = lookback.iloc[i - 3 : i + 4]
+            if float(lookback.iloc[i]["high"]) == float(window["high"].max()):
+                highs.append({"idx": i, "high": float(lookback.iloc[i]["high"])})
+        if len(highs) < 3:
+            return None
+        # Take the last 3-4 swing highs — must be DESCENDING (downtrend channel)
+        last_highs = highs[-4:] if len(highs) >= 4 else highs[-3:]
+        descending = all(last_highs[i]["high"] < last_highs[i - 1]["high"] for i in range(1, len(last_highs)))
+        if not descending:
+            return None
+        # Linear regression: line through swing highs
+        xs = [h["idx"] for h in last_highs]
+        ys = [h["high"] for h in last_highs]
+        n = len(xs)
+        sum_x = sum(xs); sum_y = sum(ys)
+        sum_xy = sum(x * y for x, y in zip(xs, ys))
+        sum_xx = sum(x * x for x in xs)
+        denom = n * sum_xx - sum_x * sum_x
+        if denom == 0:
+            return None
+        slope = (n * sum_xy - sum_x * sum_y) / denom
+        intercept = (sum_y - slope * sum_x) / n
+        today_idx = len(lookback) - 1
+        projected = slope * today_idx + intercept
+        today_close = float(lookback.iloc[-1]["close"])
+        # Need close > projected trendline + 0.5%
+        if today_close <= projected * 1.005:
+            return None
+        # Volume confirmation
+        today_vol = float(lookback.iloc[-1]["volume"])
+        avg_vol = float(lookback["volume"].tail(20).mean()) if len(lookback) >= 20 else 0
+        vol_confirms = avg_vol > 0 and today_vol >= avg_vol * 1.3
+        score = 15
+        if today_close > projected * 1.02:
+            score += 3
+        if vol_confirms:
+            score += 5
+        return {
+            "type": "CHANNEL_BREAKOUT",
+            "detected": True,
+            "score": min(score, 22),
+            "trendline_at_today": round(projected, 2),
+            "today_close": round(today_close, 2),
+            "breakout_pct": round((today_close - projected) / projected * 100, 2),
+            "vol_confirms": vol_confirms,
+            "detail": (
+                f"Broke falling trendline (was ৳{projected:.1f}) "
+                f"by {(today_close - projected) / projected * 100:.1f}%, "
+                f"vol {'confirmed' if vol_confirms else 'normal'}"
+            ),
+        }
+    except Exception:
+        return None
+
+
+def detect_harmonic_pattern(df, tolerance=0.10):
+    """Detect bullish harmonic patterns (Butterfly, Gartley, Bat, Crab, Cypher, Shark).
+
+    Each pattern is XABCD swing structure with specific Fibonacci ratio
+    constraints. We find the 5 most recent significant swing points,
+    label them X→A→B→C→D, and check against known templates with `tolerance`
+    (10% by default) on each ratio.
+
+    Only BULLISH versions detected (X high → A low → B high → C low → D low/PRZ).
+    """
+    try:
+        if df is None or len(df) < 30:
+            return None
+        lookback = df.tail(60).reset_index(drop=True)
+        # Find significant swing points (5-bar pivots, larger lookback)
+        swings = []
+        for i in range(5, len(lookback) - 5):
+            window = lookback.iloc[i - 5 : i + 6]
+            high = float(lookback.iloc[i]["high"])
+            low = float(lookback.iloc[i]["low"])
+            if high == float(window["high"].max()):
+                swings.append({"idx": i, "price": high, "type": "high"})
+            elif low == float(window["low"].min()):
+                swings.append({"idx": i, "price": low, "type": "low"})
+        # Need at least 4 alternating swings (X-A-B-C, D = current)
+        if len(swings) < 4:
+            return None
+        # Take last 4 swings + use current price as D
+        x_swing = swings[-4]
+        a_swing = swings[-3]
+        b_swing = swings[-2]
+        c_swing = swings[-1]
+        # For BULLISH harmonic: X=high, A=low, B=high, C=low, D=current (should be near another low/PRZ)
+        if not (x_swing["type"] == "high" and a_swing["type"] == "low"
+                and b_swing["type"] == "high" and c_swing["type"] == "low"):
+            return None
+        X = x_swing["price"]; A = a_swing["price"]; B = b_swing["price"]; C = c_swing["price"]
+        D = float(lookback.iloc[-1]["close"])  # current candidate D
+        XA = X - A
+        AB = B - A
+        BC = B - C
+        CD = C - D if D < C else D - C
+        XD = X - D
+        if XA <= 0 or AB <= 0 or BC <= 0:
+            return None
+        # Compute ratios
+        AB_XA = AB / XA      # B retracement of XA
+        BC_AB = BC / AB      # C retracement of AB
+        CD_BC = CD / BC      # D extension of BC
+        XD_XA = (X - D) / XA  # D extension of XA from X
+
+        def near(val, target, tol=tolerance):
+            return abs(val - target) / target <= tol
+
+        # Pattern templates (bullish completion at D)
+        patterns = []
+        # GARTLEY: AB=0.618 XA, BC=0.382-0.886 AB, CD=1.13-1.618 BC, XD=0.786 XA
+        if near(AB_XA, 0.618) and (0.382 <= BC_AB <= 0.886) and (1.13 <= CD_BC <= 1.618) and near(XD_XA, 0.786):
+            patterns.append(("BULLISH_GARTLEY", 22))
+        # BAT: AB=0.382-0.50 XA, BC=0.382-0.886, CD=1.618-2.618, XD=0.886
+        if (0.382 <= AB_XA <= 0.50) and (0.382 <= BC_AB <= 0.886) and (1.618 <= CD_BC <= 2.618) and near(XD_XA, 0.886):
+            patterns.append(("BULLISH_BAT", 25))
+        # BUTTERFLY: AB=0.786 XA, BC=0.382-0.886, CD=1.618-2.24, XD=1.27
+        if near(AB_XA, 0.786) and (0.382 <= BC_AB <= 0.886) and (1.618 <= CD_BC <= 2.24) and near(XD_XA, 1.27):
+            patterns.append(("BULLISH_BUTTERFLY", 27))
+        # CRAB: AB=0.382-0.618, BC=0.382-0.886, CD=2.24-3.618, XD=1.618
+        if (0.382 <= AB_XA <= 0.618) and (0.382 <= BC_AB <= 0.886) and (2.24 <= CD_BC <= 3.618) and near(XD_XA, 1.618):
+            patterns.append(("BULLISH_CRAB", 28))
+        # CYPHER: AB=0.382-0.618, BC=1.13-1.414, CD=0.786 XC (not BC), XD=0.786 XA
+        XC = X - C
+        if XC > 0:
+            CD_XC = (C - D) / XC if D < C else (D - C) / XC
+            if (0.382 <= AB_XA <= 0.618) and (1.13 <= BC_AB <= 1.414) and near(CD_XC, 0.786) and near(XD_XA, 0.786):
+                patterns.append(("BULLISH_CYPHER", 24))
+
+        if not patterns:
+            return None
+        # Take the highest-score pattern
+        patterns.sort(key=lambda p: -p[1])
+        chosen, base_score = patterns[0]
+        # Confirm: today should be at/near D (bullish reversal candidate)
+        today_green = float(lookback.iloc[-1]["close"]) > float(lookback.iloc[-1]["open"])
+        if today_green:
+            base_score += 3
+        return {
+            "type": chosen,
+            "detected": True,
+            "score": min(base_score, 30),
+            "X": round(X, 2), "A": round(A, 2), "B": round(B, 2), "C": round(C, 2), "D": round(D, 2),
+            "AB_XA": round(AB_XA, 3),
+            "BC_AB": round(BC_AB, 3),
+            "CD_BC": round(CD_BC, 3),
+            "XD_XA": round(XD_XA, 3),
+            "detail": (
+                f"{chosen.replace('_', ' ').title()} XABCD at "
+                f"X=৳{X:.1f} A=৳{A:.1f} B=৳{B:.1f} C=৳{C:.1f} D=৳{D:.1f} "
+                f"(AB/XA={AB_XA:.2f}, XD/XA={XD_XA:.2f})"
+            ),
+        }
+    except Exception:
+        return None
+
+
+def detect_elliott_wave(df):
+    """Detect a bullish Elliott Wave 3 or Wave 5 setup.
+
+    Simplified: looks for 5-wave impulse structure where:
+    - Wave 1 is a clear up-move from recent low
+    - Wave 2 retraces 38-78% of Wave 1
+    - Wave 3 is the longest of 1/3/5 and breaks above Wave 1 high
+    - Wave 4 retraces 23-50% of Wave 3 (cannot overlap Wave 1 territory)
+    - Wave 5 is currently forming OR Wave 3 is in progress
+
+    Returns BUY signal when at start of Wave 3 (post Wave 2 low) or
+    start of Wave 5 (post Wave 4 low).
+    """
+    try:
+        if df is None or len(df) < 30:
+            return None
+        lookback = df.tail(60).reset_index(drop=True)
+        # Find swing points
+        swings = []
+        for i in range(4, len(lookback) - 4):
+            window = lookback.iloc[i - 4 : i + 5]
+            high = float(lookback.iloc[i]["high"])
+            low = float(lookback.iloc[i]["low"])
+            if high == float(window["high"].max()):
+                swings.append({"idx": i, "price": high, "type": "high"})
+            elif low == float(window["low"].min()):
+                swings.append({"idx": i, "price": low, "type": "low"})
+        if len(swings) < 5:
+            return None
+        # Look for L H L H L pattern (start with Wave 1 from low)
+        # Target: most recent low that could be Wave 2 or Wave 4
+        # We assume the previous 5 swings represent: Start-Low(0), Wave1-High(1), Wave2-Low(2), Wave3-High(3), Wave4-Low(4), Today=Wave5-start
+        last5 = swings[-5:]
+        types = [s["type"] for s in last5]
+        if types != ["low", "high", "low", "high", "low"]:
+            return None
+        w0_low = last5[0]["price"]
+        w1_high = last5[1]["price"]
+        w2_low = last5[2]["price"]
+        w3_high = last5[3]["price"]
+        w4_low = last5[4]["price"]
+        cur = float(lookback.iloc[-1]["close"])
+
+        # Validate wave structure
+        wave1 = w1_high - w0_low
+        wave2 = w1_high - w2_low
+        wave3 = w3_high - w2_low
+        wave4 = w3_high - w4_low
+
+        if wave1 <= 0 or wave2 <= 0 or wave3 <= 0 or wave4 <= 0:
+            return None
+        # Wave 2 retraces 23-78% of Wave 1
+        w2_retrace = wave2 / wave1
+        # Wave 3 longer than wave 1 (cannot be shortest)
+        if wave3 <= wave1 * 1.0:
+            return None
+        # Wave 3 high > Wave 1 high (extension)
+        if w3_high <= w1_high:
+            return None
+        # Wave 4 cannot overlap Wave 1 territory (w4_low > w1_high)
+        if w4_low <= w1_high:
+            return None
+        # Wave 4 retraces 14-50% of Wave 3
+        w4_retrace = wave4 / wave3
+        if not (0.14 <= w4_retrace <= 0.50):
+            return None
+        # Current position: at/near w4_low = start of Wave 5
+        today_near_w4 = cur <= w4_low * 1.05  # within 5% above w4 low
+        today_green = float(lookback.iloc[-1]["close"]) > float(lookback.iloc[-1]["open"])
+        if not (today_near_w4 and today_green):
+            # Maybe we're starting Wave 5 already
+            if cur < w4_low:
+                return None
+        score = 20  # Wave 5 setups
+        if today_green:
+            score += 3
+        if w2_retrace >= 0.5:  # deeper W2 = stronger structure
+            score += 2
+        return {
+            "type": "ELLIOTT_WAVE_5_START",
+            "detected": True,
+            "score": min(score, 25),
+            "wave1_pct": round(wave1 / w0_low * 100, 1),
+            "wave3_pct": round(wave3 / w2_low * 100, 1),
+            "w2_retrace": round(w2_retrace, 2),
+            "w4_retrace": round(w4_retrace, 2),
+            "targets": {
+                "w5_min": round(w4_low + wave1 * 0.618, 2),  # 0.618 of Wave 1
+                "w5_target": round(w4_low + wave1, 2),       # equal to Wave 1
+                "w5_extension": round(w4_low + wave1 * 1.618, 2),
+            },
+            "detail": (
+                f"Elliott Wave 5 setup: W1=+{wave1/w0_low*100:.0f}%, "
+                f"W2 retrace {w2_retrace*100:.0f}%, W3=+{wave3/w2_low*100:.0f}%, "
+                f"W4 retrace {w4_retrace*100:.0f}%. "
+                f"W5 target ৳{w4_low + wave1:.1f}"
+            ),
+        }
+    except Exception:
+        return None
+
+
 def compute_analyst_verdict(chart_data, analysis, today_candle, pattern_failure, flow_divergence,
                             volume_signature=None, absorption_pattern=None,
                             capitulation_bounce=None, uptrend_higher_low=None,
-                            bullish_candle_pattern=None, range_breakout=None):
+                            bullish_candle_pattern=None, range_breakout=None,
+                            volume_climax=None, double_bottom=None,
+                            channel_breakout=None, harmonic_pattern=None,
+                            elliott_wave=None):
     """Synthesise all observations like an experienced analyst.
 
     Combines:
@@ -1116,6 +1520,52 @@ def compute_analyst_verdict(chart_data, analysis, today_candle, pattern_failure,
                 "factor": "🚀 Range breakout",
                 "score": s,
                 "detail": range_breakout["detail"],
+            })
+
+        # ── Phase 2 + Phase 3 detectors ──
+        if volume_climax and volume_climax.get("detected"):
+            s = volume_climax["score"]
+            score += s
+            factors.append({
+                "factor": "💥 Volume climax reversal",
+                "score": s,
+                "detail": volume_climax["detail"],
+            })
+
+        if double_bottom and double_bottom.get("detected"):
+            s = double_bottom["score"]
+            score += s
+            factors.append({
+                "factor": f"⚓ {double_bottom['type'].replace('_', ' ').title()}",
+                "score": s,
+                "detail": double_bottom["detail"],
+            })
+
+        if channel_breakout and channel_breakout.get("detected"):
+            s = channel_breakout["score"]
+            score += s
+            factors.append({
+                "factor": "📐 Channel breakout",
+                "score": s,
+                "detail": channel_breakout["detail"],
+            })
+
+        if harmonic_pattern and harmonic_pattern.get("detected"):
+            s = harmonic_pattern["score"]
+            score += s
+            factors.append({
+                "factor": f"🦋 {harmonic_pattern['type'].replace('_', ' ').title()}",
+                "score": s,
+                "detail": harmonic_pattern["detail"],
+            })
+
+        if elliott_wave and elliott_wave.get("detected"):
+            s = elliott_wave["score"]
+            score += s
+            factors.append({
+                "factor": "🌊 Elliott Wave",
+                "score": s,
+                "detail": elliott_wave["detail"],
             })
 
         # SMC structural bias
@@ -5229,6 +5679,12 @@ def get_smc_chart(symbol: str, days: int = 180, interval: str = "daily"):
     uptrend_higher_low = detect_uptrend_higher_low(df)
     bullish_candle_pattern = score_bullish_candle_pattern(df, sr_levels)
     range_breakout = detect_range_breakout(df)
+    # NEW Phase 2 + 3 detectors — advanced pattern recognition
+    volume_climax = detect_volume_climax_reversal(df)
+    double_bottom = detect_double_bottom_v2(df)
+    channel_breakout = detect_channel_breakout(df)
+    harmonic_pattern = detect_harmonic_pattern(df)
+    elliott_wave = detect_elliott_wave(df)
     # Build a minimal chart_data dict for the verdict computation
     _chart_for_verdict = {
         "order_flow": order_flow,
@@ -5243,6 +5699,11 @@ def get_smc_chart(symbol: str, days: int = 180, interval: str = "daily"):
         uptrend_higher_low=uptrend_higher_low,
         bullish_candle_pattern=bullish_candle_pattern,
         range_breakout=range_breakout,
+        volume_climax=volume_climax,
+        double_bottom=double_bottom,
+        channel_breakout=channel_breakout,
+        harmonic_pattern=harmonic_pattern,
+        elliott_wave=elliott_wave,
     )
     if isinstance(analysis, dict):
         analysis["analyst_verdict"] = analyst_verdict
@@ -5255,6 +5716,11 @@ def get_smc_chart(symbol: str, days: int = 180, interval: str = "daily"):
         analysis["uptrend_higher_low"] = uptrend_higher_low
         analysis["bullish_candle_pattern"] = bullish_candle_pattern
         analysis["range_breakout"] = range_breakout
+        analysis["volume_climax"] = volume_climax
+        analysis["double_bottom"] = double_bottom
+        analysis["channel_breakout"] = channel_breakout
+        analysis["harmonic_pattern"] = harmonic_pattern
+        analysis["elliott_wave"] = elliott_wave
 
     return {
         "symbol": symbol.upper(),
