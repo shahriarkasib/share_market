@@ -647,6 +647,135 @@ async def get_live_signals(
     return out
 
 
+@router.get("/daily-summary")
+async def get_daily_summary(date: str | None = None):
+    """End-of-day summary: BUY signals from today + next-day confirmation rules.
+
+    For each BUY/STRONG_BUY signal triggered today, compute precise levels
+    a trader should watch tomorrow to confirm the buy before entering.
+    """
+    import json as _json
+    from datetime import datetime, timedelta
+    from database import get_connection
+    from config import is_signal_quality_symbol
+
+    target_date = date or datetime.now().date().isoformat()
+    conn = get_connection()
+
+    # Sector map for quality filter
+    sec_rows = conn.execute("SELECT symbol, sector FROM fundamentals").fetchall()
+    sec_map = {sr["symbol"]: sr.get("sector") for sr in sec_rows}
+
+    # Pull today's BUY/STRONG_BUY signals (latest row per symbol)
+    rows = conn.execute(
+        """SELECT DISTINCT ON (symbol) *
+           FROM live_signals
+           WHERE (market = 'dse' OR market IS NULL)
+             AND signal_level IN ('BUY', 'STRONG_BUY')
+             AND first_triggered::date = %s
+           ORDER BY symbol, first_triggered DESC, id DESC""",
+        (target_date,),
+    ).fetchall()
+
+    summary = []
+    for r in rows:
+        d = dict(r)
+        sym = d.get("symbol", "")
+        if not is_signal_quality_symbol(sym, sec_map.get(sym, "")):
+            continue
+
+        # Decode JSONB
+        for k in ("analyst_verdict", "volume_signature", "absorption_pattern",
+                  "bid_ladder", "htf_bias", "today_candle_quality"):
+            v = d.get(k)
+            if isinstance(v, str):
+                try: d[k] = _json.loads(v)
+                except Exception: d[k] = None
+
+        # Pull today's daily candle to derive confirmation levels
+        candle = conn.execute(
+            """SELECT date, open, high, low, close, volume
+               FROM daily_prices
+               WHERE symbol = %s AND date = %s
+               LIMIT 1""",
+            (sym, target_date),
+        ).fetchone()
+
+        # Pull prior 20-day avg volume
+        avg_vol_row = conn.execute(
+            """SELECT AVG(volume) AS av
+               FROM daily_prices
+               WHERE symbol = %s AND date < %s
+               ORDER BY date DESC LIMIT 20""",
+            (sym, target_date),
+        ).fetchone()
+
+        confirmation = {}
+        if candle:
+            t_open = float(candle["open"])
+            t_high = float(candle["high"])
+            t_low = float(candle["low"])
+            t_close = float(candle["close"])
+            t_range = max(t_high - t_low, 0.01)
+
+            # Confirmation rules for tomorrow
+            confirmation = {
+                "today_ohlc": {
+                    "open": round(t_open, 2),
+                    "high": round(t_high, 2),
+                    "low": round(t_low, 2),
+                    "close": round(t_close, 2),
+                },
+                "min_confirm_open": round(t_close * 1.000, 2),  # gap up or flat
+                "strong_confirm_open": round(t_close * 1.005, 2),  # gap up >0.5%
+                "must_hold_30min": round(t_close * 0.99, 2),  # don't break -1%
+                "invalidation_low": round(t_low * 0.995, 2),  # if breaks today's low -0.5%
+                "first_target": round(t_close * 1.02, 2),  # +2% first scalp
+                "buy_zone_low": round(t_close * 0.995, 2),
+                "buy_zone_high": round(t_close * 1.005, 2),
+            }
+            if avg_vol_row and avg_vol_row["av"]:
+                avg_vol = float(avg_vol_row["av"])
+                confirmation["min_volume_first_hour"] = int(avg_vol * 0.15)  # 15% of daily by 11am
+                confirmation["strong_volume_first_hour"] = int(avg_vol * 0.25)
+
+        # Pick out top 3 verdict factors for context
+        verdict = d.get("analyst_verdict") or {}
+        top_factors = sorted(
+            verdict.get("factors", []),
+            key=lambda f: abs(f.get("score", 0)),
+            reverse=True,
+        )[:5]
+
+        summary.append({
+            "symbol": sym,
+            "trigger_time": d.get("first_triggered").isoformat() if hasattr(d.get("first_triggered"), "isoformat") else str(d.get("first_triggered")),
+            "trigger_price": float(d["actual_trigger_price"]) if d.get("actual_trigger_price") else None,
+            "current_price": float(d["current_price"]) if d.get("current_price") else None,
+            "close_price": float(candle["close"]) if candle else (float(d["current_price"]) if d.get("current_price") else None),
+            "verdict": verdict.get("verdict"),
+            "verdict_summary": verdict.get("summary"),
+            "analyst_score": float(d["analyst_score"]) if d.get("analyst_score") is not None else None,
+            "composite_score": float(d["composite_score"]) if d.get("composite_score") is not None else None,
+            "stop_loss": float(d["stop_loss"]) if d.get("stop_loss") else None,
+            "target1": float(d["target1"]) if d.get("target1") else None,
+            "target2": float(d["target2"]) if d.get("target2") else None,
+            "rvol": float(d["rvol"]) if d.get("rvol") is not None else None,
+            "top_factors": top_factors,
+            "bid_ladder": d.get("bid_ladder"),
+            "confirmation": confirmation,
+        })
+
+    # Sort by analyst_score DESC
+    summary.sort(key=lambda x: -(x.get("analyst_score") or -999))
+    conn.close()
+    return {
+        "date": target_date,
+        "count": len(summary),
+        "signals": summary,
+    }
+
+
 @router.get("/smart-money-radar")
 async def smart_money_radar(side: str = "all", min_trades: int = 5,
                               since_minutes: int = 240, limit: int = 50):

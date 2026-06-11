@@ -421,6 +421,50 @@ export interface LiveCompositeSignal {
   } | null;
 }
 
+export interface DailySummarySignal {
+  symbol: string;
+  trigger_time: string;
+  trigger_price: number | null;
+  current_price: number | null;
+  close_price: number | null;
+  verdict: string | null;
+  verdict_summary: string | null;
+  analyst_score: number | null;
+  composite_score: number | null;
+  stop_loss: number | null;
+  target1: number | null;
+  target2: number | null;
+  rvol: number | null;
+  top_factors: Array<{ factor: string; score: number; detail: string }>;
+  bid_ladder: Array<{ price: number; size_pct: number; label: string; edge?: string }> | null;
+  confirmation: {
+    today_ohlc?: { open: number; high: number; low: number; close: number };
+    min_confirm_open?: number;
+    strong_confirm_open?: number;
+    must_hold_30min?: number;
+    invalidation_low?: number;
+    first_target?: number;
+    buy_zone_low?: number;
+    buy_zone_high?: number;
+    min_volume_first_hour?: number;
+    strong_volume_first_hour?: number;
+  };
+}
+
+export async function fetchDailySummary(date?: string): Promise<{
+  date: string;
+  count: number;
+  signals: DailySummarySignal[];
+}> {
+  const params: Record<string, string> = {};
+  if (date) params.date = date;
+  const { data } = await api.get<{ date: string; count: number; signals: DailySummarySignal[] }>(
+    "/market/daily-summary",
+    { params },
+  );
+  return data;
+}
+
 export async function fetchLiveCompositeSignals(
   status: string = "active",
   minScore: number = 0,

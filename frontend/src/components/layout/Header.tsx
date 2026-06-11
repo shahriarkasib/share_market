@@ -1,6 +1,6 @@
 import { NavLink } from "react-router-dom";
 import { useState, useEffect } from "react";
-import { Activity, BarChart3, Grid3X3, Table2, Menu, X, LineChart, TrendingUp, Newspaper, Calendar, Percent, ShieldAlert, Zap, Layers, Target, Globe } from "lucide-react";
+import { Activity, BarChart3, Grid3X3, Table2, Menu, X, LineChart, TrendingUp, Newspaper, Calendar, Percent, ShieldAlert, Zap, Layers, Target, Globe, ClipboardList } from "lucide-react";
 import { clsx } from "clsx";
 import { useMarketStore } from "../../store/marketStore.ts";
 import SymbolSearch from "../search/SymbolSearch.tsx";
@@ -13,6 +13,7 @@ const links = [
   { to: "/chart", label: "Chart", icon: LineChart },
   { to: "/smc-chart/GP", label: "SMC", icon: Layers },
   { to: "/live-signals", label: "Live Signals", icon: Target },
+  { to: "/daily-summary", label: "Daily Summary", icon: ClipboardList },
   { to: "/smart-money", label: "Smart Money", icon: Activity },
   { to: "/accuracy", label: "Accuracy", icon: TrendingUp },
   { to: "/signals", label: "Signals", icon: Target },
