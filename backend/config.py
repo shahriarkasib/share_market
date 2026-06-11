@@ -7,7 +7,7 @@ from datetime import time
 # DSE Market Configuration
 DSE_TIMEZONE = pytz.timezone("Asia/Dhaka")
 MARKET_OPEN_TIME = time(10, 0)   # 10:00 AM BST
-MARKET_CLOSE_TIME = time(14, 30)  # 2:30 PM BST
+MARKET_CLOSE_TIME = time(14, 0)  # 2:00 PM BST (updated Jun 2026)
 MARKET_DAYS = [6, 0, 1, 2, 3]    # Sun=6, Mon=0, Tue=1, Wed=2, Thu=3
 
 # ─── Signal Quality Filters ────────────────────────────────────────────────
