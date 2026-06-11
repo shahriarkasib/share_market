@@ -1012,6 +1012,79 @@ def detect_range_breakout(df):
         return None
 
 
+def detect_short_term_shelf(df, band_pct=0.012, min_touches=3, lookback=15):
+    """Detect a YOUNG multi-touch support floor (a 'shelf').
+
+    The classic S/R detector only registers big swing pivots over months.
+    This catches 10-15 day floors where intraday lows cluster within ~1%
+    — e.g. DESHBANDHU's ৳20.5-20.8 zone tested 5× in 10 days. These are
+    the levels retail can actually trade with tight stops.
+
+    Returns shelf info + whether price is currently sitting ON the shelf.
+    """
+    try:
+        if df is None or len(df) < lookback + 2:
+            return None
+        recent = df.tail(lookback).reset_index(drop=True)
+        lows = [float(r["low"]) for _, r in recent.iterrows()]
+        closes = [float(r["close"]) for _, r in recent.iterrows()]
+        cur = closes[-1]
+        if cur <= 0:
+            return None
+        # Cluster lows: for each candidate level, count lows within band
+        best = None
+        for candidate in lows:
+            if candidate <= 0:
+                continue
+            band = candidate * band_pct
+            touches = [i for i, lo in enumerate(lows) if abs(lo - candidate) <= band]
+            if len(touches) >= min_touches:
+                # All closes after touching must have HELD (closed above candidate - band)
+                held = all(closes[i] >= candidate - band for i in touches)
+                if not held:
+                    continue
+                level = sum(lows[i] for i in touches) / len(touches)
+                if best is None or len(touches) > best["touches"]:
+                    best = {
+                        "level": round(level, 2),
+                        "touches": len(touches),
+                        "first_touch_idx": min(touches),
+                        "last_touch_idx": max(touches),
+                    }
+        if not best:
+            return None
+        level = best["level"]
+        # Price must be near the shelf (within 3% above) for it to matter NOW
+        dist_pct = (cur - level) / level * 100
+        on_shelf = -0.5 <= dist_pct <= 3.0
+        # Shelf must NOT be broken (current close above level - band)
+        if cur < level * (1 - band_pct):
+            return None
+        # Score: base 12, +2 per extra touch beyond 3 (cap 18). Only when on shelf.
+        score = 0
+        if on_shelf:
+            score = min(12 + (best["touches"] - min_touches) * 2, 18)
+        # Tight stop suggestion: just below the shelf band
+        stop = round(level * (1 - band_pct - 0.005), 2)
+        return {
+            "type": "SHORT_TERM_SHELF",
+            "detected": True,
+            "score": score,
+            "level": level,
+            "touches": best["touches"],
+            "on_shelf": on_shelf,
+            "dist_pct": round(dist_pct, 2),
+            "suggested_stop": stop,
+            "detail": (
+                f"৳{level:.1f} floor tested {best['touches']}× in {lookback}d, all held"
+                + (f" — price ON shelf ({dist_pct:+.1f}%), stop ৳{stop:.1f}" if on_shelf
+                   else f" — price {dist_pct:+.1f}% above")
+            ),
+        }
+    except Exception:
+        return None
+
+
 def detect_volume_climax_reversal(df):
     """Detect a sell-off climax: huge red volume day, long lower wick, then reversal.
 
@@ -1419,7 +1492,7 @@ def compute_analyst_verdict(chart_data, analysis, today_candle, pattern_failure,
                             bullish_candle_pattern=None, range_breakout=None,
                             volume_climax=None, double_bottom=None,
                             channel_breakout=None, harmonic_pattern=None,
-                            elliott_wave=None):
+                            elliott_wave=None, short_term_shelf=None):
     """Synthesise all observations like an experienced analyst.
 
     Combines:
@@ -1566,6 +1639,15 @@ def compute_analyst_verdict(chart_data, analysis, today_candle, pattern_failure,
                 "factor": "🌊 Elliott Wave",
                 "score": s,
                 "detail": elliott_wave["detail"],
+            })
+
+        if short_term_shelf and short_term_shelf.get("detected") and short_term_shelf.get("score", 0) > 0:
+            s = short_term_shelf["score"]
+            score += s
+            factors.append({
+                "factor": "🪨 Short-term shelf",
+                "score": s,
+                "detail": short_term_shelf["detail"],
             })
 
         # SMC structural bias
@@ -5126,6 +5208,28 @@ def get_smc_chart(symbol: str, days: int = 180, interval: str = "daily"):
     except Exception:
         pass
 
+    # Young multi-touch shelf (10-15d floor the pivot detector misses).
+    # Added to sr_levels so the chart, verdict and bid ladder all see it.
+    try:
+        _shelf = detect_short_term_shelf(df)
+        if _shelf and _shelf.get("detected"):
+            _shelf_price = _shelf["level"]
+            # skip if an existing support is already within 1.5% (avoid dupes)
+            dup = any(
+                s.get("role") == "support" and abs(float(s["price"]) - _shelf_price) / _shelf_price < 0.015
+                for s in sr_levels
+            )
+            if not dup:
+                sr_levels.append({
+                    "price": _shelf_price,
+                    "touches": _shelf["touches"],
+                    "role": "support",
+                    "strength": "shelf",  # marks it as a young floor
+                    "last_touch_time": None,
+                })
+    except Exception:
+        pass
+
     # Phase 4 candlestick patterns
     candle_patterns_raw = []
     try:
@@ -5685,6 +5789,7 @@ def get_smc_chart(symbol: str, days: int = 180, interval: str = "daily"):
     channel_breakout = detect_channel_breakout(df)
     harmonic_pattern = detect_harmonic_pattern(df)
     elliott_wave = detect_elliott_wave(df)
+    short_term_shelf = detect_short_term_shelf(df)
     # Build a minimal chart_data dict for the verdict computation
     _chart_for_verdict = {
         "order_flow": order_flow,
@@ -5704,6 +5809,7 @@ def get_smc_chart(symbol: str, days: int = 180, interval: str = "daily"):
         channel_breakout=channel_breakout,
         harmonic_pattern=harmonic_pattern,
         elliott_wave=elliott_wave,
+        short_term_shelf=short_term_shelf,
     )
     if isinstance(analysis, dict):
         analysis["analyst_verdict"] = analyst_verdict
@@ -5721,6 +5827,7 @@ def get_smc_chart(symbol: str, days: int = 180, interval: str = "daily"):
         analysis["channel_breakout"] = channel_breakout
         analysis["harmonic_pattern"] = harmonic_pattern
         analysis["elliott_wave"] = elliott_wave
+        analysis["short_term_shelf"] = short_term_shelf
 
     return {
         "symbol": symbol.upper(),
