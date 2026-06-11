@@ -110,9 +110,6 @@ export default function DailySummary() {
                   <span className={`text-xs px-2 py-0.5 rounded border ${verdictPill(s.verdict)}`}>
                     {s.verdict || "—"}
                   </span>
-                  <span className="text-xs text-[var(--text-muted)]">
-                    Score {s.analyst_score != null && s.analyst_score >= 0 ? "+" : ""}{s.analyst_score}
-                  </span>
                   {s.rvol != null && (
                     <span className="text-xs text-[var(--text-muted)]">
                       RVOL {s.rvol.toFixed(1)}×
@@ -150,7 +147,7 @@ export default function DailySummary() {
                         }`}
                         title={f.detail}
                       >
-                        {f.score >= 0 ? "+" : ""}{f.score} {f.factor}
+                        {f.factor}
                       </span>
                     ))}
                   </div>

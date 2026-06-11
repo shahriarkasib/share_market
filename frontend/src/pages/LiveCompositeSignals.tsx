@@ -214,7 +214,6 @@ export default function LiveCompositeSignals({ market = "dse" }: Props = {}) {
               <th className="text-right px-3 py-2 font-medium">T+2 Close</th>
               <th className="text-right px-3 py-2 font-medium">T+5 Close</th>
               <th className="text-left px-3 py-2 font-medium">Verdict</th>
-              <th className="text-right px-3 py-2 font-medium">Score</th>
               <th className="text-right px-3 py-2 font-medium">Stop</th>
               <th className="text-right px-3 py-2 font-medium">Target 1</th>
               <th className="text-right px-3 py-2 font-medium">Target 2</th>
@@ -225,7 +224,7 @@ export default function LiveCompositeSignals({ market = "dse" }: Props = {}) {
           <tbody>
             {signals.length === 0 && !loading && (
               <tr>
-                <td colSpan={16} className="px-3 py-8 text-center text-[var(--text-muted)]">
+                <td colSpan={15} className="px-3 py-8 text-center text-[var(--text-muted)]">
                   No signals.
                 </td>
               </tr>
@@ -278,13 +277,6 @@ export default function LiveCompositeSignals({ market = "dse" }: Props = {}) {
                   </td>
                   <td className={`px-3 py-2 text-xs ${verdictColor(verdict)}`}>
                     {verdict || "—"}
-                  </td>
-                  <td className="px-3 py-2 text-right font-mono text-xs">
-                    {s.analyst_score != null ? (
-                      <span className={s.analyst_score >= 25 ? "text-emerald-400" : s.analyst_score <= -25 ? "text-red-400" : "text-[var(--text-muted)]"}>
-                        {s.analyst_score >= 0 ? "+" : ""}{s.analyst_score}
-                      </span>
-                    ) : "—"}
                   </td>
                   <td className="px-3 py-2 text-right font-mono text-xs text-[var(--text-muted)]">
                     {fmtPrice(s.stop_loss, cur)}
