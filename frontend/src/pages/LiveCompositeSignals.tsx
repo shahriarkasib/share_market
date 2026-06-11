@@ -83,7 +83,15 @@ export default function LiveCompositeSignals({ market = "dse" }: Props = {}) {
         const tb = b.first_triggered ? new Date(b.first_triggered).getTime() : 0;
         return tb - ta;
       });
-      setSignals(data);
+      // Dedupe: keep only the MOST RECENT trigger per symbol (data is already
+      // sorted DESC by first_triggered so the first occurrence wins).
+      const seen = new Set<string>();
+      const deduped = data.filter((s) => {
+        if (seen.has(s.symbol)) return false;
+        seen.add(s.symbol);
+        return true;
+      });
+      setSignals(deduped);
       setLastRefresh(new Date());
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : String(e));
