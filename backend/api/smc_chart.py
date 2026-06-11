@@ -724,8 +724,298 @@ def detect_absorption_pattern(df, vsa_events, order_blocks=None, current_price=N
         return None
 
 
+def detect_capitulation_bounce(df):
+    """Detect the FIRST GREEN candle after N+ red days with declining volume.
+
+    Classic SAIHAMCOT-style reversal: heavy sell-off exhausts, sellers
+    run out, first green day = the buy. Catches reversals our trend-
+    following detectors miss.
+    """
+    try:
+        if df is None or len(df) < 10:
+            return None
+        recent = df.tail(8).copy()
+        if len(recent) < 5:
+            return None
+        last = recent.iloc[-1]
+        # Today must be green
+        today_green = float(last["close"]) > float(last["open"])
+        if not today_green:
+            return None
+        # Count consecutive red days BEFORE today
+        red_streak = 0
+        for i in range(len(recent) - 2, -1, -1):
+            r = recent.iloc[i]
+            if float(r["close"]) < float(r["open"]):
+                red_streak += 1
+            else:
+                break
+        if red_streak < 3:
+            return None
+        # Volume should be DECLINING during the red streak (sellers exhausting)
+        red_vols = [float(recent.iloc[len(recent) - 2 - i]["volume"]) for i in range(red_streak)
+                    if float(recent.iloc[len(recent) - 2 - i]["volume"]) > 0]
+        vol_declining = len(red_vols) >= 2 and red_vols[0] < red_vols[-1]
+        # Today's volume vs red-streak average — bonus if > average
+        today_vol = float(last["volume"]) if float(last["volume"]) > 0 else 0
+        avg_red_vol = sum(red_vols) / len(red_vols) if red_vols else 0
+        vol_surge = avg_red_vol > 0 and today_vol >= avg_red_vol * 1.2
+        # Today's close > today's open AND close near today's high (real conviction)
+        body_pct = (float(last["close"]) - float(last["open"])) / max(float(last["high"]) - float(last["low"]), 0.01) * 100
+        close_strength = (float(last["close"]) - float(last["low"])) / max(float(last["high"]) - float(last["low"]), 0.01)
+        if body_pct < 30 or close_strength < 0.6:
+            return None
+        # Score
+        score = 15  # base
+        if red_streak >= 5:
+            score += 5
+        if vol_declining:
+            score += 3
+        if vol_surge:
+            score += 5
+        if close_strength >= 0.85:
+            score += 5
+        return {
+            "type": "CAPITULATION_BOUNCE",
+            "detected": True,
+            "score": min(score, 25),
+            "red_streak": red_streak,
+            "vol_declining": vol_declining,
+            "vol_surge": vol_surge,
+            "body_pct": round(body_pct, 1),
+            "close_strength": round(close_strength, 2),
+            "detail": (
+                f"First green after {red_streak} red days, "
+                f"vol {'surging' if vol_surge else 'declining' if vol_declining else 'flat'}, "
+                f"close {close_strength*100:.0f}% of range"
+            ),
+        }
+    except Exception:
+        return None
+
+
+def detect_uptrend_higher_low(df):
+    """Detect a confirmed uptrend bouncing off a higher low.
+
+    Catches DSSL-style slow grind uptrends where every higher low is
+    buyable but the daily verdict scores low because no single day is
+    parabolic.
+    """
+    try:
+        if df is None or len(df) < 60:
+            return None
+        # Find swing lows in last 60 bars (3-bar pivot: lower than ±3 neighbours)
+        lookback = df.tail(60).copy().reset_index(drop=True)
+        lows = []
+        for i in range(3, len(lookback) - 3):
+            window = lookback.iloc[i - 3 : i + 4]
+            if float(lookback.iloc[i]["low"]) == float(window["low"].min()):
+                lows.append({"idx": i, "low": float(lookback.iloc[i]["low"]),
+                             "date": lookback.iloc[i].get("date")})
+        if len(lows) < 3:
+            return None
+        # Take the last 3-4 swing lows — must be HIGHER each time
+        last_lows = lows[-4:] if len(lows) >= 4 else lows[-3:]
+        higher_lows = all(last_lows[i]["low"] > last_lows[i - 1]["low"] for i in range(1, len(last_lows)))
+        if not higher_lows:
+            return None
+        n_lows = len(last_lows)
+        # SMA-50 must be rising
+        if len(df) < 50:
+            return None
+        sma50_now = df["close"].tail(50).mean()
+        sma50_prior = df["close"].iloc[-30:-10].mean()  # 20-bar window ending 10 ago
+        sma50_rising = sma50_now > sma50_prior
+        # Today's price must be at/near a recent low (pullback to support)
+        last = df.iloc[-1]
+        recent_low = lookback.tail(10)["low"].min()
+        near_pullback = float(last["close"]) <= float(recent_low) * 1.04  # within 4%
+        # OR today is making a NEW higher low itself
+        making_new_hl = float(last["low"]) >= last_lows[-1]["low"] * 0.99
+        if not (near_pullback or making_new_hl):
+            return None
+        # Bonus: today is green (real bounce, not still falling)
+        today_green = float(last["close"]) >= float(last["open"])
+        # Score
+        score = 18  # base
+        if n_lows >= 4:
+            score += 4
+        if sma50_rising:
+            score += 5
+        if today_green:
+            score += 3
+        swing_str = " → ".join("৳{:.1f}".format(L["low"]) for L in last_lows)
+        return {
+            "type": "UPTREND_HIGHER_LOW",
+            "detected": True,
+            "score": min(score, 30),
+            "n_higher_lows": n_lows,
+            "sma50_rising": sma50_rising,
+            "near_pullback": near_pullback,
+            "today_green": today_green,
+            "swing_lows": [round(L["low"], 2) for L in last_lows],
+            "detail": (
+                f"{n_lows} higher lows ({swing_str}), "
+                f"SMA50 {'rising' if sma50_rising else 'flat'}, "
+                f"{'pullback to support' if near_pullback else 'making new HL'}"
+            ),
+        }
+    except Exception:
+        return None
+
+
+def score_bullish_candle_pattern(df, support_resistance=None):
+    """Score bullish candle patterns AT support zones.
+
+    Pure candle patterns: Hammer, Bullish Engulfing, Morning Star,
+    Piercing Line. Each gets bonus points when occurring near a known
+    support level (multi-touch support).
+    """
+    try:
+        if df is None or len(df) < 5:
+            return None
+        last = df.iloc[-1]
+        prev = df.iloc[-2]
+        prev2 = df.iloc[-3] if len(df) >= 3 else None
+
+        O, H, L, C = float(last["open"]), float(last["high"]), float(last["low"]), float(last["close"])
+        body = abs(C - O)
+        range_ = max(H - L, 0.01)
+        upper_wick = H - max(O, C)
+        lower_wick = min(O, C) - L
+
+        pO, pH, pL, pC = float(prev["open"]), float(prev["high"]), float(prev["low"]), float(prev["close"])
+        prev_red = pC < pO
+        prev_body = abs(pC - pO)
+
+        pattern = None
+        base_score = 0
+
+        # 1. HAMMER — small body, long lower wick (2x+ body), small upper wick
+        if lower_wick >= body * 2 and upper_wick <= body * 0.5 and body / range_ < 0.4:
+            pattern = "HAMMER"
+            base_score = 15
+
+        # 2. BULLISH ENGULFING — today green engulfs yesterday red body
+        elif C > O and prev_red and C >= pO and O <= pC and body >= prev_body * 1.0:
+            pattern = "BULLISH_ENGULFING"
+            base_score = 18
+
+        # 3. PIERCING LINE — today green opens below prev red close, closes above prev midpoint
+        elif C > O and prev_red and O < pC and C > (pO + pC) / 2 and C < pO:
+            pattern = "PIERCING_LINE"
+            base_score = 15
+
+        # 4. MORNING STAR — red 2 days ago, small body yesterday, green today closing above midpoint of day-2
+        elif prev2 is not None:
+            p2O, p2C = float(prev2["open"]), float(prev2["close"])
+            p2_red = p2C < p2O
+            p2_big_body = abs(p2C - p2O) > range_ * 0.5
+            mid_body_small = prev_body < abs(p2C - p2O) * 0.5
+            today_green_above_mid = C > O and C > (p2O + p2C) / 2
+            if p2_red and p2_big_body and mid_body_small and today_green_above_mid:
+                pattern = "MORNING_STAR"
+                base_score = 20
+
+        if not pattern:
+            return None
+
+        # Bonus: at support?
+        at_support = False
+        if support_resistance:
+            supports = [
+                float(s.get("price", 0)) for s in support_resistance
+                if s.get("role") == "support" and s.get("touches", 0) >= 2
+            ]
+            if supports:
+                closest = min(supports, key=lambda p: abs(p - L)) if supports else 0
+                if closest > 0 and abs(closest - L) / L < 0.02:  # within 2% of support
+                    at_support = True
+        support_bonus = 5 if at_support else 0
+
+        # Bonus: prior downtrend (this pattern marks a reversal)
+        last_5_closes = [float(df.iloc[-i]["close"]) for i in range(2, 7) if len(df) >= i]
+        downtrend_prior = len(last_5_closes) >= 3 and last_5_closes[0] > last_5_closes[-1]
+        downtrend_bonus = 3 if downtrend_prior else 0
+
+        total = base_score + support_bonus + downtrend_bonus
+        return {
+            "type": pattern,
+            "detected": True,
+            "score": min(total, 20),
+            "at_support": at_support,
+            "downtrend_prior": downtrend_prior,
+            "detail": (
+                f"{pattern.replace('_', ' ').title()}"
+                f"{' at support' if at_support else ''}"
+                f"{' (reversal from downtrend)' if downtrend_prior else ''}"
+            ),
+        }
+    except Exception:
+        return None
+
+
+def detect_range_breakout(df):
+    """Detect a flat-range consolidation breakout with volume confirmation.
+
+    Stock has been ranging tightly for 20-40 days, then today breaks above
+    the range high on volume spike = breakout buy.
+    """
+    try:
+        if df is None or len(df) < 30:
+            return None
+        # Look at last 30 bars (excluding today) for the range
+        range_window = df.iloc[-31:-1] if len(df) >= 31 else df.iloc[:-1]
+        if len(range_window) < 20:
+            return None
+        range_high = float(range_window["high"].max())
+        range_low = float(range_window["low"].min())
+        range_pct = (range_high - range_low) / range_low * 100
+        # Range must be tight (<15% over 30 days)
+        if range_pct > 18:
+            return None
+        # Today must close above range high
+        today = df.iloc[-1]
+        today_close = float(today["close"])
+        today_high = float(today["high"])
+        if today_close <= range_high * 1.005:  # need ≥0.5% above range top
+            return None
+        # Volume must be significantly above range average
+        avg_vol = float(range_window["volume"].mean()) if float(range_window["volume"].mean()) > 0 else 0
+        today_vol = float(today["volume"])
+        if avg_vol == 0 or today_vol < avg_vol * 1.5:
+            return None
+        # Score
+        score = 18  # base
+        if today_vol >= avg_vol * 2.5:
+            score += 5
+        if today_close > range_high * 1.02:  # strong breakout (>2% over)
+            score += 3
+        # Bonus: range was tight (<10% = strong coiling)
+        if range_pct < 10:
+            score += 3
+        return {
+            "type": "RANGE_BREAKOUT",
+            "detected": True,
+            "score": min(score, 25),
+            "range_high": round(range_high, 2),
+            "range_low": round(range_low, 2),
+            "range_pct": round(range_pct, 1),
+            "today_close": round(today_close, 2),
+            "vol_multiple": round(today_vol / avg_vol, 1) if avg_vol > 0 else None,
+            "detail": (
+                f"Breakout above 30d range ৳{range_low:.1f}-{range_high:.1f} ({range_pct:.0f}% wide), "
+                f"close ৳{today_close:.1f}, vol {today_vol/avg_vol:.1f}× average"
+            ),
+        }
+    except Exception:
+        return None
+
+
 def compute_analyst_verdict(chart_data, analysis, today_candle, pattern_failure, flow_divergence,
-                            volume_signature=None, absorption_pattern=None):
+                            volume_signature=None, absorption_pattern=None,
+                            capitulation_bounce=None, uptrend_higher_low=None,
+                            bullish_candle_pattern=None, range_breakout=None):
     """Synthesise all observations like an experienced analyst.
 
     Combines:
@@ -789,6 +1079,43 @@ def compute_analyst_verdict(chart_data, analysis, today_candle, pattern_failure,
                 "factor": f"Wyckoff: {absorption_pattern['type'].replace('_', ' ').title()}",
                 "score": absorption_pattern["score"],
                 "detail": absorption_pattern["reason"],
+            })
+
+        # ── NEW Phase 1 detectors (catches SAIHAMCOT/DSSL-style reversals) ──
+        if capitulation_bounce and capitulation_bounce.get("detected"):
+            s = capitulation_bounce["score"]
+            score += s
+            factors.append({
+                "factor": "💎 Capitulation bounce",
+                "score": s,
+                "detail": capitulation_bounce["detail"],
+            })
+
+        if uptrend_higher_low and uptrend_higher_low.get("detected"):
+            s = uptrend_higher_low["score"]
+            score += s
+            factors.append({
+                "factor": "📈 Uptrend higher-low",
+                "score": s,
+                "detail": uptrend_higher_low["detail"],
+            })
+
+        if bullish_candle_pattern and bullish_candle_pattern.get("detected"):
+            s = bullish_candle_pattern["score"]
+            score += s
+            factors.append({
+                "factor": f"🕯 {bullish_candle_pattern['type'].replace('_', ' ').title()}",
+                "score": s,
+                "detail": bullish_candle_pattern["detail"],
+            })
+
+        if range_breakout and range_breakout.get("detected"):
+            s = range_breakout["score"]
+            score += s
+            factors.append({
+                "factor": "🚀 Range breakout",
+                "score": s,
+                "detail": range_breakout["detail"],
             })
 
         # SMC structural bias
@@ -4897,6 +5224,11 @@ def get_smc_chart(symbol: str, days: int = 180, interval: str = "daily"):
         df, advanced.get("vsa_events", []), order_blocks=order_blocks,
         current_price=_cur_price,
     )
+    # NEW Phase 1 detectors — catches reversals trend-following misses
+    capitulation_bounce = detect_capitulation_bounce(df)
+    uptrend_higher_low = detect_uptrend_higher_low(df)
+    bullish_candle_pattern = score_bullish_candle_pattern(df, sr_levels)
+    range_breakout = detect_range_breakout(df)
     # Build a minimal chart_data dict for the verdict computation
     _chart_for_verdict = {
         "order_flow": order_flow,
@@ -4907,6 +5239,10 @@ def get_smc_chart(symbol: str, days: int = 180, interval: str = "daily"):
     analyst_verdict = compute_analyst_verdict(
         _chart_for_verdict, analysis, today_candle, pattern_failure, flow_divergence,
         volume_signature=volume_signature, absorption_pattern=absorption_pattern,
+        capitulation_bounce=capitulation_bounce,
+        uptrend_higher_low=uptrend_higher_low,
+        bullish_candle_pattern=bullish_candle_pattern,
+        range_breakout=range_breakout,
     )
     if isinstance(analysis, dict):
         analysis["analyst_verdict"] = analyst_verdict
@@ -4915,6 +5251,10 @@ def get_smc_chart(symbol: str, days: int = 180, interval: str = "daily"):
         analysis["flow_divergence"] = flow_divergence
         analysis["volume_signature"] = volume_signature
         analysis["absorption_pattern"] = absorption_pattern
+        analysis["capitulation_bounce"] = capitulation_bounce
+        analysis["uptrend_higher_low"] = uptrend_higher_low
+        analysis["bullish_candle_pattern"] = bullish_candle_pattern
+        analysis["range_breakout"] = range_breakout
 
     return {
         "symbol": symbol.upper(),
