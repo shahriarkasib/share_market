@@ -703,10 +703,11 @@ async def get_daily_summary(date: str | None = None):
 
         # Pull prior 20-day avg volume
         avg_vol_row = conn.execute(
-            """SELECT AVG(volume) AS av
-               FROM daily_prices
-               WHERE symbol = %s AND date < %s
-               ORDER BY date DESC LIMIT 20""",
+            """SELECT AVG(volume) AS av FROM (
+                 SELECT volume FROM daily_prices
+                 WHERE symbol = %s AND date < %s
+                 ORDER BY date DESC LIMIT 20
+               ) t""",
             (sym, target_date),
         ).fetchone()
 
