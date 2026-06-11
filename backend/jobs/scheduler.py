@@ -1019,18 +1019,31 @@ def setup_scheduler() -> AsyncIOScheduler:
         replace_existing=True,
     )
 
-    # Composite signal tracker (every 3 min during market hours)
+    # Composite signal tracker (every 3 min during ACTUAL market hours only)
+    # DSE: 10:00-14:30 BST. Hour="10-14" + cutoff cron after 14:30 below.
     # Slightly offset from fast_pipeline (*/2) so live_prices is fresh when
     # the tracker reads it.
     scheduler.add_job(
         run_composite_signal_tracker,
         trigger=CronTrigger(
             day_of_week="sat,sun,mon,tue,wed,thu",
-            hour="10-15", minute="1,4,7,10,13,16,19,22,25,28,31,34,37,40,43,46,49,52,55,58",
+            hour="10-13", minute="1,4,7,10,13,16,19,22,25,28,31,34,37,40,43,46,49,52,55,58",
             timezone="Asia/Dhaka",
         ),
-        id="composite_signals",
-        name="Composite multi-strategy signal tracker",
+        id="composite_signals_main",
+        name="Composite signal tracker (main session 10:00-13:59)",
+        replace_existing=True,
+    )
+    # Final pass during market close window (14:01-14:28 BST)
+    scheduler.add_job(
+        run_composite_signal_tracker,
+        trigger=CronTrigger(
+            day_of_week="sat,sun,mon,tue,wed,thu",
+            hour=14, minute="1,4,7,10,13,16,19,22,25,28",
+            timezone="Asia/Dhaka",
+        ),
+        id="composite_signals_close",
+        name="Composite signal tracker (close window 14:01-14:28)",
         replace_existing=True,
     )
 
