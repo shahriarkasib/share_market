@@ -111,7 +111,7 @@ export default function LiveCompositeSignals({ market = "dse" }: Props = {}) {
 
   const exportCSV = () => {
     const cols = [
-      "symbol", "first_triggered", "actual_trigger_price", "current_price", "pl_pct",
+      "symbol", "first_triggered", "actual_trigger_price", "current_price", "close_price", "pl_pct",
       "t1_close", "t2_close", "t5_close",
       "verdict", "analyst_score", "composite_score",
       "status", "bucket", "bias", "regime", "action_type",
@@ -127,6 +127,7 @@ export default function LiveCompositeSignals({ market = "dse" }: Props = {}) {
         s.first_triggered ? `"${s.first_triggered}"` : "",
         tp ?? "",
         cp ?? "",
+        s.close_price ?? "",
         pl,
         s.t1_close ?? "",
         s.t2_close ?? "",
@@ -202,6 +203,7 @@ export default function LiveCompositeSignals({ market = "dse" }: Props = {}) {
               <th className="text-left px-3 py-2 font-medium">Triggered</th>
               <th className="text-right px-3 py-2 font-medium">Trigger ৳</th>
               <th className="text-right px-3 py-2 font-medium">Current ৳</th>
+              <th className="text-right px-3 py-2 font-medium">Close ৳</th>
               <th className="text-right px-3 py-2 font-medium">P&L</th>
               <th className="text-right px-3 py-2 font-medium">T+1 Close</th>
               <th className="text-right px-3 py-2 font-medium">T+2 Close</th>
@@ -218,7 +220,7 @@ export default function LiveCompositeSignals({ market = "dse" }: Props = {}) {
           <tbody>
             {signals.length === 0 && !loading && (
               <tr>
-                <td colSpan={15} className="px-3 py-8 text-center text-[var(--text-muted)]">
+                <td colSpan={16} className="px-3 py-8 text-center text-[var(--text-muted)]">
                   No signals.
                 </td>
               </tr>
@@ -250,6 +252,9 @@ export default function LiveCompositeSignals({ market = "dse" }: Props = {}) {
                   </td>
                   <td className="px-3 py-2 text-right font-mono">
                     {fmtPrice(cp, cur)}
+                  </td>
+                  <td className="px-3 py-2 text-right font-mono text-xs text-[var(--text-muted)]">
+                    {fmtPrice(s.close_price, cur)}
                   </td>
                   <td className={`px-3 py-2 text-right font-mono text-xs ${pctClass(pl)}`}>
                     {fmtPct(pl)}
