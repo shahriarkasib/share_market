@@ -475,7 +475,7 @@ export async function fetchDailySummary(date?: string): Promise<{
 export async function fetchLiveCompositeSignals(
   status: string = "active",
   minScore: number = 0,
-  options?: { buy_only?: boolean; quality_filter?: boolean; sort_by?: "score" | "triggered"; limit?: number },
+  options?: { buy_only?: boolean; quality_filter?: boolean; sort_by?: "score" | "triggered"; limit?: number; days?: number },
 ): Promise<LiveCompositeSignal[]> {
   const params: Record<string, string | number | boolean> = {
     status,
@@ -485,6 +485,7 @@ export async function fetchLiveCompositeSignals(
   if (options?.quality_filter !== undefined) params.quality_filter = options.quality_filter;
   if (options?.sort_by) params.sort_by = options.sort_by;
   if (options?.limit) params.limit = options.limit;
+  if (options?.days) params.days = options.days;
   const { data } = await api.get<LiveCompositeSignal[]>("/market/live-signals", { params });
   return data;
 }

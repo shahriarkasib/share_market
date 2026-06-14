@@ -79,32 +79,12 @@ export default function LiveCompositeSignals({ market = "dse" }: Props = {}) {
         : await fetchLiveCompositeSignals("all", 0, {
             buy_only: false,
             quality_filter: true,
-            sort_by: "triggered",  // newest triggers first
-            limit: 1000,           // pull enough to dedupe properly
+            sort_by: "triggered",
+            limit: 500,
+            days: 7,  // DB-side dedupe + 7-day window
           });
-      // Sort by first_triggered DESC (latest first)
-      data.sort((a, b) => {
-        const ta = a.first_triggered ? new Date(a.first_triggered).getTime() : 0;
-        const tb = b.first_triggered ? new Date(b.first_triggered).getTime() : 0;
-        return tb - ta;
-      });
-      // Filter to last 7 days only — see a week of trigger history at a glance
-      const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
-      const recent = data.filter((s) => {
-        if (!s.first_triggered) return false;
-        return new Date(s.first_triggered).getTime() >= sevenDaysAgo;
-      });
-      // Dedupe by (symbol + trigger DATE) — same stock that triggered on 3
-      // different days shows 3 rows, but intra-day duplicates collapse to 1.
-      const seen = new Set<string>();
-      const deduped = recent.filter((s) => {
-        const dateKey = (s.first_triggered || "").slice(0, 10); // YYYY-MM-DD
-        const key = `${s.symbol}|${dateKey}`;
-        if (seen.has(key)) return false;
-        seen.add(key);
-        return true;
-      });
-      setSignals(deduped);
+      // Backend already dedupes (symbol, day) + sorts by trigger desc.
+      setSignals(data);
       setLastRefresh(new Date());
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : String(e));

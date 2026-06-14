@@ -546,6 +546,7 @@ async def get_live_signals(
     quality_filter: bool = True,  # exclude insurance/MF/banks/BATBC noise
     sort_by: str = "score",  # "score" (default) or "triggered" for newest-first
     limit: int = 200,
+    days: int | None = None,  # restrict to last N days (uses DB-side dedupe per (symbol, day))
 ):
     """
     Return live composite signals from the live_signals table.
@@ -576,11 +577,28 @@ async def get_live_signals(
             if sort_by == "triggered"
             else "ORDER BY analyst_score DESC NULLS LAST, composite_score DESC, last_seen DESC"
         )
-        rows = conn.execute(
-            f"SELECT * FROM live_signals WHERE composite_score >= %s "
-            f"AND (market = 'dse' OR market IS NULL) {order_clause} LIMIT {int(limit)}",
-            (min_score,),
-        ).fetchall()
+        if days:
+            # DB-side dedupe: 1 row per (symbol, trigger DATE in BST), latest id wins.
+            # Then restrict to last N days. Avoids the LIMIT-eats-today problem
+            # where thousands of intraday rows for today crowd out older signals.
+            rows = conn.execute(
+                f"""SELECT DISTINCT ON (symbol, (first_triggered AT TIME ZONE 'Asia/Dhaka')::date) *
+                    FROM live_signals
+                    WHERE composite_score >= %s
+                      AND (market = 'dse' OR market IS NULL)
+                      AND first_triggered >= NOW() - INTERVAL '%s days'
+                    ORDER BY symbol, (first_triggered AT TIME ZONE 'Asia/Dhaka')::date DESC, id DESC
+                    LIMIT {int(limit)}""",
+                (min_score, int(days)),
+            ).fetchall()
+            # Re-sort: caller wants triggered DESC after the DISTINCT ON
+            rows = sorted(rows, key=lambda r: dict(r).get("first_triggered") or "", reverse=True)
+        else:
+            rows = conn.execute(
+                f"SELECT * FROM live_signals WHERE composite_score >= %s "
+                f"AND (market = 'dse' OR market IS NULL) {order_clause} LIMIT {int(limit)}",
+                (min_score,),
+            ).fetchall()
     elif status == "closed":
         rows = conn.execute(
             "SELECT * FROM live_signals WHERE status NOT IN ('active','hit_t1') "
