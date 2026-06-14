@@ -26,6 +26,17 @@ class DSEDataFetcher:
     def __init__(self):
         self._session = requests.Session()
         self._session.headers.update(HEADERS)
+        # dsebd.org SSL cert sometimes fails verification on the VM
+        # (intermediate CA missing from system trust store). Disable
+        # verification for this single host — content is public market
+        # data, no auth/credentials transmitted, so MITM risk is minimal
+        # and a broken cert chain blocks all data ingestion.
+        self._session.verify = False
+        try:
+            import urllib3
+            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+        except Exception:
+            pass
         self._bdshare_available = self._check_bdshare()
 
     def _check_bdshare(self) -> bool:

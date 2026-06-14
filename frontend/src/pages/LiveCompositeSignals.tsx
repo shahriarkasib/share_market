@@ -88,12 +88,20 @@ export default function LiveCompositeSignals({ market = "dse" }: Props = {}) {
         const tb = b.first_triggered ? new Date(b.first_triggered).getTime() : 0;
         return tb - ta;
       });
-      // Dedupe: keep only the MOST RECENT trigger per symbol (data is already
-      // sorted DESC by first_triggered so the first occurrence wins).
+      // Filter to last 7 days only — see a week of trigger history at a glance
+      const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+      const recent = data.filter((s) => {
+        if (!s.first_triggered) return false;
+        return new Date(s.first_triggered).getTime() >= sevenDaysAgo;
+      });
+      // Dedupe by (symbol + trigger DATE) — same stock that triggered on 3
+      // different days shows 3 rows, but intra-day duplicates collapse to 1.
       const seen = new Set<string>();
-      const deduped = data.filter((s) => {
-        if (seen.has(s.symbol)) return false;
-        seen.add(s.symbol);
+      const deduped = recent.filter((s) => {
+        const dateKey = (s.first_triggered || "").slice(0, 10); // YYYY-MM-DD
+        const key = `${s.symbol}|${dateKey}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
         return true;
       });
       setSignals(deduped);
@@ -169,7 +177,7 @@ export default function LiveCompositeSignals({ market = "dse" }: Props = {}) {
             {isNasdaq ? "🇺🇸 NASDAQ" : "🇧🇩 DSE"} Live Signals
           </h1>
           <p className="text-xs text-[var(--text-muted)] mt-1">
-            {signals.length} signals · sorted by trigger time (newest first)
+            {signals.length} signals · last 7 days · sorted newest first
             {lastRefresh && (
               <> · Last refresh {lastRefresh.toLocaleTimeString()} · <span className="text-emerald-500">auto-refreshing</span></>
             )}
